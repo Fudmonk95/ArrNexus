@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}AIOStreams Bridge · {{ app_setting('app.title','ArrNexus') }}{% endblock %}
+{% block heading %}AIOStreams Bridge{% endblock %}
+{% block content %}
+<style>
+.nx-aio-grid{display:grid;grid-template-columns:repeat(3,minmax(220px,1fr));gap:14px;margin:16px 0}.nx-aio-card{background:var(--panel,#151922);border:1px solid var(--border,#2a3240);border-radius:14px;padding:16px;min-width:0}.nx-aio-card h3{margin:0 0 8px}.nx-aio-wide{grid-column:1/-1}.nx-aio-form{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:12px}.nx-aio-form label{display:grid;gap:5px;font-weight:600;min-width:0}.nx-aio-form input,.nx-aio-form select{width:100%;min-width:0;padding:10px;border-radius:9px;border:1px solid var(--border,#394252);background:var(--input,#0d1118);color:inherit}.nx-aio-checks{display:flex;gap:16px;flex-wrap:wrap;margin:12px 0}.nx-aio-checks label{display:flex;align-items:center;gap:7px}.nx-aio-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}.nx-aio-actions button,.nx-aio-actions a{padding:9px 13px;border-radius:9px;border:1px solid var(--border,#394252);background:var(--accent,#596cff);color:#fff;text-decoration:none;cursor:pointer}.nx-aio-actions .danger{background:#7a2931}.nx-aio-muted{opacity:.72}.nx-aio-ok{color:#67d391}.nx-aio-bad{color:#ff7d7d}.nx-aio-warn{color:#f2c66d}.nx-aio-pre{max-height:560px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;background:#090c11;border:1px solid #27303e;border-radius:10px;padding:12px}.nx-aio-list{margin:8px 0;padding-left:20px}.nx-aio-table{width:100%;border-collapse:collapse}.nx-aio-table td,.nx-aio-table th{padding:8px;border-bottom:1px solid var(--border,#2a3240);text-align:left;vertical-align:top;overflow-wrap:anywhere}.nx-aio-code{display:block;max-width:100%;overflow:auto;white-space:nowrap;background:#090c11;border:1px solid #27303e;border-radius:8px;padding:8px}.nx-aio-note{border-left:3px solid #f2c66d;padding-left:12px}.nx-aio-danger-note{border-left:3px solid #ff7d7d;padding-left:12px}.nx-aio-pill{display:inline-block;border:1px solid var(--border,#394252);border-radius:999px;padding:3px 8px;margin:2px 4px 2px 0;font-size:.86rem}@media(max-width:900px){.nx-aio-grid,.nx-aio-form{grid-template-columns:1fr}}
+</style>
+
+<div class="page-head">
+  <div>
+    <p class="nx-aio-muted">ArrNexus v9.0.0-beta</p>
+    <p>Provider-neutral AIOStreams configuration linking, masked preview, private backup/rollback and ID-based search diagnostics.</p>
+  </div>
+</div>
+
+{% if notice %}<div class="nx-aio-card nx-aio-ok">{{ notice }}</div>{% endif %}
+{% if error %}<div class="nx-aio-card nx-aio-bad">{{ error }}</div>{% endif %}
+
+<div class="nx-aio-grid">
+  <section class="nx-aio-card">
+    <h3>Instance status</h3>
+    <div class="{{ 'nx-aio-ok' if state.status.ok else 'nx-aio-bad' }}">{{ 'REACHABLE' if state.status.ok else 'OFFLINE' }}</div>
+    <div class="nx-aio-muted">{{ state.status.detail }}</div>
+  </section>
+  <section class="nx-aio-card">
+    <h3>User API</h3>
+    <div class="{{ 'nx-aio-ok' if state.user_ok else 'nx-aio-warn' }}">{{ 'AUTHENTICATED' if state.user_ok else 'NOT VERIFIED' }}</div>
+    <div>{{ state.connection.user }}</div>
+    <div class="nx-aio-muted">{{ state.service_count }} services · {{ state.preset_count }} presets</div>
+    {% if state.user_error %}<div class="nx-aio-warn">{{ state.user_error }}</div>{% endif %}
+  </section>
+  <section class="nx-aio-card">
+    <h3>Last ArrNexus sync</h3>
+    <div>{{ state.connection.last_sync or 'Never' }}</div>
+    <div class="nx-aio-muted">A successful GET stores AIOStreams encryptedPassword privately for future authentication.</div>
+  </section>
+
+  <section class="nx-aio-card nx-aio-wide">
+    <h3>1 · Connection</h3>
+    <p class="nx-aio-muted">Use the AIOStreams base URL plus the user UUID/alias and its password. Leave identity/password blank when editing to keep the stored values. Credentials are saved as secret settings and are never rendered back.</p>
+    <form action="/aiostreams/save" method="post">
+      <div class="nx-aio-form">
+        <label>AIOStreams base URL<input name="url" type="url" value="{{ state.connection.url }}" placeholder="https://aiostreams.example.invalid"></label>
+        <label>User UUID or alias<input name="user" type="text" value="" autocomplete="off" placeholder="Leave blank to keep {{ state.connection.user }}"></label>
+        <label>Configuration password<input name="credential" type="password" value="" autocomplete="new-password" placeholder="Leave blank to keep stored credential"></label>
+        <label>Provider credentials<div class="nx-aio-code"><a href="/providers">Manage Debrid & Usenet providers in the Provider Registry →</a></div></label>
+      </div>
+      <div class="nx-aio-actions"><button type="submit">Save privately</button></div>
+    </form>
+    <form action="/aiostreams/verify" method="post" class="nx-aio-actions"><button type="submit">Verify status + User API</button></form>
+  </section>
+
+  <section class="nx-aio-card">
+    <h3>ArrNexus Prowlarr</h3>
+    <div>{{ state.integrations.prowlarr.url or 'Not configured' }}</div>
+    <div class="nx-aio-muted">API key: {{ 'available' if state.integrations.prowlarr.has_api_key else 'not available' }}</div>
+  </section>
+  <section class="nx-aio-card">
+    <h3>Real-Debrid</h3>
+    <div>{{ 'Reusable credential found' if state.integrations.realdebrid.available else 'No reusable key confirmed' }}</div>
+    <div class="nx-aio-muted">The key value is intentionally never displayed.</div>
+  </section>
+  <section class="nx-aio-card">
+    <h3>NzbDAV / InfiniDysk</h3>
+    <div>{{ 'Some reusable fields found' if state.integrations.nzbdav.available else 'No explicit NzbDAV fields confirmed' }}</div>
+    <div class="nx-aio-muted">
+      {% for field in state.integrations.nzbdav.fields %}<span class="nx-aio-pill">{{ field }}</span>{% endfor %}
+      {% if not state.integrations.nzbdav.fields %}ArrNexus will not invent credential fields.{% endif %}
+    </div>
+  </section>
+  <section class="nx-aio-card nx-aio-wide">
+    <h3>Configured provider registry</h3>
+    <p class="nx-aio-muted">v9 can safely wire every enabled ArrNexus provider supported by AIOStreams, not only Real-Debrid. Secret values never appear here.</p>
+    <div>
+      {% for provider in state.integrations.providers %}<span class="nx-aio-pill">{{ provider.id }} · {{ provider.fields|length }} field{{ '' if provider.fields|length == 1 else 's' }}</span>{% else %}<span class="nx-aio-muted">No provider-registry services configured yet. <a href="/providers">Open Providers</a>.</span>{% endfor %}
+    </div>
+  </section>
+
+  <section class="nx-aio-card nx-aio-wide">
+    <h3>2 · Auto-Wire preview</h3>
+    <p class="nx-aio-muted">AIOStreams <code>PUT /api/v1/user</code> is a full replacement operation. ArrNexus therefore performs <strong>GET → digest → masked preview → re-check digest → private backup → merged full PUT → verify</strong>. It never sends an ArrNexus-only partial object.</p>
+    <form action="/aiostreams/preview" method="post">
+      <div class="nx-aio-checks">
+        <label><input type="checkbox" name="wire_prowlarr" value="true" checked> Prowlarr URL + API key</label>
+        <label><input type="checkbox" name="wire_realdebrid" value="true" checked> Real-Debrid compatibility wiring</label>
+        <label><input type="checkbox" name="wire_nzbdav" value="true" checked> NzbDAV / InfiniDysk compatibility wiring</label>
+        <span class="nx-aio-muted">Other enabled v9 providers are included automatically and only fill missing AIOStreams credential fields.</span>
+      </div>
+      <div class="nx-aio-actions"><button type="submit">Build safe preview</button></div>
+    </form>
+
+    {% if preview %}
+      <hr>
+      <h3>Preview digest</h3>
+      <code class="nx-aio-code">{{ preview.digest }}</code>
+      {% if preview.changes %}
+        <h3>Planned changes</h3>
+        <ul class="nx-aio-list">{% for row in preview.changes %}<li>{{ row }}</li>{% endfor %}</ul>
+      {% else %}<p class="nx-aio-ok">No configuration differences detected for the selected Auto-Wire options.</p>{% endif %}
+      {% if preview.warnings %}
+        <h3>Warnings</h3>
+        <ul class="nx-aio-list nx-aio-warn">{% for row in preview.warnings %}<li>{{ row }}</li>{% endfor %}</ul>
+      {% endif %}
+      <h3>Masked full configuration</h3>
+      <pre class="nx-aio-pre">{{ preview.safe_config }}</pre>
+      <form action="/aiostreams/apply" method="post">
+        <input type="hidden" name="expected_digest" value="{{ preview.digest }}">
+        <input type="hidden" name="wire_prowlarr" value="{{ 'true' if preview.wire_prowlarr else 'false' }}">
+        <input type="hidden" name="wire_realdebrid" value="{{ 'true' if preview.wire_realdebrid else 'false' }}">
+        <input type="hidden" name="wire_nzbdav" value="{{ 'true' if preview.wire_nzbdav else 'false' }}">
+        <p class="nx-aio-danger-note"><strong>Apply is guarded by the digest above.</strong> If AIOStreams changed after this preview, ArrNexus refuses the write and makes you preview again.</p>
+        <div class="nx-aio-actions"><button type="submit">Apply Auto-Wire</button></div>
+      </form>
+    {% endif %}
+  </section>
+
+  <section class="nx-aio-card nx-aio-wide">
+    <h3>3 · Endpoint helpers</h3>
+    <p class="nx-aio-muted">These helpers intentionally contain no username, password, token or API key.</p>
+    <table class="nx-aio-table">
+      <tr><th>Newznab</th><td><code>{{ state.endpoints.newznab or 'Configure AIOStreams first' }}</code></td></tr>
+      <tr><th>Torznab</th><td><code>{{ state.endpoints.torznab or 'Configure AIOStreams first' }}</code></td></tr>
+      <tr><th>SAB-compatible</th><td><code>{{ state.endpoints.sabnzbd or 'Configure AIOStreams first' }}</code></td></tr>
+    </table>
+  </section>
+
+  <section class="nx-aio-card nx-aio-wide">
+    <h3>4 · ID search diagnostics</h3>
+    <p class="nx-aio-muted">Search the authenticated AIOStreams API by movie/series/anime ID. Playback URLs, URLs hidden in result fields, Authorization/Cookie/proxy headers and secret-bearing values are redacted before rendering or returning through ArrNexus.</p>
+    <form action="/aiostreams/search" method="get">
+      <div class="nx-aio-form">
+        <label>Type<select name="type"><option value="movie" {{ 'selected' if search_query.type=='movie' }}>Movie</option><option value="series" {{ 'selected' if search_query.type=='series' }}>Series</option><option value="anime" {{ 'selected' if search_query.type=='anime' }}>Anime</option></select></label>
+        <label>ID<input name="id" value="{{ search_query.id }}" placeholder="tt1234567 or tmdb:2131:1:3"></label>
+      </div>
+      <div class="nx-aio-actions"><button type="submit">Run redacted search</button></div>
+    </form>
+    {% if search_json %}<pre class="nx-aio-pre">{{ search_json }}</pre>{% endif %}
+  </section>
+
+  <section class="nx-aio-card nx-aio-wide">
+    <h3>Backups & rollback</h3>
+    <p class="nx-aio-note">Raw AIOStreams backup JSON may contain service credentials. Backups live privately beside the ArrNexus database with restrictive permissions and are never included in this release package. Rollback itself first backs up the current remote configuration.</p>
+    {% if state.backups %}
+    <table class="nx-aio-table">
+      <thead><tr><th>Backup</th><th>Size</th><th>Action</th></tr></thead>
+      <tbody>{% for backup in state.backups %}<tr><td>{{ backup.name }}</td><td>{{ backup.size|human_size }}</td><td><form action="/aiostreams/rollback" method="post"><input type="hidden" name="backup_name" value="{{ backup.name }}"><button class="danger" type="submit">Rollback to this backup</button></form></td></tr>{% endfor %}</tbody>
+    </table>
+    {% else %}<p class="nx-aio-muted">No AIOStreams backups have been created yet.</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

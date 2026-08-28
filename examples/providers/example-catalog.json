@@ -1,0 +1,6 @@
+{
+  "key": "example-catalog",
+  "name": "Example Catalog",
+  "description": "Data-only community provider example",
+  "search_url": "https://example.com/search?q={query}"
+}

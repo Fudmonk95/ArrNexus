@@ -1,0 +1,11 @@
+{
+  "key": "example-service",
+  "name": "Example Service",
+  "category": "Community",
+  "description": "Example data-only ArrNexus ecosystem connector",
+  "default_url": "http://host.docker.internal:9000",
+  "health_paths": ["/api/health", "/health", "/"],
+  "auth_header": "X-Api-Key",
+  "capabilities": ["health", "search"],
+  "docs_url": "https://example.invalid/docs"
+}

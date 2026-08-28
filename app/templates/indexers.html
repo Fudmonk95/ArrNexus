@@ -1,0 +1,19 @@
+{% extends 'base.html' %}{% block heading %}Indexers{% endblock %}{% block content %}
+{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
+<section class="hero compact-hero"><div><span class="eyebrow">PROWLARR · LIVE CONFIGURATION</span><h2>Indexer control</h2><p>See the indexers Prowlarr is actually using and change safe operational settings here. Saves are written back to Prowlarr immediately.</p></div><div class="inline-actions"><a class="btn" href="/arrs">Prowlarr connection</a></div></section>
+{% if error %}<div class="alert error"><strong>Prowlarr unavailable</strong><br>{{ error }}</div>{% endif %}
+<div class="stats-grid four"><div class="stat"><span>Total indexers</span><strong>{{ indexers|length }}</strong></div><div class="stat"><span>Usenet</span><strong>{{ indexers|selectattr('protocol','equalto','usenet')|list|length }}</strong></div><div class="stat"><span>Torrent</span><strong>{{ indexers|selectattr('protocol','equalto','torrent')|list|length }}</strong></div><div class="stat"><span>Enabled</span><strong>{{ indexers|selectattr('enable')|list|length }}</strong></div></div>
+<section class="panel"><div class="panelhead"><div><h2>Current Prowlarr indexers</h2><p>Routing tags are shown but intentionally read-only in this first control surface so ArrNexus cannot accidentally break DUMB/InfiniDysk/Decypharr routing.</p></div></div>
+<div class="indexer-grid">{% for x in indexers %}<article class="indexer-card">
+  <div class="indexer-head"><div><span class="protocol-pill {{ x.protocol or 'unknown' }}">{{ (x.protocol or 'unknown')|upper }}</span><h3>{{ x.name }}</h3><small>{{ x.implementationName or x.implementation or 'Indexer' }}</small></div><span class="state-pill {{ 'ok' if x.enable else 'off' }}">{{ 'Enabled' if x.enable else 'Disabled' }}</span></div>
+  {% if x.tag_names %}<div class="tags">{% for tag in x.tag_names %}<span class="tag {{ 'warning' if tag|lower in ['nzbdav','decypharr','infinidysk'] else '' }}">{{ tag }}</span>{% endfor %}</div>{% endif %}
+  {% if x.routing_critical %}<div class="managed-warning">Routing-critical tags detected. ArrNexus will not change these tags from this page.</div>{% endif %}
+  {% if x.category_names %}<div class="indexer-categories">{{ x.category_names|join(' · ') }}</div>{% endif %}
+  <form method="post" action="/indexers/{{ x.id }}" class="formgrid indexer-form">
+    <div class="grid-2"><label class="check"><input type="checkbox" name="enable" value="true" {{ 'checked' if x.enable }}> Enabled</label><label>Priority<input type="number" name="priority" min="1" max="50" value="{{ x.priority or 25 }}"></label></div>
+    <div class="indexer-toggle-grid"><label class="check"><input type="checkbox" name="enable_rss" value="true" {{ 'checked' if x.enableRss }}> RSS</label><label class="check"><input type="checkbox" name="enable_automatic" value="true" {{ 'checked' if x.enableAutomaticSearch }}> Automatic search</label><label class="check"><input type="checkbox" name="enable_interactive" value="true" {{ 'checked' if x.enableInteractiveSearch }}> Interactive search</label></div>
+    <div class="formactions"><button class="btn primary">Save to Prowlarr</button></div>
+  </form>
+</article>{% else %}<div class="empty">No Prowlarr indexers returned.</div>{% endfor %}</div>
+</section>
+{% endblock %}

@@ -1,82 +1,13 @@
-# ArrNexus - never commit deployment/runtime secrets or state
-
-# Environment / secrets
 .env
 .env.*
 !.env.example
-*.secret
-*.secrets
-secrets/
-credentials/
-
-# ArrNexus persistent state
 data/
-*/data/
 *.db
-*.db-*
-*.sqlite
-*.sqlite3
-*.sqlite-*
 *.db-shm
 *.db-wal
-*.sqlite-shm
-*.sqlite-wal
-
-# Logs / diagnostics / support bundles
-*.log
-logs/
-log/
-diagnostics/
-support/
-support-pack*/
-*.tar
-*.tar.gz
-*.tgz
-
-# Cache / downloads / temporary runtime content
-cache/
-caches/
-tmp/
-temp/
-downloads/
-blobs/
-segment-cache/
-nzb-backups/
-backups/
-
-# Python
 __pycache__/
 *.py[cod]
-*$py.class
 .venv/
 venv/
-env/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
-# Node
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Editors / OS
-.vscode/
-.idea/
+*.log
 .DS_Store
-Thumbs.db
-*.swp
-*.swo
-*~
-
-# Build output
-dist/
-build/
-*.egg-info/
-
-# Local overrides
-docker-compose.override.yml
-compose.override.yml

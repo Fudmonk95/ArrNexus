@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block heading %}Connect Real-Debrid{% endblock %}
+{% block content %}
+<div class="oauth-card panel">
+  <div class="oauth-icon">RD</div><span class="eyebrow">OFFICIAL DEVICE AUTHORIZATION</span><h2>Link ArrNexus to Real-Debrid</h2><p>No API token copy/paste is needed. Open the Real-Debrid device page and enter this code:</p>
+  <div class="device-code">{{ user_code or 'Waiting…' }}</div>
+  <a class="btn primary" href="{{ verification_url }}" target="_blank" rel="noopener">Open Real-Debrid device page</a>
+  <div id="oauth-state" class="oauth-state">Waiting for authorization…</div>
+  <p class="muted">This is the same Real-Debrid account/library layer that DMM manages. Once linked, items added by ArrNexus to Real-Debrid will also be visible to DMM when it reads that account.</p>
+</div>
+<script>
+(async function poll(){
+  const state=document.getElementById('oauth-state');
+  try{const r=await fetch('/api/debrid/poll');const d=await r.json();
+    if(d.status==='connected'){state.textContent='Connected — opening your library…';state.classList.add('good');setTimeout(()=>location.href='/debrid',700);return;}
+    if(d.status==='expired'){state.textContent='Code expired. Go back and start again.';return;}
+    if(d.status==='error'){state.textContent=d.error||'Authorization failed';return;}
+  }catch(e){state.textContent='Still waiting…';}
+  setTimeout(poll,3000);
+})();
+</script>
+{% endblock %}

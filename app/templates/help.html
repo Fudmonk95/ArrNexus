@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Help Centre · ArrNexus</title>
+  <meta name="description" content="ArrNexus setup, usage, troubleshooting and safety guides.">
+  <meta name="theme-color" content="#050506">
+  <link rel="icon" href="/static/arrnexus-icon-v9.png" type="image/png">
+  <link rel="stylesheet" href="/static/app.css?v=9.4">
+</head>
+<body class="v9-public v94-help-page">
+<header class="v9-public-nav v94-help-nav">
+  <a href="/" class="v9-public-brand"><img src="/static/arrnexus-icon-v9.png" alt=""><strong>ArrNexus</strong></a>
+  <nav><a href="/">About</a><a class="active" href="/help">Help Centre</a><a href="/download/latest" download>Download</a></nav>
+  <a class="v9-nav-cta" href="{{ '/dashboard' if logged_in else ('/login' if configured else '/setup') }}">{{ 'Dashboard' if logged_in else ('Sign in' if configured else 'Start setup') }}</a>
+</header>
+<main class="v94-help-shell">
+  <section class="v94-help-hero">
+    <span class="v9-chip">ARRNEXUS v{{ version }} · HELP CENTRE</span>
+    <h1>Use the tool.<br><span>Understand every step.</span></h1>
+    <p>These guides are generated from the same catalogue as the release user guide. Each topic explains prerequisites, setup, normal use, what success looks like, common failures and safe recovery.</p>
+    <form class="v94-help-search" method="get" action="/help"><input name="q" value="{{ query }}" placeholder="Search Spotify, DUMB mounts, AIOStreams, backups, Plex…"><button class="v9-primary">Search</button>{% if query %}<a class="v9-secondary" href="/help">Clear</a>{% endif %}</form>
+  </section>
+
+  <div class="v94-help-layout">
+    <aside class="v94-help-index">
+      {% for category, items in categories %}
+      <section><strong>{{ category }}</strong>{% for item in items %}<a class="{{ 'active' if selected and selected.slug == item.slug }}" href="/help?topic={{ item.slug }}#{{ item.slug }}">{{ item.title }}</a>{% endfor %}</section>
+      {% endfor %}
+    </aside>
+    <section class="v94-help-content">
+      {% if query and not topics %}<div class="v94-help-empty"><h2>No guide matched “{{ query }}”.</h2><p>Try a feature name, service or error such as <code>Spotify</code>, <code>mount</code>, <code>backup</code> or <code>slow_request</code>.</p></div>{% endif %}
+      {% for topic in topics %}
+      <article class="v94-help-topic {{ 'focused' if selected and selected.slug == topic.slug }}" id="{{ topic.slug }}">
+        <div class="v94-help-topic-head"><div><span>{{ topic.category }}</span><h2>{{ topic.title }}</h2><p>{{ topic.summary }}</p></div><a href="#{{ topic.slug }}" title="Link to this guide">#</a></div>
+        {% if topic.prerequisites %}<div class="v94-guide-block"><h3>Before you start</h3><ul>{% for item in topic.prerequisites %}<li>{{ item }}</li>{% endfor %}</ul></div>{% endif %}
+        {% if topic.setup %}<div class="v94-guide-block setup"><h3>Setup</h3><ol>{% for item in topic.setup %}<li>{{ item }}</li>{% endfor %}</ol></div>{% endif %}
+        {% if topic.usage %}<div class="v94-guide-block"><h3>How to use it</h3><ul>{% for item in topic.usage %}<li>{{ item }}</li>{% endfor %}</ul></div>{% endif %}
+        {% if topic.success %}<div class="v94-guide-block success"><h3>What working looks like</h3><ul>{% for item in topic.success %}<li>{{ item }}</li>{% endfor %}</ul></div>{% endif %}
+        {% if topic.troubleshooting %}<div class="v94-guide-block trouble"><h3>If it does not work</h3><ul>{% for item in topic.troubleshooting %}<li>{{ item }}</li>{% endfor %}</ul></div>{% endif %}
+        {% if topic.safety %}<div class="v94-guide-block safety"><h3>Safety / privacy</h3><ul>{% for item in topic.safety %}<li>{{ item }}</li>{% endfor %}</ul></div>{% endif %}
+        {% if topic.related %}<div class="v94-related"><span>Related:</span>{% for slug in topic.related %}<a href="/help?topic={{ slug }}#{{ slug }}">{{ slug|replace('-', ' ')|title }}</a>{% endfor %}</div>{% endif %}
+      </article>
+      {% endfor %}
+    </section>
+  </div>
+</main>
+<footer class="v9-public-footer"><img src="/static/arrnexus-icon-v9.png" alt=""><span>ArrNexus Help Centre</span><small>Source-backed guidance · v{{ version }}</small></footer>
+</body></html>
