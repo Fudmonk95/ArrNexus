@@ -1,5 +1,17 @@
 # Changelog
 
+## 10.0.0-beta — Native Updates & Product UI
+
+- Added the v10 native self-update architecture. ArrNexus can check the official GitHub Releases feed, notify administrators when a newer release is available, verify the release SHA-256, create a transaction-safe SQLite backup, safely extract and validate the new runtime, then restart itself through the in-container bootstrap supervisor.
+- Added persistent runtime staging under `/data/runtime` with current/previous release tracking and automatic startup rollback when a newly selected runtime fails health checks.
+- The self-updater deliberately does **not** require the Docker socket, Portainer, Watchtower or another updater service. Releases that change the base image/bootstrap can still require a normal Docker rebuild.
+- Reworked **Connections** into compact collapsed service accordions. Optional/disabled services remain visible without filling the page with unused configuration forms.
+- Reworked **Ecosystem** with the same collapsed/disabled service treatment for a cleaner deployment-specific view.
+- Added a product-wide near-black visual layer with white/grey surfaces and restrained purple/cyan ArrNexus accents, replacing the older blue-heavy card treatment.
+- Rebuilt the public landing page to match the redesigned GitHub presentation and new ArrNexus hero, architecture, core-features and quick-start artwork.
+- Updated the Help Centre and generated User Guide with native-update, release ZIP and rollback guidance.
+- Retained and re-ran the complete v7 → v8 → v9 → v9.1 → v9.2 → v9.3 → v9.4 regression chain before the v10 validation layer.
+
 ## 9.4.0-beta — Documentation & Guided Operations
 
 - Added a public in-app **Help Centre** at `/help`.

@@ -1219,36 +1219,43 @@ ArrNexus can create rolling SQLite backups, export/import non-secret configurati
 
 - Database backups are private even if UI secrets are masked; they may contain encrypted/protected application state. Do not publish them.
 
-## Updates, release ZIPs & rollback
+## Native updates, release ZIPs & rollback
 
-ArrNexus supports source ZIP/Git/Portainer deployment patterns and a public source-only release exporter; safe upgrades keep the previous release directory available for rollback.
+ArrNexus v10 can discover newer GitHub Releases, verify the release checksum, back up the live SQLite database, run the complete regression validator, stage the new runtime and restart itself without Portainer or Docker-socket access.
 
 ### Before you start
 
-- A backup of persistent /data before major upgrades.
+- The first move to v10 is a normal Docker rebuild because v10 introduces the self-update bootstrap.
+- Future in-app updates require outbound HTTPS access to GitHub Releases and a release containing both an ArrNexus ZIP and matching .sha256 asset.
 
 ### Setup
 
-1. Extract the new version beside the old one.
-2. Stop the old Compose stack, copy only the persistent data directory, run the release validator in a local .venv, run docker compose config, then build/start the new stack.
+1. Keep Fudmonk95/ArrNexus as the update repository unless you deliberately maintain your own fork.
+2. Select Stable/Beta/Development under Settings → Diagnostics & updates.
+3. When an update notification appears, review the target version and press Install update.
 
 ### How to use it
 
-- Keep the old source directory until the new release has been live-tested.
-- The public /download/latest exporter excludes /data, .env, databases, backups, virtualenvs, caches and Git metadata.
+- ArrNexus downloads the release, refuses non-HTTPS assets, verifies SHA-256, blocks unsafe ZIP traversal paths, creates a SQLite backup and validates the staged source before switching runtime.
+- The browser watches update progress and reloads automatically once the new /api/health reports the target version.
+- The v10 bootstrap keeps previous runtimes under /data/runtime/releases so a newly activated runtime that cannot become healthy can be rolled back automatically.
 
 ### What working looks like
 
-- Validator chain passes, /api/health is 200 and the new version badge is correct.
+- Update status progresses through download, verify, backup, dependencies, validation, staging and restart.
+- The page reloads with the new ArrNexus version while users/connections/providers remain present because /data is persistent.
 
 ### If it does not work
 
-- ModuleNotFoundError during host validation means the host .venv dependencies are not installed.
-- A Docker build failure should be diagnosed on the host before deleting the previous version.
+- If Install is disabled, confirm the GitHub Release includes both the ArrNexus ZIP and .sha256 asset.
+- If a future release needs Docker/OS/bootstrap changes, perform a normal container rebuild for that release instead of bypassing the safety boundary.
+- If the new runtime cannot become healthy, inspect update status/logs; the bootstrap should return to the previous staged runtime.
 
 ### Safety / privacy
 
-- Never copy an entire old source tree over a new version; carry forward persistent data only.
+- ArrNexus never needs the Docker socket for ordinary v10+ application updates.
+- The live database is not replaced by release files; a transaction-safe SQLite backup is created first.
+- Do not disable checksum or validator failures to force an update through.
 
 ## Community music/provider JSON
 

@@ -80,6 +80,10 @@ from .release_export import build_public_release
 from .runtime_cache import StaleSnapshot
 from .media_servers import definitions as media_server_definitions, builtin_state as media_server_builtin_state, probe_builtin as probe_media_server, list_custom as list_custom_media_servers, save_custom as save_custom_media_server, delete_custom as delete_custom_media_server, probe_custom as probe_custom_media_server
 from .help_catalog import TOPICS as HELP_TOPICS, categories as help_categories, get_topic as get_help_topic, topic_for_path as help_topic_for_path
+from .updater import (
+    DEFAULT_REPOSITORY as UPDATE_DEFAULT_REPOSITORY, SELF_UPDATE_CAPABLE,
+    check_for_update, start_install as start_self_update, status as update_status,
+)
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title="ArrNexus")
@@ -88,10 +92,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "9.4.0-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.0.0-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "9.4.0-beta"
+APP_VERSION = "10.0.0-beta"
 
 
 @app.middleware("http")
@@ -314,7 +318,7 @@ async def auth_error(request: Request, exc):
 @app.get("/api/health")
 async def health():
     ns = namespace_status()
-    return {"ok": True, "app": "ArrNexus", "namespace": bool(ns.get("ok"))}
+    return {"ok": True, "app": "ArrNexus", "version": APP_VERSION, "namespace": bool(ns.get("ok"))}
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -1540,7 +1544,7 @@ async def settings_page(request: Request, notice: str = ""):
         "lastfm_configured":bool(setting_get("music.lastfm.api_key")),
         "spotify_configured":bool(setting_get("music.spotify.client_id") and setting_get("music.spotify.client_secret")),
         "spotify_redirect_uri":setting_get("music.spotify.redirect_uri", "") or _suggested_spotify_redirect_uri(request),
-        "update_channel":setting_get("update.channel", "stable") or "stable",
+        "update_channel":setting_get("update.channel", "beta") or "beta",
         "seerr":get_connection("seerr"),
         "policy": load_policy(),
         "notifications": {
@@ -1551,7 +1555,7 @@ async def settings_page(request: Request, notice: str = ""):
             "email_to": setting_get("notify.email.to",""),
         },
         "backups": list_backups(10), "backup_auto": setting_get("backup.auto_enabled","true"), "backup_retention": setting_get("backup.retention","10"),
-        "update_repo": setting_get("update.repo",""), "version": APP_VERSION, "catalog_plugins": load_catalog_plugins(),
+        "update_repo": setting_get("update.repo", UPDATE_DEFAULT_REPOSITORY) or UPDATE_DEFAULT_REPOSITORY, "version": APP_VERSION, "self_update_capable": SELF_UPDATE_CAPABLE, "update_state": update_status(), "catalog_plugins": load_catalog_plugins(),
         "acquisition": load_acquisition_settings(), "acquisition_strategies": STRATEGIES,
         "language_policy": load_language_policy(),
     })
@@ -1816,50 +1820,65 @@ async def diagnostics_download(request: Request):
 
 
 async def _check_update() -> dict:
-    repo = setting_get('update.repo','').strip()
-    channel = (setting_get('update.channel','stable') or 'stable').lower()
-    if channel not in {'stable','beta','development'}:
-        channel='stable'
-    if not repo:
-        return {"configured":False,"current":APP_VERSION,"channel":channel}
-    match = re.search(r'(?:github\.com/)?([^/]+)/([^/]+?)(?:\.git)?$', repo.rstrip('/'))
-    if not match:
-        return {"configured":True,"current":APP_VERSION,"channel":channel,"error":"Use owner/repo or a GitHub repository URL"}
-    owner, name = match.group(1), match.group(2)
+    repo = setting_get("update.repo", UPDATE_DEFAULT_REPOSITORY) or UPDATE_DEFAULT_REPOSITORY
+    channel = (setting_get("update.channel", "beta") or "beta").lower()
+    if channel not in {"stable", "beta", "development"}:
+        channel = "beta"
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers={'Accept':'application/vnd.github+json','User-Agent':'ArrNexus-update-checker/7.0'}) as client:
-            if channel == 'stable':
-                r = await client.get(f'https://api.github.com/repos/{owner}/{name}/releases/latest')
-                r.raise_for_status(); data=r.json()
-            else:
-                r = await client.get(f'https://api.github.com/repos/{owner}/{name}/releases', params={'per_page':20})
-                r.raise_for_status(); rows=r.json() if isinstance(r.json(),list) else []
-                rows=[x for x in rows if not x.get('draft')]
-                if channel == 'beta':
-                    data=next((x for x in rows if x.get('prerelease')), rows[0] if rows else {})
-                else:
-                    data=rows[0] if rows else {}
-        latest=str(data.get('tag_name') or data.get('name') or '')
-        current=APP_VERSION.lstrip('v')
-        latest_norm=latest.lstrip('v')
-        return {"configured":True,"current":APP_VERSION,"channel":channel,"latest":latest,"update_available": bool(latest and latest_norm != current),"url":data.get('html_url') or ''}
+        return await check_for_update(APP_VERSION, repo, channel)
     except Exception as exc:
-        return {"configured":True,"current":APP_VERSION,"channel":channel,"error":str(exc)}
+        return {
+            "configured": True, "repository": repo, "current": APP_VERSION,
+            "channel": channel, "self_update_capable": SELF_UPDATE_CAPABLE,
+            "error": str(exc),
+        }
 
 
 @app.post("/settings/update-repo")
-async def settings_update_repo(request: Request, update_repo: str = Form(""), update_channel: str = Form("stable")):
+async def settings_update_repo(request: Request, update_repo: str = Form(""), update_channel: str = Form("beta")):
     require_admin(request)
-    channel=update_channel if update_channel in {'stable','beta','development'} else 'stable'
-    setting_set('update.repo',update_repo.strip())
-    setting_set('update.channel',channel)
-    return RedirectResponse('/settings?notice='+quote('Update source and channel saved'),status_code=303)
+    channel = update_channel if update_channel in {"stable", "beta", "development"} else "beta"
+    repo = update_repo.strip() or UPDATE_DEFAULT_REPOSITORY
+    setting_set("update.repo", repo)
+    setting_set("update.channel", channel)
+    return RedirectResponse("/settings?notice=" + quote("Update source and channel saved"), status_code=303)
 
 
 @app.get("/api/update-check")
 async def api_update_check(request: Request):
     require_admin(request)
     return await _check_update()
+
+
+@app.get("/api/update-status")
+async def api_update_status(request: Request):
+    require_admin(request)
+    state = update_status()
+    return {
+        "current": APP_VERSION,
+        "self_update_capable": SELF_UPDATE_CAPABLE,
+        **state,
+    }
+
+
+@app.post("/api/update-install")
+async def api_update_install(request: Request):
+    require_admin(request)
+    if not SELF_UPDATE_CAPABLE:
+        raise HTTPException(409, "This container predates the ArrNexus v10 self-update bootstrap. Perform one normal Docker upgrade to v10 first.")
+    state = update_status()
+    if state.get("state") in {"downloading", "verifying", "backup", "dependencies", "validating", "staging", "restarting"}:
+        raise HTTPException(409, "An ArrNexus update is already running")
+    metadata = await _check_update()
+    if metadata.get("error"):
+        raise HTTPException(502, str(metadata["error"]))
+    if not metadata.get("update_available"):
+        return {"ok": True, "started": False, "message": "ArrNexus is already up to date", **metadata}
+    if not metadata.get("installable"):
+        raise HTTPException(409, metadata.get("reason") or "The GitHub Release is missing a verified ZIP/checksum pair")
+    start_self_update(metadata, APP_VERSION)
+    log_event("info", "updater", "install_started", f"Installing ArrNexus {metadata.get('latest')}", {"repository": metadata.get("repository")})
+    return {"ok": True, "started": True, "target": metadata.get("latest"), "message": "Update started. ArrNexus will restart automatically."}
 
 
 @app.get("/timeline", response_class=HTMLResponse)

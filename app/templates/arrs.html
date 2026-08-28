@@ -2,33 +2,51 @@
 {% block heading %}Connections{% endblock %}
 {% block content %}
 {% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
-<section class="hero compact-hero"><div><span class="eyebrow">UI-MANAGED CONNECTIONS</span><h2>No environment file needed</h2><p>Save Arr, indexer, request and media-server endpoints here. Secrets live in ArrNexus persistent state and are never displayed back in plaintext.</p></div><div class="inline-actions"><a class="btn" href="/" data-no-soft-nav>Public home</a><a class="btn" href="/readiness" data-nav>Stack Readiness</a></div></section>
 
-<div class="connection-grid">
+<section class="hero compact-hero v10-page-hero">
+  <div>
+    <span class="eyebrow">CONNECTED SERVICES</span>
+    <h2>Everything in one tidy connection catalogue</h2>
+    <p>Every supported service stays available, but configuration remains collapsed until you need it. Disabled or unused services no longer dominate the page.</p>
+  </div>
+  <div class="inline-actions"><a class="btn" href="/" data-no-soft-nav>Public home</a><a class="btn" href="/readiness" data-nav>Stack Readiness</a></div>
+</section>
+
+<div class="v10-accordion-stack">
 {% for row in rows %}
   {% if row.kind=='arr' %}{% set svc=row.instance.service %}{% set inst=row.instance.instance %}{% else %}{% set svc=row.service %}{% set inst=row.instance_name %}{% endif %}
-  <section class="panel connection-card {{ 'v93-media-card' if row.kind=='media' else '' }}">
-    <div class="panelhead"><div class="service-title"><span class="service-logo {{ svc }}">{% if brand_icon(svc) %}<img class="brand-img" src="{{ brand_icon(svc) }}" alt="{{ svc }}" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><b hidden>{{ svc[:1]|upper }}</b>{% else %}<b>{{ svc[:1]|upper }}</b>{% endif %}</span><div><h2>{{ row.media_name or svc|capitalize }}{% if inst!='main' %} / {{ inst }}{% endif %}</h2><p>{% if row.kind=='arr' %}PID {{ row.instance.pid }} · port {{ row.instance.port }}{% elif row.kind=='media' %}{{ row.media_description or 'Media server' }}{% else %}External service{% endif %}</p></div></div><span class="connection-state {{ 'online' if row.ok else 'offline' }}">{{ 'Connected' if row.ok else 'Needs attention' }}</span></div>
-    {% if not row.ok and row.error %}<div class="alert error">{{ row.error }}</div>{% endif %}
-    {% if row.ok and row.status %}<div class="connection-meta"><span>Version / status</span><strong>{{ row.status.version or row.status.ServerVersion or row.status.versionTag or 'Connected' }}</strong></div>{% endif %}
-    <form method="post" action="/settings/connection" class="formgrid"><input type="hidden" name="service" value="{{ svc }}"><input type="hidden" name="instance" value="{{ inst }}"><label>URL<input name="url" value="{{ row.url }}" placeholder="{% if svc=='plex' %}http://plex:32400{% elif svc in ['jellyfin','emby'] %}http://{{ svc }}:8096{% endif %}" required></label><label>{{ row.token_label or 'API key' }}<div class="secret-input"><input type="password" name="api_key" placeholder="{{ 'Configured — leave blank to keep' if row.has_key else 'Paste token / API key' }}"><button type="button" class="btn small" data-reveal>Show</button></div></label><div class="formactions"><button class="btn primary">Save & reconnect</button></div></form>
-    {% if svc=='plex' %}<small class="muted">Plex uses an <code>X-Plex-Token</code>. ArrNexus verifies the server endpoint and can later use it for library visibility.</small>{% elif svc=='emby' %}<small class="muted">Create a dedicated Emby API key for ArrNexus; it is sent as <code>X-Emby-Token</code>.</small>{% endif %}
-    {% if row.kind=='arr' and row.instance.destination_key %}<div class="tags"><span class="tag blue">route {{ row.instance.destination_key }}</span><span class="tag">{{ row.instance.data_dir }}</span></div>{% endif %}
-    {% if row.kind=='arr' and row.ok %}<details><summary>Roots & tags</summary><h3>Roots</h3>{% for x in row.roots %}<code class="block">{{ x.path }}</code>{% endfor %}<h3>Tags</h3><div class="tags">{% for t in row.tags %}<span class="tag">{{ t.label }}</span>{% endfor %}</div></details>{% endif %}
-  </section>
+  <details class="v10-service-accordion {{ 'is-connected' if row.ok else 'needs-attention' }}">
+    <summary>
+      <span class="service-title">
+        <span class="service-logo {{ svc }}">{% if brand_icon(svc) %}<img class="brand-img" src="{{ brand_icon(svc) }}" alt="{{ svc }}" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><b hidden>{{ svc[:1]|upper }}</b>{% else %}<b>{{ svc[:1]|upper }}</b>{% endif %}</span>
+        <span class="v10-service-copy"><strong>{{ row.media_name or svc|capitalize }}{% if inst!='main' %} / {{ inst }}{% endif %}</strong><small>{% if row.kind=='arr' %}{{ row.instance.destination_key or 'Arr service' }} · :{{ row.instance.port }}{% elif row.kind=='media' %}{{ row.media_description or 'Media server' }}{% else %}External service{% endif %}</small></span>
+      </span>
+      <span class="v10-summary-right"><span class="connection-state {{ 'online' if row.ok else 'offline' }}">{{ 'Connected' if row.ok else 'Needs attention' }}</span><span class="v10-chevron">⌄</span></span>
+    </summary>
+    <div class="v10-accordion-body">
+      {% if not row.ok and row.error %}<div class="alert error">{{ row.error }}</div>{% endif %}
+      {% if row.ok and row.status %}<div class="connection-meta"><span>Version / status</span><strong>{{ row.status.version or row.status.ServerVersion or row.status.versionTag or 'Connected' }}</strong></div>{% endif %}
+      <form method="post" action="/settings/connection" class="formgrid"><input type="hidden" name="service" value="{{ svc }}"><input type="hidden" name="instance" value="{{ inst }}"><label>URL<input name="url" value="{{ row.url }}" placeholder="{% if svc=='plex' %}http://plex:32400{% elif svc in ['jellyfin','emby'] %}http://{{ svc }}:8096{% endif %}" required></label><label>{{ row.token_label or 'API key' }}<div class="secret-input"><input type="password" name="api_key" placeholder="{{ 'Configured — leave blank to keep' if row.has_key else 'Paste token / API key' }}"><button type="button" class="btn small" data-reveal>Show</button></div></label><div class="formactions"><button class="btn primary">Save & reconnect</button></div></form>
+      {% if svc=='plex' %}<small class="muted">Plex uses an <code>X-Plex-Token</code>. ArrNexus verifies the server endpoint and can later use it for library visibility.</small>{% elif svc=='emby' %}<small class="muted">Create a dedicated Emby API key for ArrNexus; it is sent as <code>X-Emby-Token</code>.</small>{% endif %}
+      {% if row.kind=='arr' and row.instance.destination_key %}<div class="tags"><span class="tag blue">route {{ row.instance.destination_key }}</span><span class="tag">{{ row.instance.data_dir }}</span></div>{% endif %}
+      {% if row.kind=='arr' and row.ok %}<div class="v10-subsection"><h3>Roots</h3>{% for x in row.roots %}<code class="block">{{ x.path }}</code>{% else %}<span class="muted">No roots returned.</span>{% endfor %}<h3>Tags</h3><div class="tags">{% for t in row.tags %}<span class="tag">{{ t.label }}</span>{% else %}<span class="muted">No tags.</span>{% endfor %}</div></div>{% endif %}
+    </div>
+  </details>
 {% endfor %}
 </div>
 
-<section class="panel v93-custom-media">
-  <div class="panelhead"><div><span class="eyebrow">OTHER MEDIA SERVERS</span><h2>External / custom media server</h2><p>Plex, Emby and Jellyfin have native connection profiles above. For another server, ArrNexus can store a named endpoint and perform a safe HTTP health probe without assuming its API schema.</p></div></div>
-  {% if custom_media %}<div class="v93-custom-media-list">{% for row in custom_media %}<article class="v93-custom-media-row"><div><strong>{{ row.name }}</strong><small>{{ row.url }}{{ row.health_path }} · {{ row.detail or row.error or 'Configured' }}</small></div><div class="inline-actions"><span class="connection-state {{ 'online' if row.ok else 'offline' }}">{{ 'Connected' if row.ok else 'Needs attention' }}</span><form method="post" action="/media-servers/custom/{{ row.id }}/delete"><button class="btn small danger" type="submit">Remove</button></form></div></article>{% endfor %}</div>{% endif %}
-  <form method="post" action="/media-servers/custom" class="formgrid v93-custom-media-form">
-    <div class="grid-2"><label>Name<input name="name" placeholder="e.g. Navidrome / Kodi companion / Custom server" required></label><label>Base URL<input name="url" placeholder="https://media.example.invalid" required></label></div>
-    <div class="grid-2"><label>Health/status path<input name="health_path" value="/" placeholder="/api/ping"></label><label>Authentication<select name="auth_mode"><option value="none">None</option><option value="bearer">Bearer token</option><option value="header">Custom header</option><option value="query">Query parameter</option></select></label></div>
-    <div class="grid-2"><label>Header / parameter name<input name="auth_name" value="Authorization" placeholder="X-Api-Key"></label><label>Secret / token<input type="password" name="secret_value" placeholder="Optional; stored privately"></label></div>
-    <div class="formactions"><button class="btn primary" type="submit">Add external media server</button></div>
-  </form>
-</section>
+<details class="v10-service-accordion v10-custom-server">
+  <summary><span class="service-title"><span class="service-logo ecosystem"><b>+</b></span><span class="v10-service-copy"><strong>External / custom media servers</strong><small>Optional HTTP health/API endpoints for servers outside the native Jellyfin, Plex and Emby profiles.</small></span></span><span class="v10-summary-right"><span class="connection-state">{{ custom_media|length }} configured</span><span class="v10-chevron">⌄</span></span></summary>
+  <div class="v10-accordion-body">
+    {% if custom_media %}<div class="v93-custom-media-list">{% for row in custom_media %}<article class="v93-custom-media-row"><div><strong>{{ row.name }}</strong><small>{{ row.url }}{{ row.health_path }} · {{ row.detail or row.error or 'Configured' }}</small></div><div class="inline-actions"><span class="connection-state {{ 'online' if row.ok else 'offline' }}">{{ 'Connected' if row.ok else 'Needs attention' }}</span><form method="post" action="/media-servers/custom/{{ row.id }}/delete"><button class="btn small danger" type="submit">Remove</button></form></div></article>{% endfor %}</div>{% endif %}
+    <form method="post" action="/media-servers/custom" class="formgrid v93-custom-media-form">
+      <div class="grid-2"><label>Name<input name="name" placeholder="e.g. Navidrome / Kodi companion / Custom server" required></label><label>Base URL<input name="url" placeholder="https://media.example.invalid" required></label></div>
+      <div class="grid-2"><label>Health/status path<input name="health_path" value="/" placeholder="/api/ping"></label><label>Authentication<select name="auth_mode"><option value="none">None</option><option value="bearer">Bearer token</option><option value="header">Custom header</option><option value="query">Query parameter</option></select></label></div>
+      <div class="grid-2"><label>Header / parameter name<input name="auth_name" value="Authorization" placeholder="X-Api-Key"></label><label>Secret / token<input type="password" name="secret_value" placeholder="Optional; stored privately"></label></div>
+      <div class="formactions"><button class="btn primary" type="submit">Add external media server</button></div>
+    </form>
+  </div>
+</details>
 
-<div class="panel note"><strong>Media-server support</strong><p>Jellyfin remains the deepest current library integration because that is the environment ArrNexus was developed against. v9.3 adds first-class Plex and Emby attachment plus generic external-server probing so other users can connect their media server without pretending every API is Jellyfin-compatible. Deeper Plex/Emby library browsing can build on these verified connections later.</p></div>
+<div class="panel note v10-note"><strong>Media-server depth</strong><p>Jellyfin remains the deepest library integration. Plex and Emby provide verified first-class connections ready for deeper browsing without pretending their APIs are identical.</p></div>
 {% endblock %}

@@ -20,6 +20,8 @@ def require(condition: bool, message: str):
 
 
 def run_v91(root: Path) -> None:
+    if os.getenv("ARRNEXUS_VALIDATE_LAYER_ONLY") == "1":
+        return
     proc = subprocess.run([sys.executable, str(root / "validate_v91.py")], cwd=root, text=True, capture_output=True, timeout=300)
     if proc.stdout:
         print(proc.stdout.rstrip())
@@ -96,7 +98,7 @@ def main() -> int:
     css = (root / "app" / "static" / "app.css").read_text(encoding="utf-8")
     readme = (root / "README.md").read_text(encoding="utf-8")
 
-    require('APP_VERSION = "9.' in main_source, "compatible v9.2+ version string missing")
+    require(('APP_VERSION = "9.' in main_source or 'APP_VERSION = "10.' in main_source), "compatible v9.2+ version string missing")
     require("[dict(x) for x in recent_imports(8)]" in main_source, "dashboard DB rows are not normalised")
     require("request_timing_middleware" in main_source and "slow_request" in main_source, "route performance telemetry missing")
     require("idlePrefetch" not in js, "aggressive v9.1 idle prefetch still present")

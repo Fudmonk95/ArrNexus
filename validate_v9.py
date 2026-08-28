@@ -22,6 +22,8 @@ def require(condition: bool, message: str):
 
 
 def run_v8(root: Path) -> None:
+    if os.getenv("ARRNEXUS_VALIDATE_LAYER_ONLY") == "1":
+        return
     proc = subprocess.run(
         [sys.executable, str(root / "validate_v8.py")],
         cwd=root,
@@ -164,7 +166,7 @@ def main() -> int:
     landing = (root / "app" / "templates" / "landing.html").read_text(encoding="utf-8")
     providers = (root / "app" / "providers.py").read_text(encoding="utf-8")
     aio_source = (root / "app" / "aiostreams.py").read_text(encoding="utf-8")
-    require('APP_VERSION = "9.' in main_source, "v9+ beta version string missing")
+    require(('APP_VERSION = "9.' in main_source or 'APP_VERSION = "10.' in main_source), "v9+ beta version string missing")
     for route in ("/dashboard", "/onboarding", "/providers", "/readiness"):
         require(route in main_source, f"missing v9 route {route}")
     require("arrnexus-icon-v9.png" in base and "arrnexus-icon-v9.png" in landing, "v9 brand icon not integrated")

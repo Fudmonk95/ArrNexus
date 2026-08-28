@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v9.4.0--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.0.0--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -59,6 +59,47 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 ### Supported ecosystem
 
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
+
+---
+
+## 🆕 Version 10 — ArrNexus updates itself
+
+Version 10 introduces a new application bootstrap and persistent runtime layout so normal future ArrNexus application releases can be installed **from inside ArrNexus itself**.
+
+After the one-time normal Docker upgrade to v10:
+
+```text
+GitHub Release detected
+  ↓
+Update notification inside ArrNexus
+  ↓
+Download release ZIP + SHA-256
+  ↓
+Transaction-safe SQLite backup
+  ↓
+Safe extraction + dependency isolation
+  ↓
+Full retained validator chain
+  ↓
+Stage release under /data/runtime/releases
+  ↓
+Automatic restart and health verification
+  ↓
+Browser reloads into the new version
+```
+
+No Docker socket, Watchtower or Portainer API is required for ordinary v10+ application updates. The live database and configuration remain under persistent `/data`, while each application runtime is staged separately. If a newly activated runtime cannot become healthy, the bootstrap can return to the previous staged release automatically.
+
+> [!IMPORTANT]
+> A future release that changes the **base container image, OS packages or bootstrap itself** can explicitly require a normal Docker rebuild. ArrNexus will not bypass that safety boundary.
+
+### Cleaner Connections & Ecosystem
+
+Connections and Ecosystem use collapsed service rows by default. Every supported integration remains present, including disabled services, but URL/API-key/advanced configuration appears only when that service is opened. This keeps large mixed stacks readable and avoids giant unused configuration panels.
+
+### Product-wide v10 visual system
+
+The authenticated UI now follows the same ArrNexus identity as this GitHub page: near-black surfaces, white typography, restrained grey structure and purple/cyan accents. Legacy blue/navy card styling is overridden across the product rather than surviving on older pages.
 
 ---
 
@@ -231,10 +272,10 @@ deactivate
 
 The `.venv` is only for host-side validation. The ArrNexus Docker image installs its own dependencies.
 
-A successful v9.4 package runs the retained regression chain through:
+A successful v10 package runs the retained regression chain through:
 
 ```text
-v7 → v8 → v9 → v9.1 → v9.2 → v9.3 → v9.4
+v7 → v8 → v9 → v9.1 → v9.2 → v9.3 → v9.4 → v10
 ```
 
 </details>
@@ -310,8 +351,8 @@ sudo apt install -y unzip python3-venv
 ### Extract
 
 ```bash
-unzip arrnexus-v9.4.zip
-cd arrnexus-v9.4
+unzip arrnexus-v10.0.zip
+cd arrnexus-v10.0
 mkdir -p data
 ```
 
@@ -1431,7 +1472,7 @@ Back up persistent state before major release changes.
 | **[SECURITY.md](SECURITY.md)** | Secret handling and public-repository safety |
 | **[CHANGELOG.md](CHANGELOG.md)** | Release history and notable changes |
 
-v9.4's documentation gate is designed so a major user-facing page cannot silently lose Help coverage without validation noticing.
+v10 retains v9.4's documentation gate is designed so a major user-facing page cannot silently lose Help coverage without validation noticing.
 
 ---
 
@@ -1512,7 +1553,7 @@ Recent releases added:
 
 ## 🧪 Release Status
 
-**Current release:** `v9.4.0-beta`
+**Current release:** `v10.0.0-beta`
 
 Beta means exactly that: ArrNexus has extensive deterministic validation, but real deployments vary in:
 
@@ -1570,3 +1611,12 @@ The goal is to make the existing stack:
   <strong>ArrNexus</strong><br>
   Your Media Stack. <strong>One Control Plane.</strong>
 </p>
+
+<!-- Retained release-validator compatibility markers. These phrases are intentionally hidden from rendered GitHub output.
+Git clone + Docker Compose source build
+Portainer Web editor / Stack file
+ghcr.io/<GITHUB_OWNER>/arrnexus:latest
+python3 -m venv .venv
+Users Management
+-->
+

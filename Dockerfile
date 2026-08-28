@@ -1,23 +1,34 @@
 FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    ARRNEXUS_SELF_UPDATE=1
 
-WORKDIR /app
+WORKDIR /opt/arrnexus-seed
 
-# ffprobe powers the non-destructive Language Guard.
+# ffprobe powers the non-destructive Language Guard. python3-venv is used by
+# the v10 native updater to isolate future release dependencies under /data.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Keep a read-only seed inside the image. The bootstrap copies this release to
+# /data/runtime on first boot; future application releases are staged there by
+# ArrNexus itself, leaving the database and operator data in /data untouched.
 COPY app ./app
-RUN mkdir -p /data
+COPY validate.py validate_v7.py validate_v8.py validate_v9.py validate_v91.py validate_v92.py validate_v93.py validate_v94.py ./
+COPY generate_help_docs.py migrate_legacy_env.py README.md CHANGELOG.md VALIDATION.md docker-compose.yml .env.example ./
+COPY docs ./docs
+COPY examples ./examples
+COPY bootstrap.py /opt/arrnexus-bootstrap.py
+
+RUN mkdir -p /data/runtime /data/backups
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).read()" || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=35s --retries=3 CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).read()" || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "/opt/arrnexus-bootstrap.py"]
