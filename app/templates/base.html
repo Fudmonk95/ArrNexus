@@ -8,15 +8,15 @@
   <meta name="theme-color" content="#050506">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/arrnexus-icon-v9.png" type="image/png">
-  <link rel="stylesheet" href="/static/app.css?v=9.4">
-  <script defer src="/static/app.js?v=9.4"></script>
+  <link rel="stylesheet" href="/static/app.css?v=10.0">
+  <script defer src="/static/app.js?v=10.0"></script>
 </head>
 <body class="nx-body">
 <div class="nx-progress" id="nxProgress" aria-hidden="true"></div>
 <div class="nx-shell">
   <aside class="nx-sidebar" id="appSidebar">
     <div class="nx-sidebar-head">
-      <a class="nx-brand v9-app-brand" href="/dashboard" data-nav>
+      <a class="nx-brand v10-app-brand" href="/dashboard" data-nav>
         <img class="v9-brand-icon" src="/static/arrnexus-icon-v9.png" alt="">
         <span class="nx-brandcopy"><strong>{{ app_setting('app.title','ArrNexus') }}</strong><small>Media Intelligence · Connected</small></span>
       </a>
@@ -105,7 +105,7 @@
         <h1>{% block heading %}Dashboard{% endblock %}</h1>
       </div>
       <div class="nx-top-actions">
-        <a class="nx-version-badge" href="/settings" data-nav data-update-check="{{ '1' if app_setting('update.repo','') else '0' }}" title="ArrNexus version and update channel"><strong>v{{ app_version() }}</strong><small>{{ release_channel()|upper }}</small><em data-version-update hidden>UPDATE</em></a>
+        <a class="nx-version-badge" href="/settings" data-nav data-update-check="{{ '1' if request_is_admin(request) else '0' }}" title="ArrNexus version and update channel"><strong>v{{ app_version() }}</strong><small>{{ release_channel()|upper }}</small><em data-version-update hidden>UPDATE</em></a>
         <a class="nx-top-button v93-home-button" href="/" title="Public ArrNexus home" data-no-soft-nav>⌂</a>
         <a class="nx-top-button v94-help-button" href="/help?topic={{ help_topic_for_path(request.url.path) }}" title="Help for this page" data-no-soft-nav>?</a>
         <button class="nx-top-button" type="button" data-command-open title="Jump anywhere">⌕</button>
@@ -128,5 +128,20 @@
   </section>
 </div>
 <div id="jobToastStack" class="job-toast-stack" aria-live="polite"></div>
+{% if request_is_admin(request) %}
+<div class="v10-update-modal" id="v10UpdateModal" hidden aria-hidden="true">
+  <button class="v10-update-backdrop" type="button" data-update-dismiss aria-label="Dismiss update"></button>
+  <section class="v10-update-dialog" role="dialog" aria-modal="true" aria-labelledby="v10UpdateTitle">
+    <span class="eyebrow">ARRNEXUS UPDATE</span>
+    <h2 id="v10UpdateTitle">A new ArrNexus release is ready.</h2>
+    <p id="v10UpdateMessage">ArrNexus will verify the release, back up the database, validate the new runtime and restart itself.</p>
+    <div class="v10-update-version"><span>Current <strong>v{{ app_version() }}</strong></span><i>→</i><span>Available <strong data-update-target>Checking…</strong></span></div>
+    <div class="v10-update-progress" data-update-progress hidden><i></i></div>
+    <small class="v10-update-status" data-update-status></small>
+    <div class="v10-update-actions"><button class="btn" type="button" data-update-dismiss>Later</button><a class="btn" href="/settings">Update settings</a><button class="btn primary" type="button" data-install-update>Install update</button></div>
+  </section>
+</div>
+{% endif %}
+
 </body>
 </html>

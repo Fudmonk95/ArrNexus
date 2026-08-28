@@ -26,6 +26,8 @@ def require(condition: bool, message: str) -> None:
 
 
 def run_v92(root: Path) -> None:
+    if os.getenv("ARRNEXUS_VALIDATE_LAYER_ONLY") == "1":
+        return
     proc = subprocess.run(
         [sys.executable, str(root / "validate_v92.py")],
         cwd=root,
@@ -281,7 +283,7 @@ def main() -> int:
     css = (root / "app" / "static" / "app.css").read_text(encoding="utf-8")
     sw = (root / "app" / "static" / "sw.js").read_text(encoding="utf-8")
 
-    require('APP_VERSION = "9.' in main_source, "v9.3+ compatible version string missing")
+    require(('APP_VERSION = "9.' in main_source or 'APP_VERSION = "10.' in main_source), "v9.3+ compatible version string missing")
     for marker in ("_MAINTENANCE_SNAPSHOT", "_PROBLEMS_SNAPSHOT", "_READINESS_SNAPSHOT", "_INBOX_SNAPSHOT", "_MUSIC_ARTIST_SNAPSHOTS"):
         require(marker in main_source, f"targeted v9.3 performance snapshot missing: {marker}")
     require("asyncio.gather" in main_source and "_build_music_artist_state" in main_source, "concurrent v9.3 music architecture missing")
@@ -293,7 +295,7 @@ def main() -> int:
         require(marker in landing_source, f"public deployment guide missing {marker}")
         require(marker.replace("&lt;", "<").replace("&gt;", ">") in readme or marker in readme, f"README deployment guide missing {marker}")
     require("ArrNexus v9.3" in css and "v93-snapshot-bar" in css, "v9.3 product/performance CSS missing")
-    require("arrnexus-static-v9." in sw, "v9.3+ service-worker cache version missing")
+    require("arrnexus-static-v9." in sw or "arrnexus-static-v10." in sw, "v9.3+ service-worker cache version missing")
 
     print("PASS: ArrNexus v9.3.0-beta retains v7/v8/v9/v9.1/v9.2 regressions and adds targeted slow-route snapshots, repaired Music API configuration/artist loading, Plex/Emby/custom media servers, persistent Public Home navigation and complete source/Git/Portainer/GHCR deployment documentation")
     return 0

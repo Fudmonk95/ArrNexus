@@ -2,7 +2,7 @@
 
 This file is generated from `app/main.py` routes and the same `app/help_catalog.py` mapping used by the contextual Help button.
 
-- Application routes/actions audited: **120**
+- Application routes/actions audited: **122**
 - Help topics: **43**
 - Primary private pages receive a contextual Help link from the application shell.
 - Public/auth/bootstrap pages are documented in the Help Centre and user guide even when they do not use the private shell.
@@ -77,6 +77,8 @@ This file is generated from `app/main.py` routes and the same `app/help_catalog.
 | GET | `/diagnostics/download` | `diagnostics_download` | `backups` |
 | POST | `/settings/update-repo` | `settings_update_repo` | `updates` |
 | GET | `/api/update-check` | `api_update_check` | `updates` |
+| GET | `/api/update-status` | `api_update_status` | `updates` |
+| POST | `/api/update-install` | `api_update_install` | `updates` |
 | GET | `/timeline` | `timeline_page` | `timeline` |
 | POST | `/settings/provider-plugin` | `settings_provider_plugin` | `providers-sdk` |
 | GET | `/ecosystem` | `ecosystem_page` | `ecosystem` |

@@ -24,6 +24,8 @@ def require(condition: bool, message: str):
 
 
 def run_v9(root: Path) -> None:
+    if os.getenv("ARRNEXUS_VALIDATE_LAYER_ONLY") == "1":
+        return
     proc = subprocess.run(
         [sys.executable, str(root / "validate_v9.py")],
         cwd=root,
@@ -96,7 +98,7 @@ def main() -> int:
             ]
             require(not forbidden, f"public release included runtime/private files: {forbidden[:3]}")
             checksum = client.get("/download/latest.sha256")
-            require(checksum.status_code == 200 and "arrnexus-v9." in checksum.text and ".zip" in checksum.text, "public checksum endpoint")
+            require(checksum.status_code == 200 and ("arrnexus-v9." in checksum.text or "arrnexus-v10." in checksum.text) and ".zip" in checksum.text, "public checksum endpoint")
 
             private = client.get("/dashboard", follow_redirects=False)
             require(private.status_code == 303 and private.headers.get("location") == "/setup", "unconfigured dashboard should route to setup")
@@ -195,7 +197,7 @@ def main() -> int:
     aio_source = (root / "app" / "aiostreams.py").read_text(encoding="utf-8")
     release_source = (root / "app" / "release_export.py").read_text(encoding="utf-8")
 
-    require('APP_VERSION = "9.' in main_source, "compatible v9.1+ beta version string missing")
+    require(('APP_VERSION = "9.' in main_source or 'APP_VERSION = "10.' in main_source), "compatible v9.1+ beta version string missing")
     for route in ("/dashboard", "/onboarding", "/providers", "/readiness", "/download/latest"):
         require(route in main_source, f"missing v9.1 route {route}")
     require("data-theme" not in base, "private app still selects legacy themes")

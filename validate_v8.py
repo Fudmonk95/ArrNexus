@@ -27,6 +27,8 @@ def require(condition: bool, message: str):
 
 
 def run_v7(root: Path) -> None:
+    if os.getenv("ARRNEXUS_VALIDATE_LAYER_ONLY") == "1":
+        return
     proc = subprocess.run(
         [sys.executable, str(root / "validate_v7.py")],
         cwd=root,
@@ -343,7 +345,7 @@ def main() -> int:
     require("/api/v1/user" in module_source and '"PUT"' in module_source, "AIOStreams full User API update path missing")
     require('create_backup(existing, "before-autowire")' in module_source, "AIOStreams pre-write backup missing")
     require('create_backup(current["userData"], "before-rollback")' in module_source, "AIOStreams pre-rollback backup missing")
-    require('APP_VERSION = \"9.' in main_source or 'APP_VERSION = \"8.0.0-beta\"' in main_source, "v8/v9 beta version string missing")
+    require(('APP_VERSION = \"9.' in main_source or 'APP_VERSION = \"10.' in main_source or 'APP_VERSION = \"8.0.0-beta\"' in main_source), "v8/v9 beta version string missing")
 
     print("PASS: ArrNexus v8 regression suite retained: v7 regressions + AIOStreams full-config preview/apply/backup/rollback/search integration")
     return 0

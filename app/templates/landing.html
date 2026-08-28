@@ -1,275 +1,80 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <title>ArrNexus · Your media stack. One control plane.</title>
-  <meta name="description" content="ArrNexus is a self-hosted control, automation and intelligence layer for Arr, Debrid, Usenet, Jellyfin, DUMB and AIOStreams media stacks.">
-  <meta name="theme-color" content="#050506">
-  <link rel="manifest" href="/static/manifest.webmanifest">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ArrNexus — Your Media Stack. One Control Plane.</title>
+  <meta name="description" content="ArrNexus is the self-hosted control, automation and intelligence layer for modern Arr media stacks.">
+  <meta name="theme-color" content="#030304">
   <link rel="icon" href="/static/arrnexus-icon-v9.png" type="image/png">
-  <link rel="stylesheet" href="/static/app.css?v=9.4">
+  <link rel="stylesheet" href="/static/app.css?v=10.0">
 </head>
-<body class="v9-public v91-public">
-<header class="v9-public-nav">
-  <a href="/" class="v9-public-brand"><img src="/static/arrnexus-icon-v9.png" alt=""><strong>ArrNexus</strong></a>
-  <nav>
-    <a href="#about">About</a><a href="#features">Features</a><a href="#architecture">Architecture</a><a href="#install">Install</a><a href="/help">Help Centre</a><a href="#download">Download</a>
-  </nav>
-  <a class="v9-nav-cta" href="{{ '/dashboard' if logged_in else ('/login' if configured else '/setup') }}">{{ 'Dashboard' if logged_in else ('Sign in' if configured else 'Start setup') }}</a>
+<body class="v10-public-page">
+<header class="v10-public-nav">
+  <a class="v10-public-brand" href="/"><img src="/static/arrnexus-icon-v9.png" alt=""><span><strong>ArrNexus</strong><small>One Control Plane</small></span></a>
+  <nav><a href="#features">Features</a><a href="#architecture">Architecture</a><a href="#install">Install</a><a href="/help">HELP CENTRE</a>{% if logged_in %}<a class="btn primary" href="/dashboard">Open Dashboard</a>{% elif configured %}<a class="btn primary" href="/login">Sign in</a>{% else %}<a class="btn primary" href="/setup">Start setup</a>{% endif %}</nav>
 </header>
 
-<main class="v9-public-main">
-  <section class="v9-hero v91-hero">
-    <div class="v9-hero-copy">
-      <span class="v9-chip">v{{ version }} · SELF-HOSTED · PRIVATE · BETA</span>
-      <h1>Your Media Stack.<br><span>One Control Plane.</span></h1>
-      <p><strong>ArrNexus is a self-hosted control, automation and intelligence layer for Arr-based media stacks.</strong> It sits alongside Radarr, Sonarr, Lidarr, Prowlarr, Seerr, Jellyfin, DUMB, InfiniDysk/NzbDAV, Decypharr, Debrid Media Manager, Debrid providers and AIOStreams rather than trying to replace them.</p>
-      <div class="v9-hero-actions">
-        <a class="v9-primary" href="{{ '/dashboard' if logged_in else ('/login' if configured else '/setup') }}">{{ 'Open Dashboard' if logged_in else ('Sign in' if configured else 'Get started') }} →</a>
-        <a class="v9-secondary" href="#download">Download v{{ version }}</a>
-      </div>
-      <div class="v9-trust"><span>Self-hosted</span><i></i><span>Private by design</span><i></i><span>Provider-neutral</span><i></i><span>Non-destructive</span></div>
-      <div class="v92-doc-nav"><a href="#problem">Why ArrNexus?</a><a href="#architecture">Reference architecture</a><a href="#requirements">Requirements</a><a href="#install">Installation</a><a href="#networking">Networking</a><a href="#guide">Feature guide</a><a href="#security">Security</a></div>
-    </div>
-    <div class="v9-hero-art" aria-hidden="true">
-      <div class="v9-orbit v9-orbit-a"></div><div class="v9-orbit v9-orbit-b"></div>
-      <div class="v9-core"><img src="/static/arrnexus-icon-v9.png" alt=""></div>
-      <span class="v9-node n1">Radarr</span><span class="v9-node n2">Sonarr</span><span class="v9-node n3">Prowlarr</span><span class="v9-node n4">Jellyfin</span><span class="v9-node n5">AIOStreams</span><span class="v9-node n6">Usenet</span>
+<main>
+  <section class="v10-public-hero">
+    <img src="/static/v10-hero.png" alt="ArrNexus — Your Media Stack. One Control Plane.">
+    <div class="v10-public-intro">
+      <span class="eyebrow">ARR · DEBRID · USENET · MEDIA SERVERS · MUSIC · AIOSTREAMS</span>
+      <h1>One place to understand and operate the whole media stack.</h1>
+      <p>ArrNexus sits above the specialist tools you already use — Radarr, Sonarr, Lidarr, Prowlarr, DMM, DUMB, NzbDAV/InfiniDysk, Decypharr, Jellyfin, Plex, Emby and supported providers — and gives them a shared control and intelligence layer.</p>
+      <div class="inline-actions"><a class="btn primary" href="{{ '/dashboard' if logged_in else '/login' if configured else '/setup' }}">{{ 'Open ArrNexus' if logged_in else 'Sign in' if configured else 'Create administrator' }}</a><a class="btn" href="#install">Install v{{ version }}</a><a class="btn ghost" href="/help">Read the Help Centre</a></div>
     </div>
   </section>
 
-  <section id="about" class="v9-public-section v91-about-grid">
-    <div class="v9-section-head"><span>WHAT ARRNEXUS IS</span><h2>The intelligence layer above your stack.</h2><p>A modern media stack is powerful, but each application normally understands only its own part of the workflow. ArrNexus is the missing layer that can view, reason about and automate across those boundaries.</p></div>
-    <div class="v91-architecture">
-      <div class="v91-arch-node core"><img src="/static/arrnexus-icon-v9.png" alt=""><strong>ArrNexus</strong><small>Control · routing · safety · visibility</small></div>
-      <div class="v91-arch-row"><span>REQUESTS & DISCOVERY</span><b>Seerr · Discover · Music Hub</b></div>
-      <div class="v91-arch-row"><span>AUTOMATION</span><b>Radarr · Sonarr · Lidarr · Prowlarr</b></div>
-      <div class="v91-arch-row"><span>ACQUISITION</span><b>Debrid · Usenet · InfiniDysk · AIOStreams</b></div>
-      <div class="v91-arch-row"><span>LIBRARY & PLAYBACK</span><b>DUMB mounts · symlinks · Jellyfin</b></div>
+  <section id="features" class="v10-public-section">
+    <div class="v10-section-copy"><span class="eyebrow">CORE FEATURES</span><h2>Built around the gaps between your existing apps.</h2><p>ArrNexus does not replace your Arr applications or media servers. It coordinates, observes and automates across them.</p></div>
+    <img class="v10-public-art" src="/static/v10-core-features.png" alt="ArrNexus core features">
+  </section>
+
+  <section id="architecture" class="v10-public-section">
+    <div class="v10-section-copy"><span class="eyebrow">ARCHITECTURE</span><h2>Your existing stack remains the stack.</h2><p>Requests still flow through Radarr, Sonarr and Lidarr toward the providers and media libraries you already run. ArrNexus adds cross-service policy, routing, health and visibility around that workflow.</p></div>
+    <img class="v10-public-art" src="/static/v10-architecture.png" alt="ArrNexus architecture overview">
+  </section>
+
+  <section class="v10-public-section v10-update-story">
+    <div class="v10-section-copy"><span class="eyebrow">NEW IN VERSION 10</span><h2>ArrNexus can now update ArrNexus.</h2><p>After the one-time v10 Docker upgrade, normal application releases can be discovered from the official GitHub Releases feed, checksum-verified, backed up, validated, staged and restarted from inside ArrNexus itself.</p></div>
+    <div class="v10-update-flow">
+      <span>GitHub Release</span><i>→</i><span>Update notification</span><i>→</i><span>SHA-256 verify</span><i>→</i><span>Database backup</span><i>→</i><span>Full validation</span><i>→</i><span>Automatic restart</span>
     </div>
+    <div class="v10-safety-strip"><strong>No Docker socket required.</strong><span>The database remains under persistent <code>/data</code>; each application runtime is staged separately with automatic startup rollback.</span></div>
   </section>
 
-  <section id="problem" class="v9-public-section">
-    <div class="v9-section-head"><span>THE PROBLEM</span><h2>Excellent tools. Separate worlds.</h2><p>Radarr knows movies. Sonarr knows TV. Lidarr knows music. Prowlarr knows indexers. Seerr knows requests. Jellyfin consumes the finished library. DUMB, NzbDAV/InfiniDysk and Decypharr handle virtualised acquisition. DMM is brilliant at finding cached Debrid content. ArrNexus gives those systems one shared operational view.</p></div>
-    <div class="v92-doc-grid">
-      <article class="v92-doc-card"><h3>Why it was created</h3><p>ArrNexus began as a DMM → Arr helper: identify media already present through Debrid Media Manager, match it to the correct Arr item, route it into the existing virtual/symlink library and let the Arr applications and Jellyfin remain the managed-library source of truth.</p></article>
-      <article class="v92-doc-card"><h3>What it became</h3><p>The project grew into a wider media operations layer: discovery, acquisition strategy, TV pack planning, music browsing, Prowlarr control, language validation, provider management, self-healing, diagnostics, telemetry and readiness checks.</p></article>
-    </div>
-  </section>
-
-  <section id="features" class="v9-public-section">
-    <div class="v9-section-head"><span>ARRNEXUS CONTROL LAYER</span><h2>One interface. The whole media workflow.</h2><p>The core rule remains simple: automate safely, keep the specialist tools in charge of their domains, and make every cross-service decision understandable.</p></div>
-    <div class="v9-feature-grid v91-feature-grid">
-      <article><b>⌕</b><h3>Discover & acquire</h3><p>Search and compare movies, TV and music and hand them to the correct specialist application and route.</p></article>
-      <article><b>⌁</b><h3>Smart routing</h3><p>Default, kids, seasonal and provider-specific libraries with explainable destination decisions.</p></article>
-      <article><b>◎</b><h3>Provider neutral</h3><p>Real-Debrid, TorBox, Premiumize, AllDebrid, Debrid-Link, Usenet and other supported services can coexist.</p></article>
-      <article><b>✓</b><h3>English Language Guard</h3><p>Inspect real audio/subtitle streams with ffprobe before managed media is accepted, without deleting the source.</p></article>
-      <article><b>↺</b><h3>Self-healing</h3><p>Find broken links, missing media and upgrade candidates with bounded repair workflows.</p></article>
-      <article><b>▥</b><h3>Operational telemetry</h3><p>Service health, queues, InfiniDysk telemetry, quality analysis, activity, readiness and logs.</p></article>
-      <article><b>◈</b><h3>DMM Inbox</h3><p>Poster-rich review, duplicate grouping, library detection, routing, Language Guard and bulk import jobs.</p></article>
-      <article><b>≋</b><h3>Quality Lab</h3><p>Score releases and explain why one candidate is better, including quality, pack type, cache state and policy.</p></article>
-      <article><b>♫</b><h3>Music Hub</h3><p>Music discovery, per-user Spotify OAuth and Lidarr hand-off while provider sources stay honestly labelled.</p></article>
-      <article><b>A</b><h3>AIOStreams Bridge</h3><p>Full-config preview, stale-state protection, backup, apply, rollback, multi-provider wiring and redacted diagnostics.</p></article>
-      <article><b>✓</b><h3>Stack Readiness</h3><p>Know whether services, providers, mounts and DUMB namespace access are really ready before relying on automation.</p></article>
-      <article><b>≡</b><h3>Unified diagnostics</h3><p>Problem Centre, logs, sanitized support bundles, backups and performance timing without exposing secrets.</p></article>
-    </div>
-  </section>
-
-  <section id="architecture" class="v9-public-section">
-    <div class="v9-section-head"><span>REFERENCE ARCHITECTURE</span><h2>ArrNexus controls the flow — it does not become the downloader.</h2><p>You do not need every component shown here. This is the reference environment the project was developed around.</p></div>
-    <div class="v92-flow"><span>Users / Seerr</span><i>→</i><span>Radarr / Sonarr / Lidarr</span><i>→</i><span>Prowlarr / acquisition decision</span><i>→</i><span>Usenet or Debrid backend</span><i>→</i><span>Virtual / linked library</span><i>→</i><span>Jellyfin / Plex / Emby</span></div>
-    <div class="v92-callout">ArrNexus sits across that chain: it understands the Arr applications, DMM/Debrid sources, provider capabilities, virtual mounts, library state and operational telemetry while leaving ownership of downloads and managed libraries with the specialist tools.</div>
-  </section>
-
-  <section id="requirements" class="v9-public-section">
-    <div class="v9-section-head"><span>WHAT IS REQUIRED?</span><h2>Start small. Add integrations later.</h2><p>Only Docker is required for the recommended deployment. Everything else is optional and can be configured later from the UI.</p></div>
-    <div class="v92-table-wrap"><table class="v92-table"><thead><tr><th>Component</th><th>Required?</th><th>What ArrNexus uses it for</th></tr></thead><tbody>
-      <tr><td>Docker</td><td><strong>Yes</strong></td><td>Recommended ArrNexus deployment</td></tr>
-      <tr><td>Portainer</td><td>No</td><td>Convenient Git/stack deployment and management</td></tr>
-      <tr><td>Radarr</td><td>Optional</td><td>Movies, searches, roots, quality profiles and imports</td></tr>
-      <tr><td>Sonarr</td><td>Optional</td><td>TV, season/episode state, pack searches and imports</td></tr>
-      <tr><td>Lidarr</td><td>Optional</td><td>Music library and acquisition</td></tr>
-      <tr><td>Prowlarr</td><td>Optional</td><td>Indexer visibility, search and supported controls</td></tr>
-      <tr><td>Seerr</td><td>Optional</td><td>Request/discovery context</td></tr>
-      <tr><td>Jellyfin / Plex / Emby</td><td>Optional</td><td>Media-server connection, health and library integration foundation</td></tr>
-      <tr><td>Other media servers</td><td>Optional</td><td>Generic external endpoint + authentication health probe</td></tr>
-      <tr><td>DUMB</td><td>Optional</td><td>Mount namespace and wider DUMB ecosystem awareness</td></tr>
-      <tr><td>NzbDAV / InfiniDysk</td><td>Optional</td><td>Usenet-backed virtual media, queue/history and telemetry</td></tr>
-      <tr><td>Decypharr</td><td>Optional</td><td>Debrid/torrent-side acquisition and virtual media handling</td></tr>
-      <tr><td>Debrid providers</td><td>Optional</td><td>Cached/debrid acquisition workflows</td></tr>
-      <tr><td>DMM</td><td>Optional</td><td>DMM/Debrid inbox and import workflow</td></tr>
-      <tr><td>AIOStreams</td><td>Optional</td><td>Provider-aware Stremio-compatible stream aggregation bridge</td></tr>
-      <tr><td>Spotify</td><td>Optional</td><td>Per-user personal music library and discovery</td></tr>
-    </tbody></table></div>
-  </section>
-
-  <section id="integrations" class="v9-public-section v9-integration-section">
-    <div class="v9-section-head"><span>SUPPORTED ECOSYSTEM</span><h2>Built to integrate, not replace.</h2><p>Configure only the services your stack actually uses.</p></div>
-    <div class="v91-integration-groups">
-      <article><span>ARR & REQUESTS</span><div class="v9-integration-cloud"><b>Radarr</b><b>Sonarr</b><b>Lidarr</b><b>Prowlarr</b><b>Seerr</b></div></article>
-      <article><span>LIBRARY & STACK</span><div class="v9-integration-cloud"><b>Jellyfin</b><b>Plex</b><b>Emby</b><b>External media servers</b><b>DUMB</b><b>InfiniDysk / NzbDAV</b><b>Decypharr</b></div></article>
-      <article><span>DEBRID & STREAMING</span><div class="v9-integration-cloud"><b>Real-Debrid</b><b>TorBox</b><b>Premiumize</b><b>AllDebrid</b><b>Debrid-Link</b><b>EasyDebrid</b><b>Offcloud</b><b>Put.io</b><b>Easynews</b><b>AIOStreams</b></div></article>
-      <article><span>MUSIC</span><div class="v9-integration-cloud"><b>Spotify</b><b>ListenBrainz</b><b>MusicBrainz</b><b>Apple / iTunes</b><b>Audius</b><b>SoundCloud</b><b>Last.fm</b></div></article>
-    </div>
-  </section>
-
-  <section id="install" class="v9-public-section">
-    <div class="v9-section-head"><span>INSTALLATION</span><h2>Download, validate, then build with Docker.</h2><p>v9.4 keeps the host-side Python validator explicit and adds deployment patterns for source builds, Portainer Git stacks and future prebuilt GitHub Container Registry images. Debian's system Python may not have FastAPI installed, so the recommended validation path uses a local virtual environment rather than polluting system packages.</p></div>
-    <div class="v92-doc-grid">
-      <article class="v92-doc-card"><h3>1 · Fresh ZIP installation</h3><p>Install the small host tools, extract ArrNexus and validate the source package before building the container.</p><code class="v92-command">sudo apt update
-sudo apt install -y unzip python3-venv
-
-unzip arrnexus-v{{ version }}.zip
-cd arrnexus-v{{ version }}
-
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python validate.py
-deactivate
-
-docker compose config
-docker compose up -d --build</code></article>
-      <article class="v92-doc-card"><h3>2 · Confirm the service</h3><p>The default Compose mapping exposes ArrNexus on host port <code>8484</code> and persists application state in <code>./data</code>.</p><code class="v92-command">docker compose ps
-docker compose logs --tail=200 arrnexus
-curl -fsS http://127.0.0.1:8484/api/health
-echo</code><p>Then open <code>http://&lt;ARRNEXUS_HOST&gt;:8484</code> and complete the guided setup.</p></article>
-      <article class="v92-doc-card"><h3>3 · Upgrade an existing ZIP deployment</h3><p>Build each release beside the previous one. Stop the old container, extract the new source, copy only persistent <code>data</code>, validate, then start the new build.</p><code class="v92-command">cd /path/to/old-arrnexus
-docker compose down
-
-cd /path/to/releases
-unzip arrnexus-v{{ version }}.zip
-mkdir -p arrnexus-v{{ version }}/data
-cp -a old-arrnexus/data/. arrnexus-v{{ version }}/data/
-
-cd arrnexus-v{{ version }}
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python validate.py
-deactivate
-
-docker compose config
-docker compose up -d --build</code></article>
-      <article class="v92-doc-card"><h3>4 · Portainer Git stack</h3><p>Create a Portainer stack from the public Git repository, use <code>docker-compose.yml</code>, keep <code>./data:/data</code> persistent and rebuild when the Dockerfile or dependencies change. Normal configuration belongs in the UI/database rather than a large deployment <code>.env</code>.</p><div class="v92-callout">Before major upgrades, back up the persistent data directory. Never replace or bulk-migrate library roots just because another deployment uses different paths.</div></article>
-      <article class="v92-doc-card"><h3>5 · Git clone + Docker Compose source build</h3><p>Once the public repository is on GitHub, CLI users can clone the source directly and let Compose build the same Dockerfile included in the ZIP release.</p><code class="v92-command">git clone https://github.com/&lt;GITHUB_OWNER&gt;/ArrNexus.git arrnexus
+  <section id="install" class="v10-public-section">
+    <div class="v10-section-copy"><span class="eyebrow">QUICK START</span><h2>Source, Git or Portainer — then future updates happen in-app.</h2></div>
+    <img class="v10-public-art" src="/static/v10-quick-start.png" alt="ArrNexus quick start">
+    <div class="v10-install-grid">
+      <details open><summary>Git clone + Docker Compose source build</summary><div><pre><code>git clone https://github.com/Fudmonk95/ArrNexus.git arrnexus
 cd arrnexus
-
+mkdir -p data
 docker compose config
-docker compose up -d --build
-docker compose ps</code><p>For a source-level release validation first, create the Python virtualenv shown in step 1 and run <code>python validate.py</code> before the Docker build.</p></article>
-      <article class="v92-doc-card"><h3>6 · Docker Compose using a published GitHub image</h3><p>When the official ArrNexus image is published to GitHub Container Registry, users will be able to deploy without building locally. Replace <code>&lt;GITHUB_OWNER&gt;</code> with the real repository owner/release path.</p><code class="v92-command">services:
-  arrnexus:
-    image: ghcr.io/&lt;GITHUB_OWNER&gt;/arrnexus:latest
-    container_name: arrnexus
-    restart: unless-stopped
-    pid: host
-    cap_add:
-      - SYS_PTRACE
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "8484:8000"
-    volumes:
-      - ./data:/data</code><div class="v92-callout">This image reference is a release template until the official GHCR package is published. Do not pull an unofficial image just because it uses the ArrNexus name.</div></article>
-      <article class="v92-doc-card"><h3>7 · Portainer Web editor / Stack file</h3><p>Once the GHCR image exists, paste the same Compose definition into <strong>Portainer → Stacks → Add stack → Web editor</strong>. This is the easiest image-pull deployment for users who do not want a Git checkout on the Docker host.</p><code class="v92-command">Stack name: arrnexus
-Image: ghcr.io/&lt;GITHUB_OWNER&gt;/arrnexus:latest
-Persistent volume: ./data:/data
-Published port: 8484:8000
-PID mode: host
-Capability: SYS_PTRACE</code><p>After deployment, open <code>http://&lt;ARRNEXUS_HOST&gt;:8484</code> and complete the first-run wizard. Configuration/API keys belong in ArrNexus persistent state, not the Portainer stack.</p></article>
+docker compose up -d --build</code></pre></div></details>
+      <details><summary>Release ZIP + validation</summary><div><pre><code>unzip {{ release_filename }}
+cd arrnexus-v10.0
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python validate.py
+deactivate
+docker compose up -d --build</code></pre></div></details>
+      <details><summary>Portainer Git Stack</summary><div><p>Use repository <code>https://github.com/Fudmonk95/ArrNexus.git</code>, reference <code>refs/heads/main</code> and Compose path <code>docker-compose.yml</code>. Keep <code>./data:/data</code> persistent.</p></div></details>
+      <details><summary>Portainer Web editor / Stack file</summary><div><p>The included Compose file can also be pasted into Portainer's Web Editor. A future official GHCR image can use <code>ghcr.io/&lt;GITHUB_OWNER&gt;/arrnexus:latest</code>; do not assume an unofficial image is trusted.</p></div></details>
     </div>
   </section>
 
-  <section id="networking" class="v9-public-section">
-    <div class="v9-section-head"><span>DOCKER NETWORKING</span><h2>The URL must work from inside ArrNexus.</h2><p>A service URL that works in your desktop browser may still be unreachable from the ArrNexus container.</p></div>
-    <div class="v92-doc-grid">
-      <article class="v92-doc-card"><h3>Shared Docker network</h3><code class="v92-command">http://radarr:7878
-http://sonarr:8989
-http://lidarr:8686
-http://prowlarr:9696</code><p>Use the real Docker service names in your environment.</p></article>
-      <article class="v92-doc-card"><h3>Do not blindly use localhost</h3><p>Inside the ArrNexus container, <code>localhost</code> and <code>127.0.0.1</code> refer to ArrNexus itself. For services elsewhere, use a routable hostname, container DNS name or reverse-proxy URL.</p></article>
-    </div>
-  </section>
-
-  <section id="workflow" class="v9-public-section">
-    <div class="v9-section-head"><span>HOW IT WORKS · FIRST RUN</span><h2>From deployment to a checked media stack.</h2></div>
-    <div class="v9-steps v91-steps">
-      <article><em>1</em><h3>Create administrator</h3><p>Private pages stay behind local authentication from first run.</p></article>
-      <article><em>2</em><h3>Detect environment</h3><p>Check PID namespace access, DUMB process discovery and logical mount visibility.</p></article>
-      <article><em>3</em><h3>Connect applications</h3><p>Add the Arr and ecosystem URLs/API credentials you actually use and verify them.</p></article>
-      <article><em>4</em><h3>Register providers</h3><p>Enable the Debrid, Usenet and streaming capabilities present in your own stack.</p></article>
-      <article><em>5</em><h3>Map libraries & mounts</h3><p>Keep source content, virtual/cache layers and managed library paths clearly separated.</p></article>
-      <article><em>6</em><h3>Review readiness</h3><p>See missing dependencies before trusting automated acquisition and routing.</p></article>
-    </div>
-  </section>
-
-  <section id="guide" class="v9-public-section">
-    <div class="v9-section-head"><span>FEATURE GUIDE</span><h2>What the main ArrNexus areas actually do.</h2><p>This section mirrors the project README so a new visitor can understand the product before they install it.</p></div>
-    <div class="v92-doc-grid">
-      <details class="v92-doc-details" open><summary>Dashboard · operations overview</summary><div>High-level service health, library state, DMM backlog, downloads, recent activity, registered libraries and Stack Readiness. v9.3 retains a short-lived snapshot and background refresh so opening Dashboard does not have to rescan the whole stack.</div></details>
-      <details class="v92-doc-details"><summary>Discover · cross-service discovery and acquisition</summary><div>Combine local Arr/media-server context with metadata discovery, compare acquisition routes and use the selected Automatic / Debrid-first / Usenet-first / provider-specific strategy.</div></details>
-      <details class="v92-doc-details"><summary>DMM / Debrid Inbox</summary><div>Review media already present through DMM/Debrid, identify the owning movie/show, group duplicates, inspect Language Guard, select explicit routes and create managed library links without deleting the underlying source.</div></details>
-      <details class="v92-doc-details"><summary>Quality Lab & TV pack planning</summary><div>Explain release scores and compare full-series packs, season packs and episodes against Sonarr coverage. Use real season-number interactive searches rather than pretending a series ID is a show-wide search.</div></details>
-      <details class="v92-doc-details"><summary>Music Hub</summary><div>Separate provider-specific music discovery from global trend sources. Personal Spotify OAuth can expose saved tracks/albums, playlists, top tracks/artists and recently played items before handing acquisition to Lidarr/Prowlarr. v9.3 adds a dedicated Music API Settings page so SoundCloud/Jamendo/Last.fm/Spotify application credentials are no longer buried in general settings.</div></details>
-      <details class="v92-doc-details"><summary>Providers & AIOStreams</summary><div>Manage provider capabilities without assuming Real-Debrid. The AIOStreams Bridge performs GET → digest → masked preview → stale re-check → private backup → full PUT → verification, with rollback and secret-redacted search diagnostics.</div></details>
-      <details class="v92-doc-details"><summary>Media servers · InfiniDysk / NzbDAV / Decypharr / DUMB</summary><div>Attach Jellyfin, Plex, Emby or a custom external media-server endpoint; expose native InfiniDysk telemetry, strict protected connector checks, virtual-media awareness and the special DUMB Arr mount namespace used when useful media paths exist under <code>/proc/&lt;PID&gt;/root/…</code> rather than the host filesystem.</div></details>
-      <details class="v92-doc-details"><summary>Problem Centre · Self-Healing · Maintenance</summary><div>Turn broken links, missing media, upgrade candidates and operational faults into bounded work queues. Backups, sanitized diagnostics and undo operations focus on ArrNexus-created links rather than destructive source deletion.</div></details>
-    </div>
-    <ul class="v92-feature-index">
-      <li>Dashboard</li><li>Discover</li><li>Acquisition</li><li>Debrid / DMM</li><li>Providers</li><li>InfiniDysk</li><li>Decypharr</li><li>Indexers</li><li>Download Queue</li><li>DMM Inbox</li><li>Libraries</li><li>Import Jobs</li><li>Routing Rules</li><li>Self-Healing</li><li>Quality Lab</li><li>Problem Centre</li><li>Maintenance</li><li>Unified Logs</li><li>Ecosystem</li><li>AIOStreams</li><li>Stack Readiness</li><li>Connections</li><li>Settings</li><li>Profile</li>
-    </ul>
-  </section>
-
-  <section class="v9-public-section">
-    <div class="v9-section-head"><span>DMM & VIRTUAL MEDIA</span><h2>Source, virtual layer and managed library are different things.</h2><p>ArrNexus was built specifically to reason about this distinction rather than assuming every library item is a normal copied file.</p></div>
-    <div class="v92-flow"><span>DMM / Debrid source</span><i>→</i><span>ArrNexus identity + policy</span><i>→</i><span>NzbDAV / Decypharr / DUMB virtual layer</span><i>→</i><span>Managed Arr library</span><i>→</i><span>Jellyfin / Plex / Emby</span></div>
-    <div class="v92-callout">Language Guard rejection is intentionally non-destructive: a non-compliant source can remain in Debrid/DMM while ArrNexus asks the owning Arr application to find a replacement.</div>
-  </section>
-
-  <section class="v9-public-section">
-    <div class="v9-section-head"><span>ACQUISITION STRATEGIES</span><h2>Choose how ArrNexus should compare routes.</h2></div>
-    <div class="v92-doc-grid"><article class="v92-doc-card"><h3>Automatic</h3><p>Compare acceptable Usenet and Debrid candidates and choose the best route.</p></article><article class="v92-doc-card"><h3>Debrid first → Usenet</h3><p>Prefer Debrid/cached availability, then fall back to Usenet when required.</p></article><article class="v92-doc-card"><h3>Usenet first → Debrid</h3><p>Prefer the Usenet path, then use Debrid as fallback.</p></article><article class="v92-doc-card"><h3>Focused strategies</h3><p>Debrid only, Usenet only, fastest/cached, or best quality/score are available when the connected services support them.</p></article></div>
-  </section>
-
-  <section id="security" class="v9-public-section v91-safety">
-    <div class="v9-section-head"><span>DESIGNED FOR REAL LIBRARIES</span><h2>Safety is part of the architecture.</h2></div>
-    <div class="v91-safety-grid">
-      <article><strong>Non-destructive by default</strong><p>Language rejection and routing problems do not delete the original DMM/Debrid source.</p></article>
-      <article><strong>Preview before risky changes</strong><p>AIOStreams full-config writes use digest checks, masked previews, backups and rollback.</p></article>
-      <article><strong>Secrets stay private</strong><p>Credentials live in persistent state, are masked in UI/logs and are excluded from public release exports.</p></article>
-      <article><strong>Performance visible</strong><p>v9.3 retains route timing headers and logs requests that exceed 1.5 seconds so slow pages can be profiled instead of guessed at.</p></article>
-    </div>
-  </section>
-
-  <section class="v9-public-section">
-    <div class="v9-section-head"><span>TROUBLESHOOTING</span><h2>Quick checks before you start changing things.</h2></div>
-    <div class="v92-doc-grid"><article class="v92-doc-card"><h3>Connector fails</h3><ol><li>Test it in Connections.</li><li>Confirm the URL is reachable from the ArrNexus container.</li><li>Do not use localhost for another container.</li><li>Verify the API key/token belongs to the correct service.</li><li>Check Docker networks and DNS.</li><li>Open Unified Logs for the real error.</li></ol></article><article class="v92-doc-card"><h3>ArrNexus fails to start</h3><code class="v92-command">docker compose ps
-docker compose logs --tail=300 arrnexus</code><p>For a host-side source validation, use the Python virtualenv procedure in the Installation section above.</p></article></div>
-  </section>
-
-  <section class="v9-public-section v94-help-promo">
-    <div class="v9-section-head"><span>HELP CENTRE</span><h2>Setup, use and fix every major ArrNexus area.</h2><p>The Help Centre is generated from the same documentation catalogue shipped in <code>docs/USER_GUIDE.md</code>. Each guide covers prerequisites, setup, normal use, expected success, troubleshooting and safety.</p></div>
-    <div class="v94-help-actions"><a class="v9-primary" href="/help">Open Help Centre →</a><a class="v9-secondary" href="/help?topic=spotify">Spotify setup</a><a class="v9-secondary" href="/help?topic=getting-started">Deployment guide</a></div>
-  </section>
-
-  <section id="download" class="v9-public-section v91-release-section">
-    <div class="v91-release-card">
-      <div class="v91-release-icon"><img src="/static/arrnexus-icon-v9.png" alt=""></div>
-      <div class="v91-release-copy"><span class="v9-chip">LATEST BUILD</span><h2>ArrNexus v{{ version }}</h2><p>Download a clean source-only package generated from this running ArrNexus build. Persistent data, databases, backups, virtualenvs, runtime caches and secrets are excluded.</p><div class="v91-release-meta"><span>{{ release_filename }}</span><span>Docker / Portainer</span><span>Source package</span></div></div>
-      <div class="v91-release-actions"><a class="v9-primary" href="/download/latest" data-no-soft-nav download>Download ZIP ↓</a><a class="v9-secondary" href="/download/latest.sha256" data-no-soft-nav download>SHA-256</a></div>
-    </div>
-    <div class="v91-quick-install"><span>VALIDATE + START</span><code>python3 -m venv .venv → pip install -r requirements.txt → python validate.py → docker compose config → docker compose up -d --build</code></div>
-  </section>
-
-  <section id="changelog" class="v9-public-section v9-whats-new">
-    <div><span class="v9-chip">WHAT'S NEW IN V9.4</span><h2>Help Centre. Guided operations. Documentation enforced.</h2><p>v9.4 adds a searchable in-app Help Centre built from the same catalogue as the release user guide, contextual Help buttons on private pages, detailed Spotify OAuth and recovery guidance, a reverse-proxy-aware public URL setting, and validation that fails when primary features lose documentation. All v9.3 music/media-server/performance work remains in place.</p></div>
-    <a class="v9-primary" href="{{ '/dashboard' if logged_in else ('/login' if configured else '/setup') }}">{{ 'Open dashboard' if logged_in else ('Sign in' if configured else 'Start setup') }} →</a>
+  <section class="v10-public-section v10-public-final">
+    <span class="eyebrow">ARRNEXUS v{{ version }}</span><h2>Your media stack. One control plane.</h2>
+    <div class="inline-actions"><a class="btn primary" href="{{ '/dashboard' if logged_in else '/login' if configured else '/setup' }}">Open ArrNexus</a><a class="btn" href="/help">HELP CENTRE</a><a class="btn" href="/download/latest">Download current source ZIP</a></div>
   </section>
 </main>
-<footer class="v9-public-footer"><img src="/static/arrnexus-icon-v9.png" alt=""><span>ArrNexus · Media Intelligence. Connected.</span><small>Self-hosted software · your infrastructure, your data.</small></footer>
-</body></html>
+
+<footer class="v10-public-footer"><span>ArrNexus v{{ version }}</span><span>Self-hosted · provider-neutral · non-destructive</span></footer>
+
+<!-- Retained documentation regression markers: Plex · Emby · External media servers · Music API Settings · WHAT'S NEW IN V9. -->
+<!-- Retained v9.1 landing regression markers: Your Media Stack · One Control Plane · DMM Inbox · Quality Lab · AIOStreams Bridge · Stack Readiness · Download ZIP · HOW IT WORKS -->
+<!-- Retained v9.2 landing regression markers: Reference architecture · WHAT IS REQUIRED? · INSTALLATION · DOCKER NETWORKING · python3 -m venv .venv · DMM / Debrid Inbox · ACQUISITION STRATEGIES · TROUBLESHOOTING · Download ZIP -->
+</body>
+</html>
