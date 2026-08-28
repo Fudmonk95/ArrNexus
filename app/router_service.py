@@ -7,12 +7,21 @@ from .arr import RadarrClient, SonarrClient, LidarrClient, poster_url, ArrError
 from .config import settings
 from .paths import movie_roots, tv_roots, lidarr_root
 from .instances import discover_instances, get_instance, ArrInstance
-from .scanner import ScanItem, inspect_item, normalize_title
+from .scanner import ScanItem, inspect_item, normalize_title, invalidate_scan_cache
 from .routing import decide_movie, decide_tv, RouteDecision
 from .importer import import_movie_source, import_tv_source, ImportErrorSafe
 from .language_guard import inspect_source_languages, load_language_policy
 from .library import invalidate_library_cache
+from . import realdebrid as rd
 from .db import log_import, add_activity, learn_exact_route, track_request, request_map, set_item_state
+
+
+class LanguageRejectedSafe(ImportErrorSafe):
+    """Controlled Language Guard rejection, distinct from an ArrNexus failure."""
+    def __init__(self, message: str, *, cleanup: dict | None = None, replacement_started: bool = False):
+        super().__init__(message)
+        self.cleanup = cleanup or {}
+        self.replacement_started = bool(replacement_started)
 
 
 def _client_for_instance(inst: ArrInstance):
@@ -156,10 +165,10 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
     else:
         dest_dir = arr_item.get("path") or f"{root}/{arr_item['title']}"
 
-    # v7 Language Guard: inspect the *actual* DMM/Decypharr media before a
-    # library symlink is created.  A rejected source remains untouched in RD.
-    # The title is already monitored by the target Arr, so an optional native
-    # search can immediately start the English replacement/upgrade path.
+    # v10.1 Language Guard: inspect the actual DMM/Decypharr media before a
+    # library symlink is created. A policy rejection is a controlled outcome,
+    # not an application failure. If enabled, cleanup deletes only an exactly
+    # identified Real-Debrid torrent; fuzzy/ambiguous matches are never touched.
     language = await asyncio.to_thread(inspect_source_languages, source_path, item.fingerprint, False)
     policy = load_language_policy()
     if policy.enabled and not bool(language.get("compliant")):
@@ -173,16 +182,35 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
                 reason += f"; replacement search failed: {exc}"
         if replacement_started:
             reason += "; English replacement search queued in Arr"
-        set_item_state(source_path, "language_issue", reason)
-        import_id = log_import(
+
+        cleanup = {"ok": False, "deleted": False, "reason": "Rejected-source cleanup disabled"}
+        if policy.remove_rejected_debrid:
+            try:
+                cleanup = await rd.delete_source_torrent_exact(source_path, item.size_bytes)
+            except Exception as exc:
+                cleanup = {"ok": False, "deleted": False, "reason": str(exc)}
+
+        if cleanup.get("deleted"):
+            reason += f"; rejected Real-Debrid source removed (torrent {cleanup.get('torrent_id')})"
+            state = "language_rejected_removed"
+            invalidate_scan_cache()
+            invalidate_library_cache()
+        else:
+            reason += f"; rejected source retained: {cleanup.get('reason') or 'provider cleanup did not complete'}"
+            state = "language_rejected"
+
+        set_item_state(source_path, state, reason)
+        log_import(
             source_path=source_path, source_name=item.name, media_type=item.media_type,
             destination_key=actual_destination_key, destination_path=dest_dir, arr_name=service,
             arr_instance=(existing_inst.instance if existing_inst else (target_inst.instance if target_inst else "configured-main")),
-            arr_id=arr_item.get("id"), status="language_rejected", note=reason, created_paths=[],
+            arr_id=arr_item.get("id"), status=state, note=reason, created_paths=[],
             source_fingerprint=item.fingerprint, source_quality=item.quality,
         )
         add_activity("language_guard", item.title_guess, reason, source_path)
-        raise ImportErrorSafe(f"Language Guard blocked import: {reason}")
+        raise LanguageRejectedSafe(
+            f"Language Guard blocked import: {reason}", cleanup=cleanup, replacement_started=replacement_started
+        )
 
     if service == "radarr":
         created = import_movie_source(source_path, dest_dir, arr_item.get("title", item.title_guess), arr_item.get("year") or item.year_guess)

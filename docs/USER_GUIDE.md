@@ -323,7 +323,7 @@ Item Review is the decision page for one DMM/Debrid source: inferred identity, o
 
 ### Safety / privacy
 
-- Language Guard rejection is non-destructive and should not delete the Debrid/DMM source.
+- When rejected-source cleanup is enabled, ArrNexus deletes only an exactly identified Real-Debrid torrent after the import has been blocked. Ambiguous provider matches are preserved.
 
 ### Related guides
 
@@ -998,7 +998,7 @@ Problem Centre turns detected broken links, missing media and other diagnosable 
 
 ## Maintenance, repair & housekeeping
 
-Maintenance combines backups/repair context with filesystem/source/link/import inventory work. Expensive components run concurrently and are snapshot-cached.
+Maintenance combines backups/repair context with filesystem/source/link/import inventory work and v10.1 Library Consolidation for duplicate movie/episode symlinks.
 
 ### Before you start
 
@@ -1011,19 +1011,23 @@ Maintenance combines backups/repair context with filesystem/source/link/import i
 ### How to use it
 
 - Inspect broken links/source mappings first, then run a specific repair action.
+- Open Library Consolidation to scan every managed movie/TV symlink and preview duplicate groups before applying cleanup.
 - Use Diagnostics when collecting support information.
 
 ### What working looks like
 
 - Repair changes only the intended managed link/state and the action is logged.
+- Consolidation keeps one highest-ranked valid link per movie part/episode, asks the owning Radarr/Sonarr item to rescan, and can optionally remove only provider sources made unreferenced by that exact operation.
 
 ### If it does not work
 
 - If Maintenance is slow, search Unified Logs for slow_request GET /maintenance and verify filesystem/network mounts are responsive.
+- If a consolidation preview becomes stale, run a fresh preview; ArrNexus refuses to apply a changed library plan.
 
 ### Safety / privacy
 
 - Take a database backup before broad maintenance or upgrades.
+- Provider deletion in Library Consolidation is off by default and requires an exact Real-Debrid torrent match.
 
 ### Related guides
 
@@ -1104,23 +1108,27 @@ Language Guard uses ffprobe against the actual media stream metadata before a DM
 ### Setup
 
 1. Configure required audio/subtitle languages and unknown-metadata behaviour under Settings.
+2. Choose whether rejected Real-Debrid sources should be removed after an exact provider match; v10.1 enables this by default.
 
 ### How to use it
 
 - Run the check from Item Review or allow the import workflow to consult the cached result.
+- A rejection is recorded separately from a true import failure and the DMM Inbox cache is invalidated immediately.
 
 ### What working looks like
 
 - Audio/subtitle streams are reported explicitly and policy passes/fails with a reason.
+- Probe failures display as Language check failed; policy failures display as Language rejected; successful provider cleanup removes the rejected item from Waiting.
 
 ### If it does not work
 
 - Filename language tags are not enough; if ffprobe cannot access the actual path, fix namespace/mount visibility.
 - Unknown metadata may fail closed by policy.
+- If rejected-source cleanup is skipped, inspect the job result: ArrNexus will state whether RD was disconnected, no exact torrent matched, or the match was ambiguous.
 
 ### Safety / privacy
 
-- A failed language check must preserve the DMM/Debrid source and can redirect the owning Arr to a replacement search.
+- Rejected-source cleanup never uses fuzzy title matching. It requires one exact Real-Debrid torrent identity; ambiguous matches remain untouched.
 
 ## Notifications: ntfy, Gotify, Discord & email
 

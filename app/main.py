@@ -32,7 +32,7 @@ from .db import (
 from .scanner import scan_source, inspect_item, normalize_title, human_size, invalidate_scan_cache
 from .routing import decide_movie, decide_tv
 from .arr import RadarrClient, SonarrClient, LidarrClient, ProwlarrClient, ArrError, poster_url
-from .router_service import import_one, route_item, discover_lookup, discover_add, client_for_instance
+from .router_service import import_one, route_item, discover_lookup, discover_add, client_for_instance, LanguageRejectedSafe
 from .importer import ImportErrorSafe, unlink_created, scan_broken_symlinks, repair_broken_symlink
 from .namespace import view_path, is_within_logical, namespace_status, NamespaceError
 from .instances import discover_instances, invalidate_instance_cache
@@ -79,6 +79,7 @@ from .readiness import stack_readiness
 from .release_export import build_public_release
 from .runtime_cache import StaleSnapshot
 from .media_servers import definitions as media_server_definitions, builtin_state as media_server_builtin_state, probe_builtin as probe_media_server, list_custom as list_custom_media_servers, save_custom as save_custom_media_server, delete_custom as delete_custom_media_server, probe_custom as probe_custom_media_server
+from .consolidation import scan_consolidation, apply_consolidation
 from .help_catalog import TOPICS as HELP_TOPICS, categories as help_categories, get_topic as get_help_topic, topic_for_path as help_topic_for_path
 from .updater import (
     DEFAULT_REPOSITORY as UPDATE_DEFAULT_REPOSITORY, SELF_UPDATE_CAPABLE,
@@ -92,10 +93,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.0.0-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.1.0-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "10.0.0-beta"
+APP_VERSION = "10.1.0-beta"
 
 
 @app.middleware("http")
@@ -688,7 +689,7 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
     out = []
     state_rank = {"imported": 4, "linked": 3, "waiting": 2, "ignored": 1}
     for group in groups.values():
-        language_rank = {"pass": 4, "unchecked": 2, "unknown": 1, "disabled": 2, "fail": 0}
+        language_rank = {"pass": 5, "disabled": 4, "unchecked": 3, "unknown": 2, "probe_failed": 1, "fail": 0}
         group = sorted(
             group,
             key=lambda r: (language_rank.get(r.get("language_badge_key"), 2), r["item"].quality or 0, r["item"].size_bytes or 0, state_rank.get(r.get("state"), 0)),
@@ -696,6 +697,7 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
         )
         primary = group[0]
         managed = [r for r in group if r.get("state") in {"imported", "linked"} or r.get("linked_paths")]
+        rejected_rows = [r for r in group if r.get("state") in {"language_issue", "language_rejected"}]
         ignored = len(group) and all(r.get("state") == "ignored" for r in group)
         primary["duplicate_count"] = len(group)
         primary["duplicate_sources"] = [r["item"].path for r in group]
@@ -709,6 +711,8 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
             primary["state"] = "ignored"
         elif managed:
             primary["state"] = "imported"
+        elif rejected_rows:
+            primary["state"] = "language_rejected"
         else:
             primary["state"] = "waiting"
         primary["duplicate"] = len(group) > 1
@@ -990,7 +994,12 @@ async def refresh_dashboard(request: Request):
 
 async def _build_inbox_snapshot() -> dict:
     items = await asyncio.to_thread(scan_source)
-    rows = dedupe_rows(await enrich_items(items))
+    raw_rows = await enrich_items(items)
+    # RD removal can take a moment to disappear from the mounted source tree.
+    # Once ArrNexus has an exact provider deletion success, never put that item
+    # back into Waiting while the mount catches up.
+    raw_rows = [r for r in raw_rows if r.get("state") != "language_rejected_removed"]
+    rows = dedupe_rows(raw_rows)
     return {"rows": rows, "built_at": time.time()}
 
 
@@ -1011,7 +1020,7 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
         "ignored": sum(1 for x in enriched if x["state"] == "ignored"),
         "duplicate": sum(1 for x in enriched if x.get("duplicate_count", 1) > 1),
         "upgrade": sum(1 for x in enriched if x.get("upgrade")),
-        "language": sum(1 for x in enriched if x.get("language_badge_key") == "fail" or x.get("state") == "language_issue"),
+        "language": sum(1 for x in enriched if x.get("language_badge_key") in {"fail", "probe_failed"} or x.get("state") in {"language_issue", "language_rejected"}),
     }
     if status != "all":
         if status == "upgrade":
@@ -1021,7 +1030,7 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
         elif status == "imported":
             enriched = [x for x in enriched if x["state"] in {"imported", "linked"}]
         elif status == "language":
-            enriched = [x for x in enriched if x.get("language_badge_key") == "fail" or x.get("state") == "language_issue"]
+            enriched = [x for x in enriched if x.get("language_badge_key") in {"fail", "probe_failed"} or x.get("state") in {"language_issue", "language_rejected"}]
         else:
             enriched = [x for x in enriched if x["state"] == status]
     return templates.TemplateResponse("inbox.html", {
@@ -1081,6 +1090,7 @@ async def item_language_check(request: Request, source_path: str = Form(...)):
     result = await asyncio.to_thread(inspect_source_languages, source_path, item.fingerprint, True)
     level = "info" if result.get("status") == "pass" else "warning"
     log_event(level, "language_guard", "source_checked", result.get("summary") or "Language check complete", {"source": source_path, "status": result.get("status")})
+    _INBOX_SNAPSHOT.clear()
     return RedirectResponse("/item?path=" + quote(source_path), status_code=303)
 
 
@@ -1099,7 +1109,7 @@ async def run_import_job(job_id: int):
     if not job:
         return
     update_job(job_id, status="running", message="Import in progress")
-    completed = failed = 0
+    completed = failed = rejected = 0
     for ji in job_items:
         iid = int(ji["id"])
         source_path = ji["source_path"]
@@ -1116,18 +1126,28 @@ async def run_import_job(job_id: int):
             update_job_item(iid, status="complete", stage="complete", message=f"Imported to {result['arr_instance']} / {result['destination_key']}")
             log_event("info","import","item_complete",Path(source_path).name,{"job_id":job_id,"destination":result.get("destination_key"),"arr_instance":result.get("arr_instance")})
             completed += 1
+        except LanguageRejectedSafe as exc:
+            cleanup = getattr(exc, "cleanup", {}) or {}
+            cleanup_text = "Rejected Debrid source removed" if cleanup.get("deleted") else "Rejected source retained for manual review"
+            update_job_item(iid, status="rejected", stage="language_rejected", message=f"{str(exc)} · {cleanup_text}")
+            log_event("warning","language_guard","item_rejected",str(exc),{"job_id":job_id,"source":source_path,"provider_deleted":bool(cleanup.get("deleted"))})
+            rejected += 1
         except Exception as exc:
             update_job_item(iid, status="error", stage="error", message=str(exc))
             log_event("error","import","item_failed",str(exc),{"job_id":job_id,"source":source_path})
             failed += 1
-        update_job(job_id, completed=completed, failed=failed, message=f"{completed} complete, {failed} failed")
-    update_job(job_id, status="complete" if failed == 0 else "complete_with_errors", completed=completed, failed=failed, message=f"Finished: {completed} complete, {failed} failed")
-    log_event("warning" if failed else "info","import","job_finished",f"Job #{job_id}: {completed} complete, {failed} failed",{"job_id":job_id,"completed":completed,"failed":failed})
+        _INBOX_SNAPSHOT.clear()
+        invalidate_scan_cache()
+        invalidate_library_cache()
+        update_job(job_id, completed=completed, failed=failed, rejected=rejected, message=f"{completed} complete, {rejected} language rejected, {failed} failed")
+    final_status = "complete_with_errors" if failed else ("complete_with_rejections" if rejected else "complete")
+    update_job(job_id, status=final_status, completed=completed, failed=failed, rejected=rejected, message=f"Finished: {completed} complete, {rejected} language rejected, {failed} failed")
+    log_event("warning" if (failed or rejected) else "info","import","job_finished",f"Job #{job_id}: {completed} complete, {rejected} language rejected, {failed} failed",{"job_id":job_id,"completed":completed,"rejected":rejected,"failed":failed})
     try:
         await send_notification(
             f"ArrNexus import job #{job_id}",
-            f"{completed} completed, {failed} failed.",
-            "warning" if failed else "info",
+            f"{completed} completed, {rejected} language rejected, {failed} failed.",
+            "warning" if (failed or rejected) else "info",
             "import_job",
         )
     except Exception:
@@ -1384,6 +1404,35 @@ async def repair_link(request: Request, path: str = Form(...)):
     ok, msg = repair_broken_symlink(path)
     add_activity("repair" if ok else "repair_error", Path(path).name, msg, path)
     return RedirectResponse("/maintenance", status_code=303)
+
+
+@app.get("/maintenance/consolidation", response_class=HTMLResponse)
+async def consolidation_page(request: Request, notice: str = ""):
+    require_admin(request)
+    try:
+        preview = await asyncio.to_thread(scan_consolidation)
+        error = ""
+    except Exception as exc:
+        preview = {"symlinks_scanned": 0, "duplicate_groups": 0, "recommended_removals": 0, "groups": [], "digest": ""}
+        error = str(exc)
+        log_event("error", "consolidation", "scan_failed", error)
+    return templates.TemplateResponse("consolidation.html", {"request": request, "preview": preview, "error": error, "notice": notice})
+
+
+@app.post("/maintenance/consolidation/apply")
+async def consolidation_apply(request: Request, digest: str = Form(...), remove_provider_sources: str = Form("false")):
+    require_admin(request)
+    remove_provider = str(remove_provider_sources).lower() in {"1", "true", "yes", "on"}
+    try:
+        result = await asyncio.to_thread(apply_consolidation, digest, remove_provider)
+        _INBOX_SNAPSHOT.clear(); _MAINTENANCE_SNAPSHOT.clear(); _BROKEN_LINK_SNAPSHOT.clear()
+        log_event("warning" if result.get("errors") else "info", "consolidation", "applied", f"Removed {result.get('removed_count',0)} redundant symlink(s)", {"provider_cleanup": len(result.get("provider_cleanup") or []), "errors": len(result.get("errors") or [])})
+        deleted = sum(1 for x in (result.get("provider_cleanup") or []) if x.get("deleted"))
+        notice = f"Removed {result.get('removed_count',0)} redundant symlink(s); {len(result.get('orphaned_sources') or [])} source(s) became unreferenced; {deleted} Real-Debrid source(s) removed"
+    except Exception as exc:
+        log_event("error", "consolidation", "apply_failed", str(exc))
+        notice = "Consolidation not applied: " + str(exc)
+    return RedirectResponse("/maintenance/consolidation?notice=" + quote(notice), status_code=303)
 
 
 @app.get("/rules", response_class=HTMLResponse)
@@ -1680,7 +1729,7 @@ async def settings_language_guard(
     request: Request, enabled: str = Form("false"), require_english_audio: str = Form("false"),
     require_english_subtitles: str = Form("false"), require_default_english_audio: str = Form("false"),
     unknown_is_failure: str = Form("false"), auto_upgrade_search: str = Form("false"),
-    max_files: int = Form(300), probe_timeout_seconds: int = Form(20),
+    remove_rejected_debrid: str = Form("false"), max_files: int = Form(300), probe_timeout_seconds: int = Form(20),
 ):
     require_admin(request)
     truth = lambda value: str(value).lower() in {"1", "true", "yes", "on"}
@@ -1689,7 +1738,7 @@ async def settings_language_guard(
         require_english_subtitles=truth(require_english_subtitles),
         require_default_english_audio=truth(require_default_english_audio),
         unknown_is_failure=truth(unknown_is_failure), auto_upgrade_search=truth(auto_upgrade_search),
-        max_files=max_files, probe_timeout_seconds=probe_timeout_seconds,
+        remove_rejected_debrid=truth(remove_rejected_debrid), max_files=max_files, probe_timeout_seconds=probe_timeout_seconds,
     )
     log_event("info", "language_guard", "settings_updated", "English-language media policy updated")
     return RedirectResponse("/settings?notice=" + quote("Language Guard settings saved"), status_code=303)

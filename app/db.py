@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     total INTEGER NOT NULL DEFAULT 0,
     completed INTEGER NOT NULL DEFAULT 0,
     failed INTEGER NOT NULL DEFAULT 0,
+    rejected INTEGER NOT NULL DEFAULT 0,
     message TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -235,6 +236,11 @@ def _migrate(conn: sqlite3.Connection):
             if name not in req_cols:
                 conn.execute(f"ALTER TABLE requests ADD COLUMN {name} {decl}")
 
+    # v10.1 distinguishes controlled Language Guard rejections from real import failures.
+    job_cols = _columns(conn, "jobs")
+    if job_cols and "rejected" not in job_cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN rejected INTEGER NOT NULL DEFAULT 0")
+
 
 def init_db():
     with sqlite3.connect(settings.db_path) as conn:
@@ -375,8 +381,8 @@ def recent_activity(limit: int = 30):
 def create_job(kind: str, items: list[dict]) -> int:
     with db() as conn:
         cur = conn.execute(
-            "INSERT INTO jobs(kind,status,total,completed,failed,message,updated_at) VALUES(?,?,?,?,?,?,?)",
-            (kind, "queued", len(items), 0, 0, "Queued", _utcnow()),
+            "INSERT INTO jobs(kind,status,total,completed,failed,rejected,message,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+            (kind, "queued", len(items), 0, 0, 0, "Queued", _utcnow()),
         )
         jid = int(cur.lastrowid)
         for item in items:
@@ -400,7 +406,7 @@ def recent_jobs(limit: int = 20):
 
 
 def update_job(job_id: int, **fields):
-    allowed = {"status", "total", "completed", "failed", "message"}
+    allowed = {"status", "total", "completed", "failed", "rejected", "message"}
     pairs = [(k, v) for k, v in fields.items() if k in allowed]
     if not pairs:
         return

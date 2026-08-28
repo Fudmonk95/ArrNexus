@@ -1,5 +1,17 @@
 # Changelog
 
+## 10.1.0-beta — Language Cleanup & Library Consolidation
+
+- Language Guard rejections are now tracked separately from genuine import errors.
+- Added distinct `Language check failed` and `Language rejected` DMM states.
+- DMM Inbox snapshots are invalidated immediately after language checks/import outcomes.
+- Added optional exact-match Real-Debrid cleanup for rejected Language Guard sources; fuzzy/ambiguous matches fail closed and are retained.
+- Added a `rejected` job counter and `complete_with_rejections` terminal state.
+- Added Maintenance → Library Consolidation: scans every managed movie/TV symlink, groups duplicate movie parts/episodes, ranks candidates by language/resolution/source/HDR/codec/audio/size, and previews KEEP/REMOVE decisions.
+- Consolidation uses a stale-preview digest and refuses to apply if the library changed after preview.
+- Optional orphan-provider cleanup is off by default and only considers sources made unreferenced by the exact consolidation operation.
+- Added v10.1 regression validation and retained v10 → v7 validation chain.
+
 ## 10.0.0-beta — Native Updates & Product UI
 
 - Added the v10 native self-update architecture. ArrNexus can check the official GitHub Releases feed, notify administrators when a newer release is available, verify the release SHA-256, create a transaction-safe SQLite backup, safely extract and validate the new runtime, then restart itself through the in-container bootstrap supervisor.

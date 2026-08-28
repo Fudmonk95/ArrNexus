@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # /data/runtime on first boot; future application releases are staged there by
 # ArrNexus itself, leaving the database and operator data in /data untouched.
 COPY app ./app
-COPY validate.py validate_v7.py validate_v8.py validate_v9.py validate_v91.py validate_v92.py validate_v93.py validate_v94.py ./
+COPY validate.py validate_v10.py validate_v7.py validate_v8.py validate_v9.py validate_v91.py validate_v92.py validate_v93.py validate_v94.py ./
 COPY generate_help_docs.py migrate_legacy_env.py README.md CHANGELOG.md VALIDATION.md docker-compose.yml .env.example ./
 COPY docs ./docs
 COPY examples ./examples
