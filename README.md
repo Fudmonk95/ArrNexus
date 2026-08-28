@@ -1,66 +1,129 @@
-# ArrNexus
+# ArrNexus v9.4.0-beta
 
 **ArrNexus is a self-hosted control, automation and intelligence layer for Arr-based media stacks.**
 
-It is designed to sit alongside tools such as **Radarr, Sonarr, Lidarr, Prowlarr, Seerr, Jellyfin, DUMB, NzbDAV, InfiniDysk, Decypharr, Debrid Media Manager and Real-Debrid** rather than replacing them.
+It is designed to sit above and beside the specialist tools that already do their jobs well — **Radarr, Sonarr, Lidarr, Prowlarr, Seerr, Jellyfin, Plex, Emby, DUMB, NzbDAV/InfiniDysk, Decypharr, AIOStreams, Debrid Media Manager and supported Debrid/Usenet providers** — rather than replacing them.
 
-The original idea was simple: take a workflow that worked well manually through **Debrid Media Manager (DMM)** and make it usable as part of the same automated Arr ecosystem that already manages the rest of the media library. ArrNexus has since grown into a wider control layer for discovery, acquisition routing, DMM imports, Usenet/Debrid decisions, music discovery, library health, indexer control, diagnostics and day-to-day media operations.
+The original project started as a DMM/Real-Debrid to Arr routing helper. It has grown into a broader operational layer for discovery, acquisition planning, provider routing, DMM imports, language validation, library health, media-server visibility, music discovery, Prowlarr control, AIOStreams configuration, diagnostics and day-to-day media operations.
 
-> **Current release line:** ArrNexus v7.0 beta
+> **Release line:** `9.4.0-beta`
 >
-> ArrNexus is currently being opened up for external testing. Expect active development, changes between beta builds and rough edges. Feedback and reproducible bug reports are very welcome.
+> v9.4 is a beta because the new Help Centre/documentation gate, reverse-proxy public URL handling and retained performance/media-server/provider workflows still need broad live-stack testing. The release validator is extensive, but it cannot reproduce every third-party service, mount namespace or network layout.
 
 ---
 
-## What problem does ArrNexus solve?
 
-A modern self-hosted media stack can be extremely capable, but each application normally understands only its own part of the workflow.
+## Documentation and in-app Help Centre
 
-- Radarr understands movies.
-- Sonarr understands TV.
-- Lidarr understands music.
-- Prowlarr understands indexers.
-- Seerr understands requests.
-- DUMB provides a wider ecosystem around virtualised media workflows.
-- NzbDAV provides Usenet-backed virtual media handling.
-- Decypharr provides Debrid/torrent-side handling.
-- InfiniDysk can provide Usenet/download telemetry and control.
+ArrNexus v9.4 adds a public **Help Centre** at `/help` and a context-sensitive `?` button inside the authenticated application. The Help Centre is built from the same documentation catalogue as `docs/USER_GUIDE.md`, so GitHub documentation and in-app guidance do not drift apart.
+
+Every major user-facing area is documented with:
+
+- what the feature does
+- prerequisites
+- setup steps
+- normal usage
+- what successful operation looks like
+- common failure modes and recovery checks
+- safety/privacy notes where the feature can touch credentials, source media or configuration
+
+The documentation audit is published as `docs/DOCUMENTATION_AUDIT.md`.
+
+- Full generated guide: `docs/USER_GUIDE.md`
+- Route/action coverage audit: `docs/DOCUMENTATION_AUDIT.md`
+
+
+Spotify is intentionally documented in detail: application credentials and per-user OAuth are separate, the exact redirect URI shown by ArrNexus must be registered in Spotify, redirect matching is exact, and Spotify Development Mode has account/allowlist restrictions that users must satisfy according to Spotify's current developer rules.
+
+## What changed in v9.4
+
+### Carried forward from v9.3: targeted performance work
+
+v9.2 also fixed a production-data Dashboard cache bug caused by trying to deep-copy non-empty `sqlite3.Row` history objects; those rows are normalised to plain dictionaries before caching and that regression remains covered in v9.4.
+
+v9.2 added `Server-Timing`, `X-ArrNexus-Elapsed-Ms` and `slow_request` logging. Live testing showed the expensive routes were not all the same problem, so v9.3 optimises them individually rather than adding another blanket cache:
+
+- **DMM Inbox** uses a short stale-while-revalidate snapshot and no longer performs a live Jellyfin lookup for every card during page rendering.
+- **Maintenance** runs filesystem/source/link/import inventory work concurrently on worker threads and serves a reusable snapshot.
+- **Problem Centre** runs namespace, broken-link and Arr health probes concurrently and uses a short snapshot.
+- **Stack Readiness** runs base readiness and bounded live application probes concurrently.
+- **InfiniDysk** fetches health, queue, history and native overview telemetry concurrently with bounded timeouts and reuses a per-window snapshot.
+- **Music Artist** runs Lidarr library lookup, Lidarr catalogue lookup, MusicBrainz and artwork work concurrently. Optional external metadata is bounded so it cannot hold the whole page hostage indefinitely.
+- **Specialist Arr matching** performs independent instance/library checks concurrently.
+
+Normal navigation keeps the persistent app shell, request de-duplication, recently visited page cache and intent-based prefetch. v9.4 retains the v9.3 rule that ArrNexus does **not** silently crawl every expensive page in the sidebar.
+
+### Music configuration is visible again
+
+The Music Hub now has a dedicated **Music API Settings** page for:
+
+- Spotify application Client ID / Client Secret / redirect URI
+- SoundCloud application Client ID / Client Secret
+- Jamendo Client ID
+- Last.fm API key
+
+The general Settings page links to the same place, and administrators get a direct sidebar entry. External catalogue launch URLs are validated before ArrNexus renders them so placeholder/example domains are not presented as working music providers.
+
+### More media-server choices
+
+Jellyfin remains the deepest existing media-server integration, but v9.3 adds first-class connection/probe support for:
+
+- **Plex Media Server** — URL plus `X-Plex-Token`
+- **Emby Server** — URL plus API key
+- **Jellyfin** — retained
+- **Custom/external media server** — configurable URL, health path and optional bearer/header/query authentication
+
+The custom connector is intentionally a safe HTTP health/integration foundation rather than arbitrary third-party Python execution. Deeper Plex/Emby library browsing can be added without redesigning the connection model.
+
+### Public home is always reachable
+
+Authenticated pages now expose an obvious **Public Home / About** route in the sidebar and a persistent home button in the top bar. Music pages also expose a direct Public Home control.
+
+### Public documentation now covers real deployment choices
+
+The landing page and this README describe:
+
+1. ZIP/source deployment with Docker Compose
+2. host-side validation through a Python virtual environment
+3. Git clone + Docker Compose source build
+4. Portainer Git-stack deployment
+5. future official GitHub Container Registry image deployment
+6. Portainer Web Editor / Stack-file deployment using the future official image
+7. upgrades and rollback
+
+The GHCR image examples are **templates until an official ArrNexus image is actually published**. Do not trust an unofficial container solely because it uses the ArrNexus name.
+
+---
+
+# What problem does ArrNexus solve?
+
+A self-hosted media stack can be extremely capable, but each application normally understands only its own part of the workflow:
+
+- Radarr manages movies.
+- Sonarr manages TV.
+- Lidarr manages music.
+- Prowlarr manages indexers.
+- Seerr manages requests/discovery.
+- Jellyfin, Plex and Emby serve finished libraries.
+- DUMB can coordinate a virtualised media ecosystem.
+- NzbDAV/InfiniDysk handle Usenet-backed virtual media and telemetry.
+- Decypharr handles Debrid/torrent-side workflows.
 - DMM is excellent for discovering and adding content to a Debrid account.
-- Jellyfin consumes the finished library.
+- AIOStreams consolidates stream/addon/provider configuration for compatible clients.
 
-The missing piece for this project was a place where those systems could be **viewed, reasoned about and automated together**.
+The gap is a place where those systems can be **viewed, reasoned about and automated together**.
 
-ArrNexus fills that gap.
-
-It does not try to become another Radarr or another DUMB. Instead, it connects to the specialist tools already doing those jobs and adds orchestration, visibility and workflows that span more than one application.
-
----
-
-## Why ArrNexus was created
-
-ArrNexus started as a small DMM-to-Arr helper.
-
-The development setup already had a working Arr/DUMB/NzbDAV media pipeline, but Debrid Media Manager often exposed useful cached matches and a very convenient Real-Debrid workflow. The problem was that using DMM was still largely a separate, manual process.
-
-The original goal became:
-
-1. Find or add something through DMM/Real-Debrid.
-2. Identify what movie or TV item it belongs to.
-3. Associate it with the correct Radarr or Sonarr item.
-4. Route it into the existing virtual/symlink library structure.
-5. Let the existing Arr applications and Jellyfin continue to behave as the source of truth for the managed library.
-
-From there ArrNexus expanded into a broader media operations layer with discovery, acquisition strategies, smart TV pack handling, music browsing, Prowlarr control, diagnostics, Language Guard and ecosystem telemetry.
+ArrNexus fills that gap. It is the **control layer**, not the final media server and not another download client.
 
 ---
 
 # Reference architecture
 
-This is the **reference environment ArrNexus was developed around**. You do **not** need to run every component shown below in order to use ArrNexus.
+You do **not** need every component below. This is the type of environment ArrNexus is designed to coordinate.
 
 ```mermaid
 flowchart TD
-    USER[Users / Media Requests] --> SEERR[Seerr]
+    USERS[Users / Requests] --> SEERR[Seerr]
     SEERR --> RADARR[Radarr]
     SEERR --> SONARR[Sonarr]
 
@@ -69,7 +132,10 @@ flowchart TD
     ARRNEXUS <--> LIDARR[Lidarr]
     ARRNEXUS <--> PROWLARR[Prowlarr]
     ARRNEXUS <--> SEERR
-    ARRNEXUS <--> JELLYFIN[Jellyfin]
+
+    ARRNEXUS <--> JF[Jellyfin]
+    ARRNEXUS <--> PLEX[Plex]
+    ARRNEXUS <--> EMBY[Emby]
 
     PROWLARR --> INDEXERS[Indexers]
 
@@ -79,227 +145,156 @@ flowchart TD
 
     RADARR --> DEBRID[Debrid / torrent acquisition]
     SONARR --> DEBRID
-    LIDARR --> DEBRID
 
-    USENET --> INFINIDYSK[InfiniDysk]
-    USENET --> NZBDAV[NzbDAV]
-
+    USENET --> INFINI[InfiniDysk / NzbDAV]
     DEBRID --> DECYPHARR[Decypharr]
-    DECYPHARR --> RD[Real-Debrid]
 
-    DMM[Debrid Media Manager] --> RD
+    DMM[Debrid Media Manager] --> DEBRID
     DMM --> ARRNEXUS
 
-    NZBDAV --> VIRTUAL[Virtual / symlink library]
+    ARRNEXUS <--> AIO[AIOStreams]
+    ARRNEXUS <--> PROVIDERS[Provider Registry]
+
+    INFINI --> VIRTUAL[Virtual / symlink library]
     DECYPHARR --> VIRTUAL
     ARRNEXUS --> VIRTUAL
 
     VIRTUAL --> RADARR
     VIRTUAL --> SONARR
     VIRTUAL --> LIDARR
-    VIRTUAL --> JELLYFIN
+    VIRTUAL --> JF
+    VIRTUAL --> PLEX
+    VIRTUAL --> EMBY
 
-    DUMB[DUMB ecosystem] --- NZBDAV
+    DUMB[DUMB ecosystem] --- INFINI
     DUMB --- DECYPHARR
-    DUMB --- INFINIDYSK
     ARRNEXUS <--> DUMB
 ```
 
-## The important idea
-
-ArrNexus is the **control layer**, not the final media server and not the downloader.
-
-A typical request still belongs to the normal applications:
+A typical normal request still looks like:
 
 ```text
 Request
   -> Radarr / Sonarr / Lidarr
   -> search / acquisition decision
-  -> Usenet or Debrid backend
-  -> virtual / linked library
-  -> Jellyfin
+  -> Usenet or Debrid/provider backend
+  -> virtual / linked or normal library
+  -> Jellyfin / Plex / Emby
 ```
 
-ArrNexus adds intelligence and automation around that flow. It can inspect multiple systems, compare acquisition options, work with existing DMM content, expose problems and give the administrator one place to understand what is happening.
+ArrNexus adds cross-service intelligence and visibility around that flow.
 
 ---
 
-# What is required and what is optional?
+# Required and optional components
 
-ArrNexus is intentionally modular. A user should not have to reproduce the entire reference environment simply to start the application.
+ArrNexus is modular. You can deploy it before most integrations are configured.
 
-| Component | Required? | What ArrNexus uses it for |
+| Component | Required? | Purpose |
 | --- | --- | --- |
-| Docker | **Yes** for the recommended deployment | Runs ArrNexus |
-| Portainer | No | Easiest Git-based stack deployment and management |
-| Radarr | Optional | Movie management, movie searches, root folders, quality profiles and imports |
-| Sonarr | Optional | TV management, season/episode searches and imports |
-| Lidarr | Optional | Music library management and acquisition |
-| Prowlarr | Optional | Indexer visibility and operational controls |
-| Seerr | Optional | Request/discovery context |
-| Jellyfin | Optional | Library visibility and media-server integration |
-| DUMB | Optional | Integration with the wider DUMB environment |
-| NzbDAV | Optional | Usenet-backed virtual media workflow |
-| InfiniDysk | Optional | Usenet/download status, queue, history and telemetry |
-| Decypharr | Optional | Debrid/torrent-side acquisition and virtual media workflow |
-| Real-Debrid | Optional | Debrid content and cached-media workflows |
-| Debrid Media Manager | Optional | DMM/Real-Debrid inbox and import workflow |
-| Spotify | Optional | Personal music library and music discovery integration |
-
-You can start ArrNexus first and add integrations afterwards from the web interface.
-
----
-
-# Privacy-safe documentation convention
-
-The public documentation deliberately contains **no private deployment values**.
-
-You will see placeholders such as:
-
-```text
-<ARRNEXUS_HOST>
-<RADARR_HOST>
-<YOUR_API_KEY>
-<YOUR_TOKEN>
-<YOUR_MEDIA_PATH>
-<YOUR_REPOSITORY_URL>
-```
-
-Replace those with values from **your own environment**.
-
-Never publish or paste the following into GitHub issues, screenshots or configuration examples:
-
-- API keys
-- Real-Debrid tokens
-- DUMB/Decypharr/InfiniDysk credentials
-- Spotify client secrets
-- webhook URLs containing secrets
-- email passwords
-- local usernames
-- private hostnames
-- public or private IP addresses that identify your deployment
-- database files
-- `.env` files containing credentials
-- diagnostic bundles before checking that they are sanitised
+| Docker | **Yes** for recommended deployment | Runs ArrNexus |
+| Portainer | No | Convenient Git/Stack deployment |
+| Radarr | Optional | Movies, searches, roots, profiles and imports |
+| Sonarr | Optional | TV, season/episode state and searches |
+| Lidarr | Optional | Music library/acquisition |
+| Prowlarr | Optional | Indexer visibility and controls |
+| Seerr | Optional | Request context |
+| Jellyfin | Optional | Media-server/library integration |
+| Plex | Optional | Media-server connection/health foundation |
+| Emby | Optional | Media-server connection/health foundation |
+| Other media servers | Optional | Generic authenticated health endpoint |
+| DUMB | Optional | DUMB ecosystem/namespace awareness |
+| NzbDAV / InfiniDysk | Optional | Usenet virtual media and telemetry |
+| Decypharr | Optional | Debrid/torrent-side integration |
+| AIOStreams | Optional | Safe full-config bridge and diagnostics |
+| Debrid providers | Optional | Provider Registry / acquisition capability |
+| DMM | Optional | Existing Debrid-content inbox/import workflow |
+| Spotify | Optional | Per-user personal music integration |
 
 ---
 
-# Recommended installation: Portainer Git stack
+# Persistent data and Portainer-first design
 
-This is the intended easiest deployment method for a new user.
+Normal ArrNexus configuration is stored under `/data` and managed through the browser. A normal deployment should not require a large secret-filled `.env` file.
 
-Portainer can pull the project directly from GitHub, build the ArrNexus image from the repository and keep the stack definition tied to the Git repository.
+The included Compose file is intentionally simple:
 
-## Before you begin
-
-You need:
-
-- a Linux host or VM capable of running Docker
-- Docker installed and running
-- Portainer installed if you want to use the recommended deployment method
-- network access from the ArrNexus container to whichever services you intend to connect
-
-You do **not** need to create a populated `.env` file for a normal v7 deployment. Persistent ArrNexus state is stored under `/data` and application configuration is handled through the web interface.
-
-## Step 1 - Copy the Git repository URL
-
-On this GitHub repository page:
-
-1. Select **Code**.
-2. Select **HTTPS**.
-3. Copy the repository URL.
-
-It will end in:
-
-```text
-/ArrNexus.git
+```yaml
+services:
+  arrnexus:
+    build: .
+    container_name: arrnexus
+    restart: unless-stopped
+    pid: host
+    cap_add:
+      - SYS_PTRACE
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8484:8000"
+    volumes:
+      - ./data:/data
 ```
 
-Do not copy a ZIP download URL for the Portainer Git deployment.
+`pid: host` and `SYS_PTRACE` are important in DUMB deployments where useful virtual media mounts exist inside the Arr/DUMB mount namespace rather than on the Docker host itself.
 
-## Step 2 - Create the stack in Portainer
-
-In Portainer:
-
-1. Open **Stacks**.
-2. Select **Add stack**.
-3. Give the stack a simple name such as:
-
-```text
-arrnexus
-```
-
-4. Choose **Git repository** as the build method.
-5. Paste the Git repository URL you copied from GitHub.
-6. Set the repository reference to:
-
-```text
-refs/heads/main
-```
-
-7. Set the Compose path to:
-
-```text
-docker-compose.yml
-```
-
-8. Because the repository is public, repository authentication should not normally be required.
-9. Deploy the stack.
-
-Portainer will clone the Git repository and use the included Docker/Compose files to build ArrNexus.
-
-> The first v7 build can take longer than older versions because the image includes `ffmpeg`/`ffprobe` support used by Language Guard.
-
-## Step 3 - Confirm the container started
-
-In Portainer open:
-
-**Containers -> arrnexus**
-
-The container should be running and eventually report healthy.
-
-The default public mapping used by the project is:
-
-```text
-8484 -> 8000
-```
-
-So the first-run web interface will normally be available at:
-
-```text
-http://<ARRNEXUS_HOST>:8484
-```
-
-`<ARRNEXUS_HOST>` means the hostname or address of **your Docker server**.
-
-## Step 4 - Complete first-run setup
-
-On the first visit ArrNexus presents its setup flow.
-
-Create the first administrator account and sign in.
-
-Do not reuse credentials from another application. ArrNexus authentication is independent of Radarr, Sonarr, DUMB and the other connected services.
-
-## Step 5 - Open Connections
-
-Go to:
-
-**ArrNexus -> Connections**
-
-Add only the services you actually use.
-
-You can return later and add more integrations without rebuilding the container.
+Do not remove those options simply because the host does not show `/mnt/debrid` directly.
 
 ---
 
-# Alternative installation: Docker Compose CLI
+# Installation method 1 — Release ZIP + Docker Compose
 
-If you do not use Portainer, clone the repository onto the Docker host and build it with Docker Compose.
+This is a good way to test a specific release without depending on a Git branch.
+
+## 1. Install host tools
+
+On Debian/Ubuntu:
 
 ```bash
-git clone <YOUR_REPOSITORY_URL> arrnexus
-cd arrnexus
+sudo apt update
+sudo apt install -y unzip python3-venv
+```
+
+The ArrNexus container installs its own Python dependencies. `python3-venv` is only needed if you want to execute the release validator directly on the host before building Docker.
+
+## 2. Extract the release
+
+```bash
+unzip arrnexus-v9.4.zip
+cd arrnexus-v9.4
+```
+
+## 3. Run the host-side validator
+
+Do **not** install ArrNexus dependencies into Debian's system Python. Use a project virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python validate.py
+
+deactivate
+```
+
+The `.venv` is local validation tooling. Docker does not use it.
+
+## 4. Validate and build Compose
+
+```bash
+docker compose config
 docker compose up -d --build
+```
+
+## 5. Confirm the service
+
+```bash
+docker compose ps
+docker compose logs --tail=200 arrnexus
+curl -fsS http://127.0.0.1:8484/api/health
+echo
 ```
 
 Then open:
@@ -308,14 +303,32 @@ Then open:
 http://<ARRNEXUS_HOST>:8484
 ```
 
-To inspect the service:
+---
+
+# Installation method 2 — Git clone + Docker Compose source build
+
+Once the project is published on GitHub:
 
 ```bash
-docker compose ps
-docker compose logs --tail=200 arrnexus
+git clone https://github.com/<GITHUB_OWNER>/ArrNexus.git arrnexus
+cd arrnexus
+
+docker compose config
+docker compose up -d --build
 ```
 
-To update a Git-based installation later:
+If you want the full source validation first:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python validate.py
+deactivate
+```
+
+To update a Git checkout later:
 
 ```bash
 cd arrnexus
@@ -323,17 +336,133 @@ git pull --ff-only
 docker compose up -d --build
 ```
 
-Persistent application data should remain in the mapped `data` directory and must not be deleted during a normal update.
+Keep the persistent `data` directory intact.
 
 ---
 
-# Docker networking: the part that catches most new users
+# Installation method 3 — Portainer Git stack
 
-A URL that works in your browser does not automatically mean it works from inside the ArrNexus container.
+For a public repository:
 
-## If services share a Docker network
+1. Open **Portainer → Stacks → Add stack**.
+2. Name the stack `arrnexus`.
+3. Choose **Git repository**.
+4. Paste the ArrNexus repository HTTPS URL.
+5. Choose the desired branch/tag/reference.
+6. Set the Compose path to `docker-compose.yml`.
+7. Deploy the stack.
 
-A service can normally be addressed using its Docker service/container DNS name, for example:
+Portainer clones the repository and builds the included Dockerfile.
+
+Persistent application state remains in `./data:/data`.
+
+For a major upgrade, back up the data directory first.
+
+---
+
+# Installation method 4 — Future official GHCR image
+
+When an official GitHub Container Registry image is published, users will be able to deploy without building the source locally.
+
+**The image name below is a template until an official package exists.**
+
+```yaml
+services:
+  arrnexus:
+    image: ghcr.io/<GITHUB_OWNER>/arrnexus:latest
+    container_name: arrnexus
+    restart: unless-stopped
+    pid: host
+    cap_add:
+      - SYS_PTRACE
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8484:8000"
+    volumes:
+      - ./data:/data
+```
+
+Then:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Do not pull an unofficial image simply because it uses the ArrNexus name.
+
+---
+
+# Installation method 5 — Portainer Web editor / Stack file
+
+Once the official GHCR image exists, Portainer users who do not want a Git checkout can:
+
+1. Open **Stacks → Add stack → Web editor**.
+2. Paste the GHCR Compose definition above.
+3. Keep `pid: host`, `SYS_PTRACE`, the `8484:8000` mapping and `./data:/data`.
+4. Deploy.
+5. Open `http://<ARRNEXUS_HOST>:8484`.
+
+API keys and normal application settings should be entered through ArrNexus, not embedded in the public stack definition.
+
+---
+
+# Upgrading a ZIP deployment safely
+
+Build a new version **beside** the previous version. Do not mutate the old release in place.
+
+Example generic workflow:
+
+```bash
+cd /path/to/old-arrnexus
+docker compose down
+
+cd /path/to/releases
+unzip arrnexus-v9.4.zip
+mkdir -p arrnexus-v9.4/data
+cp -a old-arrnexus/data/. arrnexus-v9.4/data/
+
+cd arrnexus-v9.4
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python validate.py
+deactivate
+
+docker compose config
+docker compose up -d --build
+```
+
+Then verify:
+
+```bash
+docker compose ps
+docker compose logs --tail=200 arrnexus
+curl -fsS http://127.0.0.1:8484/api/health
+echo
+```
+
+Keep the old version directory intact until the new release has been live-tested.
+
+Rollback is then simply:
+
+```bash
+cd /path/to/new-arrnexus
+docker compose down
+
+cd /path/to/old-arrnexus
+docker compose up -d
+```
+
+---
+
+# Docker networking — common mistake
+
+A URL that works from your browser does not necessarily work from inside ArrNexus.
+
+If services share a Docker network, container DNS names may work:
 
 ```text
 http://radarr:7878
@@ -342,590 +471,541 @@ http://lidarr:8686
 http://prowlarr:9696
 ```
 
-Those are examples only. Use the actual service names in your Docker environment.
+If the service runs elsewhere, use a hostname/address reachable from the ArrNexus container.
 
-## If a service runs elsewhere
-
-Use a hostname that the ArrNexus container can route to:
-
-```text
-http://<RADARR_HOST>:7878
-```
-
-or a reverse-proxy URL such as:
-
-```text
-https://radarr.example.invalid
-```
-
-## Do not blindly use localhost
-
-Inside the ArrNexus container:
+Do not blindly use:
 
 ```text
 localhost
 127.0.0.1
 ```
 
-refer to the **ArrNexus container itself**.
-
-If Radarr runs in another container or on another host, `http://localhost:7878` will normally be wrong.
+Inside the ArrNexus container those point back at ArrNexus itself.
 
 ---
 
-# Connecting the Arr applications
+# First-run setup
 
-The exact menu wording can vary between upstream applications and versions, but the pattern is the same.
+A fresh installation opens the public ArrNexus landing page first. Private stack details are not exposed publicly.
 
-For each connection ArrNexus needs:
+The setup path is:
 
-1. the service URL reachable from the ArrNexus container
-2. the API key or authentication token belonging to that service
+1. **Create administrator**
+2. **Environment check** — Docker/PID namespace and mount awareness
+3. **Connect applications**
+4. **Configure providers**
+5. **Review media servers**
+6. **Map logical libraries/mounts**
+7. **Run Stack Readiness**
+8. **Finish setup and enter Dashboard**
+
+Returning visitors can read the public About/install page without authentication, but private media/library/service data remains behind login.
+
+---
+
+# Connections
+
+Open **Connections** to attach the applications you use.
 
 ## Radarr
 
-Used for movie management, movie metadata, quality/root-folder context, interactive searches and import state.
-
-Typical URL on a shared Docker network:
-
-```text
-http://radarr:7878
-```
-
-Copy Radarr's API key from its settings/security area and paste it into the **Radarr** connection inside ArrNexus.
-
-Use **Test/Verify Connection** before saving if the current ArrNexus build exposes that action.
+Used for movie metadata, root folders, searches, quality context and import state.
 
 ## Sonarr
 
-Used for TV management, season/episode state, interactive release searches, complete-series/season-pack logic and import state.
+Used for TV metadata, season/episode state, interactive release search and TV pack planning.
 
-Typical shared-network URL:
-
-```text
-http://sonarr:8989
-```
-
-Add Sonarr's API key in the ArrNexus Sonarr connection.
+ArrNexus searches real seasons using `seriesId + seasonNumber` rather than pretending one `seriesId` query is a complete-series release search.
 
 ## Lidarr
 
-Used for music-library management and the acquisition side of music workflows.
-
-Typical shared-network URL:
-
-```text
-http://lidarr:8686
-```
-
-Add Lidarr's API key in the ArrNexus Lidarr connection.
+Used for music library management and final music acquisition.
 
 ## Prowlarr
 
-Used for indexer visibility and supported operational controls such as enabled state, priority, RSS, automatic search and interactive search.
+Used for indexer visibility and supported settings such as enabled state, priority, RSS, automatic search and interactive search.
 
-Typical shared-network URL:
+Be careful in DUMB-managed environments: an external manager may intentionally restore routing-sensitive settings.
 
-```text
-http://prowlarr:9696
-```
+## Seerr
 
-Add Prowlarr's API key in the ArrNexus Prowlarr connection.
+Provides request/discovery context.
 
-> Some indexer settings may be controlled or restored by another application in a DUMB-managed environment. ArrNexus highlights routing-sensitive configuration so it is easier to see when an external manager may overwrite a manual change.
+## Jellyfin
 
----
+The deepest current media-server integration, including library/search context used throughout ArrNexus.
 
-# Connecting DUMB, NzbDAV, InfiniDysk and Decypharr
+## Plex
 
-These integrations are optional. Configure the pieces that exist in your own environment.
+v9.3 accepts a Plex server URL plus `X-Plex-Token` and verifies the Plex server endpoint. This is the foundation for deeper library integration in later releases.
 
-## DUMB
+## Emby
 
-ArrNexus can connect to the DUMB ecosystem for service awareness and cross-stack workflows.
+v9.3 accepts an Emby server URL plus API key and verifies the protected system-info API.
 
-The important distinction is that ArrNexus **does not replace DUMB**. It is designed to sit beside it and add a higher-level control interface around the media stack.
+## Custom media server
 
-Provide ArrNexus with the DUMB API/service address required by the Connections page. A connector is considered healthy only when ArrNexus receives the kind of API response it expects; simply reaching an HTML web page is not treated as successful API authentication.
+Use the external-media-server form when another server exposes a useful HTTP health/API endpoint. Configure:
 
-## NzbDAV
+- Name
+- Base URL
+- Health path
+- Authentication mode: none / bearer / header / query
+- Header/query name when applicable
+- Secret
 
-NzbDAV forms the Usenet-backed virtual-media side of the reference environment.
-
-In a typical design the Arr application can continue to manage media normally while NzbDAV and the surrounding DUMB filesystem expose the resulting content through the virtual/symlink structure expected by the library.
-
-ArrNexus uses this context for acquisition visibility, source/link reasoning and library operations. Exact paths are deployment-specific and should be entered using the **Libraries / logical-mount configuration** provided by ArrNexus rather than copying paths from someone else's server.
-
-## InfiniDysk
-
-ArrNexus can use InfiniDysk for Usenet/download telemetry and operational information.
-
-Current v7 support can consume authenticated overview data and surface information such as:
-
-- current status
-- throughput
-- providers
-- sessions
-- latency/errors when available
-- queue/history information
-- selectable telemetry time windows
-
-Use the address and credential generated by **your own InfiniDysk installation**.
-
-## Decypharr
-
-Decypharr is used on the Debrid/torrent side of the reference workflow.
-
-ArrNexus verifies protected API access rather than treating a reachable login/frontend page as a valid connector.
-
-Add the Decypharr service URL and the Bearer/API token belonging to your installation.
+This is a bounded HTTP connector, not arbitrary plugin code.
 
 ---
 
-# Debrid Media Manager and Real-Debrid workflow
+# DUMB, mount namespaces and virtual media
 
-This is the workflow that originally drove the creation of ArrNexus.
+Some DUMB/Arr deployments expose useful mounts inside a process mount namespace while the Docker host itself does not have the same path mounted normally.
 
-DMM can make it very convenient to find content and add it to a Real-Debrid account, but that content still needs to make sense inside an automated Radarr/Sonarr library.
-
-ArrNexus provides a **DMM / Debrid inbox workflow** around that problem.
-
-Conceptually:
+ArrNexus can follow the live Arr/DUMB namespace using host PID visibility. Conceptually:
 
 ```text
-DMM / Real-Debrid content
-        -> ArrNexus identifies and reviews the source
-        -> match to movie / show
-        -> check routing, quality and language rules
-        -> associate with the owning Arr item
-        -> create/use the managed library link
-        -> Radarr / Sonarr / Jellyfin see the expected library result
+/proc/<ARR_PID>/root/<logical-media-path>
 ```
 
-The source media in Real-Debrid remains separate from the library link. Operations such as Undo are designed around removing ArrNexus-created links rather than deleting the underlying Debrid source.
+That is why the recommended Compose keeps:
 
-## Language Guard
+```yaml
+pid: host
+cap_add:
+  - SYS_PTRACE
+```
 
-v7 can inspect actual media stream metadata using `ffprobe` before a DMM source is linked into the library.
+Do not "fix" a working deployment by assuming the virtual-media path must exist directly on the host.
 
-The policy can be configured under Settings. The default v7 validation policy checks for English audio and English subtitles and can fail closed when language metadata is unknown.
+Three concepts should remain separate:
 
-A rejected source is not intended to be deleted from Real-Debrid automatically. ArrNexus can instead leave the source untouched and allow a replacement search through the owning Arr application.
+1. **Source content** — Usenet/Debrid-backed source
+2. **Virtual/cache layer** — NzbDAV/Decypharr/DUMB exposure
+3. **Managed library** — the path seen by Radarr/Sonarr/Lidarr/media server
+
+ArrNexus reasons about the relationship rather than blindly moving source content.
 
 ---
 
-# Filesystem, virtual media and symlinks
+# DMM / Debrid Inbox
 
-This is the most important concept to understand when using ArrNexus with DUMB/NzbDAV/Decypharr.
-
-The library presented to Radarr, Sonarr, Lidarr or Jellyfin may contain **links or virtualised media entries** rather than a second physical copy of every media file.
-
-That means three different things must not be confused:
-
-1. **Source content** - the underlying Usenet/Debrid-backed source.
-2. **Virtual/cache layer** - the mechanism used by NzbDAV/Decypharr/DUMB to expose the content.
-3. **Managed library path** - the movie/TV/music structure consumed by the Arr applications and Jellyfin.
-
-ArrNexus needs consistent knowledge of those relationships in order to reason about imports, duplicates and broken links.
-
-## Path rule
-
-Do not copy filesystem paths from this README, screenshots or another person's setup.
-
-Use paths that exist in **your own containers**.
-
-Where multiple containers need to understand the same media tree, keeping container-side paths consistent is strongly recommended. For example, if your environment presents the managed library as:
+This workflow originally drove the project.
 
 ```text
-/media/movies
-/media/tv
-/media/music
+DMM / provider content
+  -> ArrNexus identifies source
+  -> movie/TV match
+  -> route + quality + language checks
+  -> owning Arr item
+  -> managed link/import
+  -> media server sees normal library result
 ```
 
-it is far easier to reason about the stack when Radarr, Sonarr, Lidarr, Jellyfin and ArrNexus use the same container-side path names.
+Features include:
 
-ArrNexus includes UI-managed library/logical-mount configuration intended to make Portainer-first installations easier. If a feature reports that a path is not visible, check the underlying Docker volume/mount configuration rather than entering an unrelated host path into the application.
+- movie/TV identification
+- route suggestions
+- duplicate grouping
+- already-linked/imported state
+- explicit bulk routing
+- import jobs/failure reasons
+- safe symlink mode and Undo
+- broken-link scanning/repair
+- orphan detection
+- Quality Lab comparison
+- routing rules and learn-from-corrections foundations
+- Language Guard
+
+Undo focuses on ArrNexus-created library links. It is not designed to delete the underlying Debrid/DMM source.
+
+---
+
+# Language Guard
+
+Release filenames are not reliable proof of actual streams.
+
+ArrNexus includes `ffmpeg`/`ffprobe` in the image and can inspect real audio/subtitle metadata.
+
+The default policy can require:
+
+- English audio
+- English subtitles
+- fail closed when stream language metadata is unknown
+
+A non-compliant DMM/Debrid source is **not destructively deleted**. ArrNexus can keep the source untouched and trigger replacement/upgrade search through the owning Arr application.
 
 ---
 
 # Acquisition strategies
 
-ArrNexus can compare more than one acquisition route and apply a selected strategy.
+Current strategies include:
 
-Current v7 strategies include:
-
-- **Automatic** - compare Usenet and Debrid and choose one acceptable candidate
-- **Debrid first -> Usenet fallback**
-- **Usenet first -> Debrid fallback**
+- **Automatic**
+- **Debrid first → Usenet fallback**
+- **Usenet first → Debrid fallback**
 - **Debrid only**
 - **Usenet only**
-- **Fastest / prefer cached Real-Debrid**
+- **Fastest / cached provider preference**
 - **Best quality / score**
 
-ArrNexus does not become the final download client. The owning Arr application remains responsible for the hand-off to its configured clients.
-
-In the reference environment:
-
-```text
-NZB result -> Usenet client / InfiniDysk / NzbDAV path
-Torrent result -> Debrid client / Decypharr path
-```
+ArrNexus plans and orchestrates; the owning Arr application still hands work to its configured download/acquisition clients.
 
 ---
 
-# ArrNexus interface and feature guide
+# Provider Registry
 
-This section describes what the main menus are for. It is deliberately separate from the installation procedure: you should not need to understand every feature before deploying ArrNexus.
+ArrNexus is no longer designed around Real-Debrid as the only possible provider.
 
-A dedicated documentation/features site similar in spirit to the DUMB feature documentation is planned for later. Until then, this section acts as the quick feature reference.
+The Provider Registry can represent services such as:
 
-## Dashboard
+- Real-Debrid
+- TorBox
+- Premiumize
+- AllDebrid
+- Debrid-Link
+- EasyDebrid
+- Debrider
+- Offcloud
+- Put.io
+- PikPak
+- Seedr
+- Easynews
+- NzbDAV / InfiniDysk
+- AltMount
+- StremThru Newz
+- AIOStreams
+- Torrin
+- other supported/manual capability definitions
 
-The operations overview.
+Credentials are stored in persistent state and masked in the UI.
 
-Use it to understand the current state of the ArrNexus environment without opening each application separately. Dashboard data can include connected-service health, library status, active work, warnings and other high-level operational information.
+---
 
-> **Screenshot placeholder:** Insert image of the ArrNexus Dashboard here.
+# AIOStreams Bridge
 
-## Discover
+AIOStreams is optional. Stremio is not required to use the rest of ArrNexus.
 
-A combined discovery and acquisition interface.
+When configured, ArrNexus uses a deliberately conservative full-config workflow:
 
-Discover can bring together local/specialist library shelves, metadata search results and acquisition planning. It is where ArrNexus's cross-service view becomes more useful than simply opening one Arr application.
+```text
+GET current userData
+  -> calculate digest
+  -> masked preview
+  -> user confirms
+  -> GET/re-check digest
+  -> private pre-write backup
+  -> merge only known ArrNexus integrations
+  -> full PUT
+  -> verify
+```
 
-Depending on configured services it can compare Usenet and Debrid candidates and apply the selected acquisition strategy.
+Because AIOStreams user PUT is a full replacement operation, ArrNexus preserves unrelated settings and refuses Apply when the remote config changed after Preview.
 
-> **Screenshot placeholder:** Insert image of Discover shelves and a search result here.
+Rollback itself first backs up the current remote configuration.
 
-## DMM / Debrid Inbox
+Search diagnostics redact playback URLs, Authorization/Cookie values, proxy/request headers and secret-bearing fields.
 
-Reviews media already present through DMM/Real-Debrid and helps map that content into the managed Arr library.
+---
 
-Features include metadata review, routing context, duplicate grouping, bulk operations, Real-Debrid cache information, TV pack awareness and Language Guard state.
+# Music Hub
 
-For TV content ArrNexus can distinguish full-series packs, season packs and individual episodes and compare them against Sonarr coverage.
+Music is a first-class workflow rather than forcing it into movie/TV screens.
 
-> **Screenshot placeholder:** Insert image of the DMM Inbox here.
+Supported/open/optional catalogue integrations include:
 
-## Item Review
+- ListenBrainz
+- Apple / iTunes
+- Audius
+- MusicBrainz
+- Deezer
+- Internet Archive
+- Jamendo
+- SoundCloud
+- Spotify
+- Last.fm
+- external catalogue launchers such as Amazon Music, Beatport, Bandcamp and Discogs
 
-A deeper inspection page for a specific DMM/Debrid source.
+Sources are labelled honestly. Global ListenBrainz trends are not presented as Spotify trends.
 
-Use it to check the inferred media identity, target Arr item, language streams, routing decision and link/import action before committing a source to the library.
+## Music API Settings
 
-> **Screenshot placeholder:** Insert image of a DMM item review page here.
+Administrators can open:
 
-## Download Queue
+```text
+Music Hub -> Music API Settings
+```
 
-Aggregates acquisition/download activity into one operational view where supported by the connected services.
+or the dedicated Settings navigation entry.
 
-Use it to answer: *What is currently happening? Which backend owns it? Is it progressing?*
+This is where application/API credentials for Spotify, SoundCloud, Jamendo and Last.fm live.
 
-> **Screenshot placeholder:** Insert image of Download Queue here.
+## Spotify personal account
 
-## Scraping / Acquisition
-
-Shows the acquisition-side activity and decision trail behind searches and grabs.
-
-This is useful when debugging why a particular release was selected, rejected or handed to a specific backend.
-
-> **Screenshot placeholder:** Insert image of Scraping / Acquisition here.
-
-## Timeline
-
-Provides per-title operational history so events across the ArrNexus workflow can be understood in order rather than as disconnected log lines.
-
-> **Screenshot placeholder:** Insert image of Timeline here.
-
-## Music Hub
-
-Music discovery is treated as a first-class workflow rather than forcing everything through the movie/TV interface.
-
-Depending on configuration, Music Hub can expose provider-specific discovery/search plus the user's own Spotify data.
-
-v7 Spotify personal integration can show:
+Spotify application credentials provide catalogue access. A separate per-ArrNexus-user OAuth flow can expose:
 
 - saved tracks
 - saved albums
 - playlists
 - top tracks
 - top artists
-- recently played
-- Spotify catalogue search
+- recently played tracks
 
-Global trend information is kept separate from Spotify personal data so provider ownership is not misrepresented.
+The registered Spotify callback URI must exactly match the URI ArrNexus uses. Normal remote deployments should use HTTPS. Spotify currently allows insecure HTTP only for explicit loopback IP literals such as `127.0.0.1` or `[::1]`; `localhost` is not accepted.
 
-> **Screenshot placeholder:** Insert image of Music Hub here.
+For Spotify Development Mode, the app owner currently needs Spotify Premium and each Spotify account using the app must be added under the app's **Users Management** allowlist. Spotify can allow the browser login to complete even when the user is not allowlisted, but subsequent Web API calls can return HTTP 403. These upstream rules can change, so the in-app Help Centre tells users to verify Spotify's current official developer documentation when troubleshooting.
 
-## Spotify
+The ultimate music acquisition path remains Lidarr → Prowlarr → configured Usenet/provider workflow.
 
-Connects an individual ArrNexus profile to Spotify using OAuth.
+---
 
-Spotify application credentials provide catalogue integration; a user's OAuth connection enables personal library views. Refresh tokens are stored as secret settings rather than displayed back as plaintext.
+# Feature guide
 
-> **Screenshot placeholder:** Insert image of Spotify personal library here.
+## Dashboard
+
+Fast operational overview using a reusable snapshot rather than synchronously rescanning the entire stack on every click.
+
+## Discover
+
+Cross-service media discovery and acquisition planning.
+
+## DMM Inbox / Item Review
+
+Review provider/DMM sources, route them, inspect language/quality state and link safely into managed libraries.
+
+## Download Queue / Acquisition
+
+See active work and acquisition decision trails across supported backends.
+
+## Music Hub
+
+Provider-specific discovery, Spotify personal data and Lidarr handoff.
 
 ## Indexers
 
-Prowlarr-backed indexer operations.
-
-The page can show indexer state and supported controls including:
-
-- enabled/disabled state
-- priority
-- RSS
-- automatic search
-- interactive search
-- tag/category context
-
-Routing-sensitive values are highlighted where another manager may restore them later.
-
-> **Screenshot placeholder:** Insert image of Indexers here.
+Prowlarr-backed indexer status and supported settings.
 
 ## Libraries
 
-Defines and inspects the managed library structure ArrNexus is expected to understand.
-
-Use this area for logical mount/library definitions and for understanding how the virtual/source paths relate to the final media libraries.
-
-> **Screenshot placeholder:** Insert image of Libraries here.
+Logical mount/library relationships and managed media structure.
 
 ## Routing Rules
 
-Controls how ArrNexus decides where different media should go.
+Route default/specialist libraries without one universal target.
 
-Rules can be used to keep specialist libraries or acquisition paths separate instead of forcing every title through one universal target.
+## Quality Lab
 
-> **Screenshot placeholder:** Insert image of Routing Rules here.
+Release scoring with explainable reasons.
 
-## Connections
+## Self-Healing
 
-The central integration setup page.
-
-Add and verify Radarr, Sonarr, Lidarr, Prowlarr, Jellyfin, Seerr, DUMB, InfiniDysk, Decypharr and other supported services here.
-
-A connection should only be considered healthy when the expected authenticated/API behaviour succeeds.
-
-> **Screenshot placeholder:** Insert image of Connections here with all private values blurred or replaced.
+Detect missing/upgrade/broken conditions and trigger bounded remediation.
 
 ## InfiniDysk
 
-Operational view for the InfiniDysk integration.
+Native overview telemetry, queue/history and selectable time windows where upstream support is configured.
 
-Where supported by the upstream service, ArrNexus can show overview telemetry, queue/history information, throughput, providers, sessions and error/latency information across selectable time ranges.
+## Providers
 
-> **Screenshot placeholder:** Insert image of InfiniDysk telemetry here.
+Provider capabilities and secret-safe configuration.
+
+## AIOStreams
+
+Safe bridge, preview/apply/backup/rollback and redacted diagnostics.
 
 ## Problem Centre
 
-Turns detectable media-stack faults into a focused work queue rather than forcing the administrator to hunt through several applications.
-
-Examples can include library-health problems, broken symlinks or other conditions ArrNexus can identify and explain.
-
-> **Screenshot placeholder:** Insert image of Problem Centre here.
-
-## Jobs
-
-Shows ArrNexus background work and scheduled tasks.
-
-Use this page when checking whether maintenance or asynchronous actions are actually running.
-
-> **Screenshot placeholder:** Insert image of Jobs here.
-
-## Logs
-
-Unified ArrNexus logging and known-error context.
-
-Use Logs for detailed troubleshooting after the Dashboard or Problem Centre identifies a problem.
-
-Never publish raw logs without checking them for deployment-specific information.
-
-> **Screenshot placeholder:** Insert image of Logs here.
+Focused fault queue instead of hunting across applications.
 
 ## Maintenance
 
-Administrative maintenance operations such as backups, repair actions, diagnostics and safe housekeeping.
+Backups, broken-link/orphan scanning, diagnostics and safe housekeeping.
 
-ArrNexus includes support for rolling/manual database backups and sanitised configuration/diagnostic workflows in supported builds.
+## Stack Readiness
 
-> **Screenshot placeholder:** Insert image of Maintenance here.
+Bounded live verification for the applications and infrastructure that matter to the current deployment.
 
-## Settings
+## Unified Logs
 
-Application-wide ArrNexus configuration.
+Searchable ArrNexus events plus `performance / slow_request` entries for routes exceeding the configured threshold.
 
-v7 settings include areas such as Language Guard policy and other global behaviour that should apply across users and workflows.
+## Connections
 
-> **Screenshot placeholder:** Insert image of Settings here.
-
-## Profile
-
-Per-user options and integrations.
-
-Profile-specific functionality can include appearance/preferences, request permissions and personal integrations such as Spotify OAuth.
-
-> **Screenshot placeholder:** Insert image of Profile here.
+Radarr/Sonarr/Lidarr/Prowlarr/Seerr/Jellyfin/Plex/Emby and custom external media-server configuration.
 
 ---
 
-# Language Guard
+# Performance model
 
-Language Guard exists because a release filename is not reliable proof of the actual media streams inside a file.
+ArrNexus deliberately avoids doing all expensive work on every navigation.
 
-v7 installs `ffmpeg`/`ffprobe` and can inspect audio and subtitle metadata before a DMM source is linked into the managed library.
+Current architecture includes:
 
-The release validator covers the default behaviour in which English audio and English subtitles are required and unknown metadata can fail closed.
+- DUMB process discovery caching
+- DMM source inventory caching
+- source → symlink index caching
+- library inventory caching
+- dashboard snapshot/background refresh
+- stale-while-revalidate snapshots for expensive operational pages
+- concurrent external API calls with short/bounded timeouts
+- persistent client shell
+- recently visited page cache
+- request de-duplication
+- intent-based prefetch
+- route timing headers/logging
 
-The important safety property is that a Language Guard rejection is **non-destructive to the DMM/Real-Debrid source**. A rejected source can remain available while ArrNexus requests a replacement through the owning Arr.
-
----
-
-# Backups and persistent data
-
-ArrNexus persistent application state lives in:
+A slow request produces a log event similar to:
 
 ```text
-/data
+source: performance
+event: slow_request
+GET /some-route took 4200ms
 ```
 
-The default Compose layout maps that to a local `data` directory.
-
-Treat that directory as private runtime state.
-
-It should **not** be committed to Git.
-
-Back it up before significant upgrades.
-
-Do not assume that copying an old `.env` file forward is the correct migration process. Current releases are designed to store normal application configuration in persistent state and manage it through the browser.
+Use those logs to identify the specific remaining bottleneck rather than assuming the entire application needs another cache.
 
 ---
 
-# Updating a Portainer Git deployment
+# Public homepage and release download
 
-If the stack was created using Portainer's **Git repository** method:
+`/` is deliberately public and contains product/install documentation without private stack data.
 
-1. Open the ArrNexus stack.
-2. Pull/redeploy the stack using the current `main` branch.
-3. Allow Portainer to rebuild the image when the Dockerfile or dependencies changed.
-4. Confirm the container returns to healthy state.
-5. Check the ArrNexus version badge and Logs page.
+Private routes such as `/dashboard` require authentication.
 
-Keep the persistent `data` directory intact.
+A running ArrNexus build can expose a clean source-only release export at:
 
-For production-like use, take a backup before moving between major versions.
+```text
+/download/latest
+/download/latest.sha256
+/api/public/release
+```
 
----
-
-# Historical versions
-
-ArrNexus has evolved through multiple development versions. The goal of this repository is to preserve those releases properly through **Git history, tags and GitHub releases**, rather than keeping old versions as random folders inside the current source tree.
-
-Historical source will be imported only after it has been checked for:
-
-- credentials
-- API keys/tokens
-- private IP addresses/hostnames
-- local usernames and home-directory paths
-- databases
-- persistent application state
-- logs/caches/backups
-- other deployment-specific data
-
-The current `main` branch represents the active v7 beta line.
+The release exporter excludes persistent data, databases, backups, `.env`, virtualenvs, bytecode, runtime caches and existing archives.
 
 ---
 
 # Security model
 
-Current ArrNexus builds are designed around several important rules:
+Important rules:
 
-- secrets are stored as secret settings rather than rendered back in plaintext
-- diagnostics should sanitise secrets
-- Language Guard does not delete DMM/Real-Debrid source media
-- Undo removes ArrNexus-created links rather than the underlying Debrid source
-- community JSON connectors/providers are data-only rather than arbitrary third-party Python execution
-- destructive actions should remain explicit and bounded
+- API keys/tokens/passwords are stored as secret settings and masked on screen.
+- Public documentation contains no deployment-specific secrets.
+- diagnostic/release exports intentionally exclude or sanitise private data.
+- AIOStreams writes use preview, stale protection, backup and verification.
+- Language Guard does not delete the original DMM/provider source.
+- Undo focuses on ArrNexus-created links.
+- custom media-server connectors are data/config driven HTTP checks, not arbitrary Python execution.
+- destructive operations should stay explicit, bounded and reviewable.
 
-If you discover a case where a credential is exposed in the UI, logs, diagnostics or exported configuration, treat it as a security bug.
+If a credential appears in UI, logs, a diagnostic bundle or release export, treat it as a security bug.
 
 ---
 
 # Validation
 
-The v7 package includes an offline validation suite covering application compilation/templates, authenticated page smoke tests, discovery regressions, Spotify personal integration, TV-pack behaviour, acquisition fallback, connector authentication, InfiniDysk parsing, Language Guard policy, performance caches and Prowlarr controls.
-
-From a source checkout:
+From a source release:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 python validate.py
+deactivate
 ```
 
-See `VALIDATION.md` when present in the release for the detailed validation record.
+v9.3's validator executes the previous regression chain first:
 
-Validation does not guarantee that every external third-party service will always be available or retain the same API behaviour.
+```text
+v9.3
+ -> v9.2
+    -> v9.1
+       -> v9
+          -> v8
+             -> v7
+```
+
+Then v9.3 adds tests for the new music, media-server, performance and documentation behaviour.
+
+See `VALIDATION.md` for the exact release record.
+
+Docker image build validation must be performed in an environment where Docker is available; a validator PASS does not pretend third-party services are live.
 
 ---
 
-# Troubleshooting quick checks
+# Troubleshooting
 
-If ArrNexus starts but a connector fails:
+## Connector fails
 
-1. Open **Connections** and test the service.
-2. Confirm the URL is reachable **from the ArrNexus container**, not just from your desktop browser.
-3. Check that you did not use `localhost` for another container.
-4. Confirm the API key/token belongs to the correct service.
-5. Check Docker networks and DNS/service names.
-6. Open **Logs** for the actual connector error.
-7. If filesystem features fail, verify that the required media path is visible inside the relevant containers and that logical mount configuration matches reality.
+1. Open **Connections**.
+2. Confirm URL is reachable **from the ArrNexus container**.
+3. Do not use `localhost` for another container.
+4. Verify the API key/token belongs to the correct service.
+5. Check Docker network/DNS/routing.
+6. Open **Unified Logs**.
 
-If ArrNexus itself fails to start:
+## A page is slow
+
+Open **Unified Logs** and filter:
+
+```text
+performance
+```
+
+or:
+
+```text
+slow_request
+```
+
+The route and measured server time will be logged.
+
+## Music provider opens a wrong/placeholder page
+
+Check **Music API Settings** and any installed catalogue-provider JSON. ArrNexus rejects known example/placeholder domains, but a real plugin must still contain the correct provider URL.
+
+## ArrNexus fails to start
 
 ```bash
 docker compose ps
 docker compose logs --tail=300 arrnexus
 ```
 
-For Portainer users, the same logs are available from the ArrNexus container page.
+## Host validator says FastAPI is missing
+
+That means the Debian host Python does not contain application dependencies. Use the virtualenv procedure above:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python validate.py
+```
+
+Do not install application packages directly into protected Debian system Python merely to run the validator.
 
 ---
 
-# Screenshots and future documentation site
+# Beta testing and feedback
 
-The README deliberately contains screenshot placeholders so the public documentation can be expanded without rewriting the structure later.
+Useful reports include:
 
-Before adding a screenshot:
-
-- blur or replace every API key/token
-- remove private IP addresses
-- remove private DNS names
-- remove usernames
-- remove filesystem paths that contain personal usernames
-- check browser address bars, bookmarks and terminal prompts
-- check media titles if you do not want them published
-
-A richer feature site can be added later using GitHub Pages or a documentation framework. The intended direction is a page where every ArrNexus feature/menu has its own visual explanation, similar to the style of a dedicated product feature catalogue, while the README remains the single starting point for installation and architecture.
-
----
-
-# Beta testers
-
-If you are testing ArrNexus, useful feedback includes:
-
-- your deployment method (Portainer Git stack or Docker Compose)
-- which integrations you enabled
-- which page/action failed
 - exact ArrNexus version
+- deployment method
+- which integrations are enabled
+- exact route/page/action
 - reproducible steps
-- relevant **sanitised** log lines
-- what you expected to happen
-- what actually happened
+- sanitised logs
+- `slow_request` timing when relevant
+- expected result
+- actual result
 
-Please remove credentials, IPs, usernames and private hostnames before posting logs or screenshots.
+Remove credentials, hostnames/IPs, local usernames and sensitive filesystem information before publishing screenshots or logs.
 
 ---
 
-## Project direction
+# Project direction
 
 ArrNexus is being developed as the layer that connects the gaps between otherwise excellent self-hosted media applications.
 
-The aim is not to own every part of the media stack. The aim is to make the existing parts **easier to understand, easier to operate together and easier to automate**.
+The goal is not to own every component. The goal is to make the existing stack **easier to understand, safer to change, easier to operate together and easier to automate**.

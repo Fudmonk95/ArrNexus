@@ -1,0 +1,5 @@
+{% extends 'base.html' %}{% block heading %}Title Timeline{% endblock %}{% block content %}
+<section class="hero"><div><span class="eyebrow">END-TO-END TRACE</span><h2>{{ title or 'Media timeline' }}</h2><p>One chronological view from request/search through import, repair and library activity.</p></div></section>
+<section class="panel"><div class="panelhead"><div><h2>Events</h2><p>{{ events|length }} recorded event{{ '' if events|length==1 else 's' }}.</p></div>{% if source_path %}<code>{{ source_path }}</code>{% endif %}</div>
+<div class="timeline-list">{% for e in events %}<div class="timeline-event"><div class="timeline-dot"></div><div><div class="tags"><span class="tag">{{ e.source }}</span><span class="tag {{ 'green' if e.event in ['complete','linked','import'] else 'amber' if e.event in ['searching','requested','queued'] else '' }}">{{ e.event }}</span></div><strong>{{ e.title }}</strong><p>{{ e.message or 'No additional detail' }}</p><time>{{ e.created_at }}</time></div></div>{% else %}<div class="empty">No timeline events have been recorded for this title yet.</div>{% endfor %}</div></section>
+{% endblock %}

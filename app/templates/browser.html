@@ -1,0 +1,5 @@
+{% extends 'base.html' %}{% block heading %}Library Browser{% endblock %}{% block content %}
+<div class="panel"><div class="panelhead"><div><h2>Read-only media browser</h2><p>Browse enabled paths through the same DUMB mount namespace ArrNexus uses. Nothing can be deleted here.</p></div><a class="btn small" href="/libraries">Libraries</a></div>
+<div class="browser-path"><code>{{ path }}</code></div>{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+<div class="file-list">{% if parent %}<a class="file-row" href="/browser?path={{ parent|urlencode }}"><span>↩</span><strong>..</strong><small>Parent</small></a>{% endif %}{% for x in entries %}<a class="file-row" href="{{ '/browser?path=' + (x.path|urlencode) if x.is_dir else '/browser/file?path=' + (x.path|urlencode) }}"><span>{{ '📁' if x.is_dir else '🎞' }}</span><strong>{{ x.name }}</strong><small>{{ x.size|human_size if not x.is_dir else 'folder' }}</small></a>{% else %}<div class="empty">This directory is empty.</div>{% endfor %}</div></div>
+{% endblock %}
