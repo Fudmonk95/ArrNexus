@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
-"""ArrNexus v10.0.0-beta release validator.
+"""ArrNexus v10.1.0-beta release validator.
 
-Runs the complete retained v9.4 -> v9.3 -> v9.2 -> v9.1 -> v9 -> v8 -> v7
-chain, then validates the v10 self-update bootstrap, collapsed connection UI,
-product-wide visual system and redesigned public landing page.
+Runs the complete retained v10 -> v9.4 -> ... -> v7 chain, then validates the
+v10.1 Language Guard cleanup semantics, controlled rejection state, duplicate
+symlink consolidation safety, exact Real-Debrid deletion rules and UI/docs.
 """
 from __future__ import annotations
 
+import asyncio
 import compileall
-import json
 import os
-import re
 import sqlite3
 import subprocess
 import sys
 import tempfile
-import zipfile
 from pathlib import Path
 
 
@@ -24,47 +22,35 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-def run_retained_layers(root: Path) -> None:
-    env = os.environ.copy()
-    env["ARRNEXUS_VALIDATE_LAYER_ONLY"] = "1"
-    for script, label in (
-        ("validate_v7.py", "v7"),
-        ("validate_v8.py", "v8"),
-        ("validate_v9.py", "v9"),
-        ("validate_v91.py", "v9.1"),
-        ("validate_v92.py", "v9.2"),
-        ("validate_v93.py", "v9.3"),
-        ("validate_v94.py", "v9.4"),
-    ):
-        proc = subprocess.run(
-            [sys.executable, str(root / script)], cwd=root, env=env,
-            text=True, capture_output=True, timeout=240,
-        )
-        if proc.stdout:
-            print(proc.stdout.rstrip())
-        if proc.stderr:
-            print(proc.stderr.rstrip(), file=sys.stderr)
-        require(proc.returncode == 0, f"Retained {label} regression validator failed with exit code {proc.returncode}")
+def run_v10(root: Path) -> None:
+    proc = subprocess.run(
+        [sys.executable, str(root / "validate_v10.py")], cwd=root,
+        text=True, capture_output=True, timeout=420,
+    )
+    if proc.stdout:
+        print(proc.stdout.rstrip())
+    if proc.stderr:
+        print(proc.stderr.rstrip(), file=sys.stderr)
+    require(proc.returncode == 0, f"Retained v10 regression validator failed with exit code {proc.returncode}")
 
 
 def main() -> int:
     root = Path(__file__).resolve().parent
-    if os.getenv("ARRNEXUS_VALIDATE_V10_ONLY") != "1":
-        run_retained_layers(root)
+    if os.getenv("ARRNEXUS_VALIDATE_V101_ONLY") != "1":
+        run_v10(root)
 
     require(compileall.compile_dir(root / "app", quiet=1), "Python compilation failed")
-    require(compileall.compile_file(str(root / "bootstrap.py"), quiet=1), "Bootstrap Python compilation failed")
+    require(compileall.compile_file(str(root / "bootstrap.py"), quiet=1), "Bootstrap compilation failed")
 
-    # JavaScript syntax is part of the release gate when node is available.
     node = __import__("shutil").which("node")
     if node:
         proc = subprocess.run([node, "--check", str(root / "app" / "static" / "app.js")], text=True, capture_output=True, timeout=60)
         require(proc.returncode == 0, f"JavaScript syntax failed: {proc.stderr}")
 
-    with tempfile.TemporaryDirectory(prefix="arrnexus-v10-validate-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="arrnexus-v101-validate-") as tmp:
         os.environ["DB_PATH"] = str(Path(tmp) / "router.db")
         os.environ["DB_DIR"] = tmp
-        os.environ["SESSION_SECRET"] = "validation-only-v10-session-secret"
+        os.environ["SESSION_SECRET"] = "validation-only-v101-session-secret"
         os.environ["ARRNEXUS_SELF_UPDATE"] = "1"
         for key in (
             "RADARR_API_KEY", "SONARR_API_KEY", "LIDARR_API_KEY", "PROWLARR_API_KEY",
@@ -74,107 +60,104 @@ def main() -> int:
 
         from fastapi.testclient import TestClient
         import app.main as main_app
-        import app.updater as updater
+        import app.realdebrid as rd
+        from app.db import init_db, db, create_job, get_job, update_job
+        from app.language_guard import result_badge, load_language_policy
+        from app.consolidation import _candidate_score
+        from app.updater import version_key
 
-        # Compile every template with the real ArrNexus Jinja environment.
+        init_db()
+        with db() as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        require("rejected" in cols, "v10.1 jobs migration missing rejected count")
+        jid = create_job("validator", [{"source_path": "/validator", "display_name": "Validator", "destination_key": "auto"}])
+        update_job(jid, rejected=1, message="controlled rejection")
+        job, _ = get_job(jid)
+        require(int(job.get("rejected") or 0) == 1, "controlled rejection count not persisted")
+
+        probe_key, probe_label = result_badge({"status": "fail", "missing": ["language probe failed"], "errors": ["ffprobe error"]})
+        fail_key, fail_label = result_badge({"status": "fail", "missing": ["English audio"], "errors": []})
+        require(probe_key == "probe_failed" and "failed" in probe_label.lower(), "probe failure badge is not distinct")
+        require(fail_key == "fail" and "rejected" in fail_label.lower(), "policy rejection badge is not distinct")
+
+        pass_score, _ = _candidate_score({"language_key":"pass","resolution":1080,"source_rank":3,"codec_rank":1,"audio_rank":1,"size_bytes":8*1024**3})
+        fail_score, _ = _candidate_score({"language_key":"fail","resolution":2160,"source_rank":6,"codec_rank":3,"audio_rank":4,"hdr":True,"size_bytes":80*1024**3})
+        require(pass_score > fail_score, "Language eligibility must outrank raw 4K/size quality in consolidation")
+
+        # Real-Debrid cleanup must be exact-name only and ambiguous matches must fail closed.
+        original_torrents = rd.torrents
+        original_delete = rd.delete_torrent
+        deleted = []
+        async def fake_rows(limit=1000):
+            return [
+                {"id":"101","filename":"Exact.Movie.2026.1080p","bytes":123},
+                {"id":"102","filename":"Other.Movie.2026.1080p","bytes":456},
+            ]
+        async def fake_delete(tid):
+            deleted.append(str(tid)); return None
+        rd.torrents = fake_rows
+        rd.delete_torrent = fake_delete
+        try:
+            match = asyncio.run(rd.exact_torrent_for_source("/mnt/debrid/decypharr/__all__/Exact.Movie.2026.1080p", 123))
+            require(match.get("ok") and str((match.get("torrent") or {}).get("id")) == "101", "exact RD source match failed")
+            miss = asyncio.run(rd.exact_torrent_for_source("/mnt/debrid/decypharr/__all__/Exact.Movie.2026", 123))
+            require(not miss.get("ok"), "fuzzy/partial RD source match was accepted")
+        finally:
+            rd.torrents = original_torrents
+            rd.delete_torrent = original_delete
+
         for template in sorted((root / "app" / "templates").glob("*.html")):
             main_app.templates.env.get_template(template.name)
 
         with TestClient(main_app.app) as client:
             health = client.get("/api/health", follow_redirects=False)
-            require(health.status_code == 200 and health.json().get("version") == "10.0.0-beta", "v10 health/version response")
-
-            landing = client.get("/", follow_redirects=False)
-            require(landing.status_code == 200, "v10 public landing")
-            for marker in ("v10-hero.png", "v10-core-features.png", "v10-architecture.png", "v10-quick-start.png", "ArrNexus can now update ArrNexus"):
-                require(marker in landing.text, f"v10 landing missing {marker}")
-
+            require(health.status_code == 200 and health.json().get("version") == "10.1.0-beta", "v10.1 health/version")
             setup = client.post("/setup", data={
-                "username": "v10validator",
-                "email": "v10@example.invalid",
-                "display_name": "V10 Validator",
-                "password": "validation-password-123",
-                "confirm": "validation-password-123",
+                "username":"v101validator", "email":"v101@example.invalid", "display_name":"V10.1 Validator",
+                "password":"validation-password-123", "confirm":"validation-password-123",
             }, follow_redirects=False)
-            require(setup.status_code == 303, "v10 administrator setup")
+            require(setup.status_code == 303, "v10.1 administrator setup")
+            saved = client.post("/settings/language-guard", data={
+                "enabled":"true", "auto_upgrade_search":"true", "remove_rejected_debrid":"true",
+                "require_english_audio":"true", "require_english_subtitles":"true", "unknown_is_failure":"true",
+                "max_files":"300", "probe_timeout_seconds":"20",
+            }, follow_redirects=False)
+            require(saved.status_code == 303 and load_language_policy().remove_rejected_debrid, "Language Guard cleanup setting not persisted")
+            consolidation = client.get("/maintenance/consolidation", follow_redirects=False)
+            require(consolidation.status_code == 200 and "Library Consolidation" in consolidation.text, "v10.1 consolidation page")
 
-            settings_page = client.get("/settings", follow_redirects=False)
-            require(settings_page.status_code == 200, "v10 settings")
-            for marker in ("NATIVE SELF-UPDATE", "Fudmonk95/ArrNexus", "Install available update", "SQLite backup"):
-                require(marker in settings_page.text, f"v10 update settings missing {marker}")
-
-            status = client.get("/api/update-status", follow_redirects=False)
-            require(status.status_code == 200 and status.json().get("self_update_capable") is True, "v10 update status API")
-
-        # Directly test updater safety primitives without any live GitHub dependency.
-        updater.DATA_DIR = Path(tmp)
-        updater.RUNTIME_DIR = Path(tmp) / "runtime"
-        updater.RELEASES_DIR = updater.RUNTIME_DIR / "releases"
-        updater.VENVS_DIR = updater.RUNTIME_DIR / "venvs"
-        updater.STATUS_PATH = Path(tmp) / "update-status.json"
-        updater.RESTART_REQUEST_PATH = updater.RUNTIME_DIR / "restart-request.json"
-
-        db = sqlite3.connect(str(Path(tmp) / "router.db"))
-        db.execute("CREATE TABLE IF NOT EXISTS v10_probe(value TEXT)")
-        db.execute("INSERT INTO v10_probe(value) VALUES ('preserved')")
-        db.commit(); db.close()
-        backup = updater._backup_database("v10-validator")
-        require(backup.exists(), "v10 updater database backup was not created")
-        b = sqlite3.connect(str(backup)); row = b.execute("SELECT value FROM v10_probe").fetchone(); b.close()
-        require(row and row[0] == "preserved", "v10 updater database backup is not readable/preserved")
-
-        traversal = Path(tmp) / "bad.zip"
-        with zipfile.ZipFile(traversal, "w") as zf:
-            zf.writestr("../../escape.txt", "no")
-        try:
-            updater._safe_extract(traversal, Path(tmp) / "bad-extract")
-            raise AssertionError("unsafe ZIP traversal was accepted")
-        except ValueError:
-            pass
-
-        require(updater.version_key("10.0.1-beta") > updater.version_key("10.0.0-beta"), "v10 semantic update comparison")
-        require(updater.version_key("10.0.0") > updater.version_key("10.0.0-beta"), "stable release ordering")
+        require(version_key("10.1.0-beta") > version_key("10.0.0-beta"), "updater will not recognize v10.1 as newer")
 
     main_source = (root / "app" / "main.py").read_text(encoding="utf-8")
-    updater_source = (root / "app" / "updater.py").read_text(encoding="utf-8")
-    bootstrap_source = (root / "bootstrap.py").read_text(encoding="utf-8")
-    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
-    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
-    arrs = (root / "app" / "templates" / "arrs.html").read_text(encoding="utf-8")
-    ecosystem = (root / "app" / "templates" / "ecosystem.html").read_text(encoding="utf-8")
-    base = (root / "app" / "templates" / "base.html").read_text(encoding="utf-8")
-    landing = (root / "app" / "templates" / "landing.html").read_text(encoding="utf-8")
+    router_source = (root / "app" / "router_service.py").read_text(encoding="utf-8")
+    rd_source = (root / "app" / "realdebrid.py").read_text(encoding="utf-8")
+    consolidation_source = (root / "app" / "consolidation.py").read_text(encoding="utf-8")
+    settings_html = (root / "app" / "templates" / "settings.html").read_text(encoding="utf-8")
+    job_html = (root / "app" / "templates" / "job.html").read_text(encoding="utf-8")
+    consolidation_html = (root / "app" / "templates" / "consolidation.html").read_text(encoding="utf-8")
     css = (root / "app" / "static" / "app.css").read_text(encoding="utf-8")
-    js = (root / "app" / "static" / "app.js").read_text(encoding="utf-8")
     sw = (root / "app" / "static" / "sw.js").read_text(encoding="utf-8")
     readme = (root / "README.md").read_text(encoding="utf-8")
     guide = (root / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8")
     audit = (root / "docs" / "DOCUMENTATION_AUDIT.md").read_text(encoding="utf-8")
 
-    require('APP_VERSION = "10.0.0-beta"' in main_source, "v10 version string missing")
-    for marker in ("/api/update-check", "/api/update-status", "/api/update-install", "start_self_update"):
-        require(marker in main_source, f"v10 update API missing {marker}")
-    for marker in ("SHA-256", "_safe_extract", "_backup_database", "RESTART_REQUEST_PATH", "SELF_UPDATE_CAPABLE", "signal.SIGTERM"):
-        require(marker in updater_source, f"v10 updater safety/runtime marker missing {marker}")
-    for marker in ("RUNTIME = DATA / \"runtime\"", "wait_for_health", "rolled_back", "restart-request.json", "ARRNEXUS_SELF_UPDATE"):
-        require(marker in bootstrap_source, f"v10 bootstrap marker missing {marker}")
-    require('CMD ["python", "/opt/arrnexus-bootstrap.py"]' in dockerfile and "ARRNEXUS_SELF_UPDATE=1" in dockerfile, "Dockerfile is not using the v10 bootstrap")
-    require("docker.sock" not in compose.lower(), "v10 self-update must not require the Docker socket")
+    require('APP_VERSION = "10.1.0-beta"' in main_source, "v10.1 version string missing")
+    for marker in ("LanguageRejectedSafe", "complete_with_rejections", "language_rejected_removed", "_INBOX_SNAPSHOT.clear()"):
+        require(marker in main_source or marker in router_source, f"v10.1 Language Guard workflow missing {marker}")
+    for marker in ("delete_source_torrent_exact", "exact_torrent_for_source", "Ambiguous", "DELETE"):
+        require(marker.lower() in rd_source.lower(), f"v10.1 exact RD cleanup missing {marker}")
+    for marker in ("scan_consolidation", "apply_consolidation", "expected_digest", "orphaned_sources", "remove_provider_sources", "_rescan_affected"):
+        require(marker in consolidation_source, f"v10.1 consolidation safety missing {marker}")
+    require("remove_rejected_debrid" in settings_html, "v10.1 rejected-source cleanup setting missing")
+    require("language rejected" in job_html.lower(), "v10.1 job UI does not distinguish rejections")
+    require("Eligibility comes before raw quality" in consolidation_html and "Provider cleanup is separate and optional" in consolidation_html, "v10.1 consolidation preview safety copy missing")
+    require("consolidation-group" in css and "language-probe_failed" in css, "v10.1 consolidation/language styles missing")
+    require("arrnexus-static-v10.1" in sw, "v10.1 service-worker cache marker missing")
+    require("Version 10.1" in readme and "Library Consolidation" in readme, "README missing v10.1 release detail")
+    require("Library Consolidation" in guide and "exact Real-Debrid" in guide, "User Guide missing v10.1 cleanup guidance")
+    require("/maintenance/consolidation" in audit, "Documentation audit missing v10.1 consolidation routes")
 
-    require(arrs.count("<details class=\"v10-service-accordion") >= 2 and "v10-accordion-stack" in arrs, "Connections are not collapsed v10 accordions")
-    require(ecosystem.count("<details class=\"v10-service-accordion") >= 3 and "is-disabled" in ecosystem, "Ecosystem is not using collapsed/disabled v10 accordions")
-    require("v10-update-modal" in base and "data-install-update" in base, "global v10 update notification modal missing")
-    require("v10-update-modal" in css and "#030304" in css and "v10-public-page" in css, "v10 black product visual layer missing")
-    require("/api/update-install" in js and "location.reload()" in js and "data-update-dismiss" in js, "v10 client update/reload workflow missing")
-    require("arrnexus-static-v10.0" in sw, "v10 service-worker cache marker missing")
-    for asset in ("v10-hero.png", "v10-architecture.png", "v10-core-features.png", "v10-quick-start.png"):
-        require((root / "app" / "static" / asset).exists(), f"v10 public visual asset missing {asset}")
-    require("Version 10 — ArrNexus updates itself" in readme and "Cleaner Connections & Ecosystem" in readme, "README missing v10 release architecture")
-    require("Native updates, release ZIPs & rollback" in guide, "User Guide missing v10 update instructions")
-    m = re.search(r"Application routes/actions audited: \*\*(\d+)\*\*", audit)
-    require(bool(m) and int(m.group(1)) >= 122, "Documentation audit missing v10 update routes")
-
-    print("PASS: ArrNexus v10.0.0-beta retains v7/v8/v9/v9.1/v9.2/v9.3/v9.4 regressions and adds checksum-verified native self-update with SQLite backup/validation/restart/rollback, collapsed Connections/Ecosystem configuration, unified black product styling and README-matched public landing visuals")
+    print("PASS: ArrNexus v10.1.0-beta retains v7/v8/v9/v9.1/v9.2/v9.3/v9.4/v10 regressions and adds exact rejected Real-Debrid cleanup, controlled Language Guard rejection state, immediate Inbox refresh and safe preview-first movie/episode symlink consolidation with optional orphan-provider cleanup")
     return 0
 
 

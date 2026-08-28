@@ -8,7 +8,7 @@
 </div>
 
 <section class="panel language-settings">
-  <div class="panelhead"><div><h2>Language Guard</h2><p>Verify the real audio/subtitle streams before DMM/Real-Debrid media is linked into a library. Failed sources are kept and can be sent back to Radarr/Sonarr for an English replacement.</p></div></div>
+  <div class="panelhead"><div><h2>Language Guard</h2><p>Verify the real audio/subtitle streams before DMM/Real-Debrid media is linked into a library. Failed sources can be sent back to Radarr/Sonarr for an English replacement. v10.1 can also remove the exactly identified rejected Real-Debrid torrent so it does not remain stuck in DMM Waiting.</p></div></div>
   <form method="post" action="/settings/language-guard" class="formgrid">
     <div class="grid-2">
       <label class="check"><input type="checkbox" name="enabled" value="true" {{ 'checked' if language_policy.enabled }}> Enable Language Guard</label>
@@ -17,6 +17,7 @@
       <label class="check"><input type="checkbox" name="require_english_subtitles" value="true" {{ 'checked' if language_policy.require_english_subtitles }}> Require English subtitles</label>
       <label class="check"><input type="checkbox" name="require_default_english_audio" value="true" {{ 'checked' if language_policy.require_default_english_audio }}> Require the default audio track to be English</label>
       <label class="check"><input type="checkbox" name="unknown_is_failure" value="true" {{ 'checked' if language_policy.unknown_is_failure }}> Treat unknown/missing language metadata as failure</label>
+      <label class="check"><input type="checkbox" name="remove_rejected_debrid" value="true" {{ 'checked' if language_policy.remove_rejected_debrid }}> Remove exactly matched Real-Debrid source after Language Guard rejection</label>
     </div>
     <div class="grid-2"><label>Maximum files per source<input type="number" name="max_files" value="{{ language_policy.max_files }}" min="1" max="1000"><small>Safety ceiling for very large full-series packs.</small></label><label>ffprobe timeout per file (seconds)<input type="number" name="probe_timeout_seconds" value="{{ language_policy.probe_timeout_seconds }}" min="5" max="90"></label></div>
     <div class="formactions"><button class="btn primary">Save Language Guard</button><a class="btn" href="/inbox?status=language">Review language issues</a></div>

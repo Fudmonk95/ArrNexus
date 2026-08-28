@@ -155,3 +155,80 @@ async def torrent_info(torrent_id: str) -> dict:
 
 async def instant_availability(info_hash: str):
     return await request("GET", f"torrents/instantAvailability/{info_hash}")
+
+
+def _normalise_torrent_name(value: str) -> str:
+    """Conservative name normalisation used only for exact source cleanup matching."""
+    import unicodedata
+    text = unicodedata.normalize("NFKC", str(value or "")).strip().rstrip("/\\")
+    return " ".join(text.split()).casefold()
+
+
+async def delete_torrent(torrent_id: str):
+    """Delete one exact Real-Debrid torrent by provider ID."""
+    tid = str(torrent_id or "").strip()
+    import re
+    if not tid or not re.fullmatch(r"[A-Za-z0-9_-]+", tid):
+        raise RealDebridError("Refusing to delete a Real-Debrid torrent without an exact provider torrent ID")
+    return await request("DELETE", f"torrents/delete/{tid}")
+
+
+async def exact_torrent_for_source(source_path: str, source_size_bytes: int = 0) -> dict:
+    """Resolve a DMM/Decypharr source folder to exactly one RD torrent.
+
+    This intentionally does not use fuzzy title matching.  The source folder's
+    basename must equal the RD torrent filename after harmless unicode/case/
+    whitespace normalisation.  If more than one exact-name torrent exists, an
+    exact byte-size match may disambiguate it.  Anything else is treated as
+    ambiguous and left untouched.
+    """
+    from pathlib import Path
+
+    source_name = Path(str(source_path or "")).name
+    wanted = _normalise_torrent_name(source_name)
+    if not wanted:
+        return {"ok": False, "reason": "Source folder has no usable name"}
+
+    rows = await torrents(limit=1000)
+    exact = [
+        row for row in rows
+        if _normalise_torrent_name(str(row.get("filename") or row.get("name") or "")) == wanted
+    ]
+    if len(exact) == 1:
+        return {"ok": True, "torrent": exact[0], "matched_by": "exact filename"}
+
+    if len(exact) > 1 and int(source_size_bytes or 0) > 0:
+        size_matches = []
+        for row in exact:
+            try:
+                if int(row.get("bytes") or 0) == int(source_size_bytes):
+                    size_matches.append(row)
+            except Exception:
+                pass
+        if len(size_matches) == 1:
+            return {"ok": True, "torrent": size_matches[0], "matched_by": "exact filename + exact byte size"}
+
+    if not exact:
+        return {"ok": False, "reason": f"No exact Real-Debrid torrent matched source folder '{source_name}'"}
+    return {"ok": False, "reason": f"{len(exact)} exact-name Real-Debrid torrents matched '{source_name}'; cleanup is ambiguous"}
+
+
+async def delete_source_torrent_exact(source_path: str, source_size_bytes: int = 0) -> dict:
+    """Safely delete the RD torrent backing one source folder when identification is exact."""
+    if not connected():
+        return {"ok": False, "deleted": False, "reason": "Real-Debrid is not connected in ArrNexus"}
+    matched = await exact_torrent_for_source(source_path, source_size_bytes)
+    if not matched.get("ok"):
+        return {"ok": False, "deleted": False, "reason": matched.get("reason") or "Exact torrent match failed"}
+    torrent = matched.get("torrent") or {}
+    torrent_id = str(torrent.get("id") or "")
+    if not torrent_id:
+        return {"ok": False, "deleted": False, "reason": "Matched Real-Debrid torrent did not contain an ID"}
+    await delete_torrent(torrent_id)
+    return {
+        "ok": True,
+        "deleted": True,
+        "torrent_id": torrent_id,
+        "filename": str(torrent.get("filename") or torrent.get("name") or ""),
+        "matched_by": matched.get("matched_by") or "exact match",
+    }

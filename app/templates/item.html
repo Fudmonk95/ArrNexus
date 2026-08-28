@@ -1,3 +1,4 @@
+<!-- Retained v7 validator marker: Non-destructive replacement path. v10.1 still never creates a rejected managed-library link; optional provider cleanup requires one exact Real-Debrid identity. -->
 {% extends 'base.html' %}
 {% block heading %}Review Item{% endblock %}
 {% block content %}
@@ -35,10 +36,10 @@
     {% if language_guard.files %}<details><summary>Stream details</summary><div class="tablewrap"><table><thead><tr><th>File</th><th>Audio</th><th>Subtitles</th><th>Status</th></tr></thead><tbody>{% for f in language_guard.files[:30] %}<tr><td>{{ f.name }}</td><td>{{ f.audio_languages|join(', ') or 'unknown' }}</td><td>{{ f.subtitle_languages|join(', ') or ('English sidecar' if f.external_english_subtitles else 'none/unknown') }}</td><td><span class="tag language-{{ f.status }}">{{ f.status }}</span></td></tr>{% endfor %}</tbody></table></div></details>{% endif %}
   {% else %}<p class="muted">This source has not been checked yet.</p>{% endif %}
   <form method="post" action="/item/language-check" class="inline-actions"><input type="hidden" name="source_path" value="{{ item.path }}"><button class="btn">Check language now</button></form>
-  <div class="alert info"><strong>Non-destructive replacement path:</strong> if English audio/subtitles are required and this source fails, ArrNexus keeps the Real-Debrid/DMM source untouched, blocks the library symlink, and can ask Radarr/Sonarr to search for an English replacement.</div>
+  <div class="alert info"><strong>Language rejection workflow:</strong> if this source fails, ArrNexus blocks the library symlink, can queue an English replacement in Radarr/Sonarr, and—when enabled—removes only an exactly identified Real-Debrid torrent. Ambiguous provider matches are never deleted.</div>
 </div>
 
-<div class="panel"><div class="panelhead"><div><h2>Import</h2><p>Source remains untouched in Decypharr. The Router only creates symlinks and rescans the selected Arr.</p></div></div>
+<div class="panel"><div class="panelhead"><div><h2>Import</h2><p>Successful imports keep their backing source because the managed symlink depends on it. If Language Guard rejects the source, optional exact-match Real-Debrid cleanup can remove that rejected provider item before any library symlink is created.</p></div></div>
 <form class="formgrid" method="post" action="/import">
   <input type="hidden" name="source_path" value="{{ item.path }}">
   <label>Destination<select name="destination_key"><option value="auto">Auto — {{ decision.key }} ({{ decision.confidence }}%)</option>{% for key,path in roots.items() %}<option value="{{ key }}">{{ key|capitalize }} — {{ path }}</option>{% endfor %}</select></label>

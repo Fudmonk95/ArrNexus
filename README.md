@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.0.0--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.1.0--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -59,6 +59,74 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 ### Supported ecosystem
 
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
+
+---
+
+## 🆕 Version 10.1 — Language cleanup & Library Consolidation
+
+v10.1 is the first release intended to prove the v10 one-click updater end-to-end. It also tightens the DMM/Real-Debrid lifecycle and adds preview-first duplicate-link cleanup.
+
+### Language Guard rejection is now a controlled workflow
+
+When a DMM/Real-Debrid source fails Language Guard, ArrNexus now distinguishes that expected policy rejection from a real application/import error:
+
+```text
+Language Guard check
+  ↓
+PASS → create managed symlink normally
+
+FAIL / probe failure
+  ↓
+block library link
+  ↓
+record checked/rejected state
+  ↓
+queue English replacement in Radarr/Sonarr (when enabled)
+  ↓
+exact-match rejected Real-Debrid torrent cleanup (when enabled)
+```
+
+Rejected-source deletion is deliberately fail-safe. ArrNexus does **not** fuzzy-match a title and delete whatever looks close. The DMM source-folder name must resolve to one exact Real-Debrid torrent identity; ambiguous or missing matches are retained and the job explains why cleanup did not run.
+
+The DMM Inbox is invalidated immediately after the check/import result, so a source that has actually been checked no longer falls back to the stale `Language unchecked` / `waiting` presentation. Probe failures display as **Language check failed** and policy failures display as **Language rejected**.
+
+### Library Consolidation
+
+Open **Maintenance → Library Consolidation** to scan all managed Radarr/Sonarr symlinks. ArrNexus only performs expensive language/quality scoring for groups that are actually duplicates.
+
+For each duplicate movie part or TV episode, candidates are ranked using:
+
+1. Language Guard eligibility
+2. Resolution
+3. source quality such as Remux / BluRay / WEB-DL
+4. HDR / Dolby Vision hints
+5. codec
+6. audio quality hints
+7. file size
+
+Eligibility wins before raw resolution: a verified-English 1080p source can outrank a 2160p source that failed Language Guard. Multi-part movie files are kept as separate parts, and TV consolidation groups at episode identity rather than deleting whole season/series sources blindly.
+
+The workflow is preview-first:
+
+```text
+scan every movie/TV symlink
+  ↓
+group equivalent versions
+  ↓
+rank and show KEEP / REMOVE LINK
+  ↓
+preview digest
+  ↓
+Apply safe link cleanup
+  ↓
+rescan affected Radarr/Sonarr items
+  ↓
+rebuild source → surviving-link index
+  ↓
+optionally remove only exact RD sources made unreferenced by that apply
+```
+
+Provider deletion after consolidation is **off by default**. Even when explicitly enabled, only sources made unreferenced by that exact cleanup operation are considered, and ambiguous Real-Debrid matches are never deleted.
 
 ---
 
@@ -351,8 +419,8 @@ sudo apt install -y unzip python3-venv
 ### Extract
 
 ```bash
-unzip arrnexus-v10.0.zip
-cd arrnexus-v10.0
+unzip arrnexus-v10.1.0-beta.zip
+cd arrnexus-v10.1
 mkdir -p data
 ```
 
@@ -1553,7 +1621,7 @@ Recent releases added:
 
 ## 🧪 Release Status
 
-**Current release:** `v10.0.0-beta`
+**Current release:** `v10.1.0-beta`
 
 Beta means exactly that: ArrNexus has extensive deterministic validation, but real deployments vary in:
 

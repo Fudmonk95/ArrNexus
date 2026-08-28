@@ -2,14 +2,14 @@ from __future__ import annotations
 
 """Media language verification for ArrNexus.
 
-Language Guard is intentionally conservative and non-destructive.  It probes
-media already present in the DUMB/Decypharr namespace with ffprobe, records the
-result in ArrNexus' metadata cache and lets the import pipeline reject a source
-before creating library symlinks when the configured language policy is not
-met.
+Language Guard probes media already present in the DUMB/Decypharr namespace
+with ffprobe, records the result in ArrNexus' metadata cache and lets the import
+pipeline reject a source before creating library symlinks when the configured
+language policy is not met.
 
-A rejected source is never deleted.  The caller can ask Radarr/Sonarr to search
-for a replacement, leaving the original Real-Debrid source intact for review.
+From v10.1, an administrator can automatically remove an exactly identified
+Real-Debrid source after rejection.  Cleanup is deliberately fail-safe: fuzzy or
+ambiguous provider matches are never deleted.
 """
 
 from dataclasses import dataclass
@@ -41,6 +41,7 @@ class LanguagePolicy:
     require_default_english_audio: bool = False
     unknown_is_failure: bool = True
     auto_upgrade_search: bool = True
+    remove_rejected_debrid: bool = True
     max_files: int = 300
     probe_timeout_seconds: int = 20
 
@@ -66,6 +67,7 @@ def load_language_policy() -> LanguagePolicy:
         require_default_english_audio=_bool_setting("language.require_default_english_audio", False),
         unknown_is_failure=_bool_setting("language.unknown_is_failure", True),
         auto_upgrade_search=_bool_setting("language.auto_upgrade_search", True),
+        remove_rejected_debrid=_bool_setting("language.remove_rejected_debrid", True),
         max_files=max_files,
         probe_timeout_seconds=timeout,
     )
@@ -79,6 +81,7 @@ def save_language_policy(
     require_default_english_audio: bool,
     unknown_is_failure: bool,
     auto_upgrade_search: bool,
+    remove_rejected_debrid: bool = True,
     max_files: int = 300,
     probe_timeout_seconds: int = 20,
 ) -> None:
@@ -89,6 +92,7 @@ def save_language_policy(
         "language.require_default_english_audio": require_default_english_audio,
         "language.unknown_is_failure": unknown_is_failure,
         "language.auto_upgrade_search": auto_upgrade_search,
+        "language.remove_rejected_debrid": remove_rejected_debrid,
     }
     for key, value in values.items():
         setting_set(key, "true" if value else "false")
@@ -321,6 +325,7 @@ def inspect_source_languages(source_path: str, fingerprint: str = "", force: boo
             "require_default_english_audio": policy.require_default_english_audio,
             "unknown_is_failure": policy.unknown_is_failure,
             "auto_upgrade_search": policy.auto_upgrade_search,
+            "remove_rejected_debrid": policy.remove_rejected_debrid,
         },
     }
     cache_set(key, result)
@@ -334,7 +339,10 @@ def result_badge(result: dict | None) -> tuple[str, str]:
     if status == "pass":
         return "pass", "English ✓ · subs ✓"
     if status == "fail":
-        return "fail", "Language issue"
+        missing = [str(x).lower() for x in (result.get("missing") or [])]
+        if result.get("errors") or any("probe failed" in x for x in missing):
+            return "probe_failed", "Language check failed"
+        return "fail", "Language rejected"
     if status == "disabled":
         return "disabled", "Language Guard off"
     return "unknown", "Language unknown"

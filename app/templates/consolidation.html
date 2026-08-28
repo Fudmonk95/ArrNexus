@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% block heading %}Library Consolidation{% endblock %}
+{% block content %}
+{% if notice %}<div class="alert info">{{ notice }}</div>{% endif %}
+{% if error %}<div class="alert error">Consolidation scan failed: {{ error }}</div>{% endif %}
+<section class="hero"><div><span class="eyebrow">V10.1 · SAFE DUPLICATE CLEANUP</span><h2>Keep the best link. Remove the redundant ones.</h2><p>ArrNexus scans every managed Radarr/Sonarr symlink, groups only equivalent movie parts or TV episodes, then ranks duplicate candidates by Language Guard result, resolution, source quality, HDR/DV, codec, audio and file size.</p></div><div class="inline-actions"><a class="btn" href="/maintenance" data-nav>Back to Maintenance</a><a class="btn primary" href="/maintenance/consolidation" data-nav>Run fresh preview</a></div></section>
+<div class="stats-grid"><div class="stat"><span>Symlinks scanned</span><strong>{{ preview.symlinks_scanned }}</strong></div><div class="stat"><span>Duplicate groups</span><strong>{{ preview.duplicate_groups }}</strong></div><div class="stat"><span>Recommended removals</span><strong>{{ preview.recommended_removals }}</strong></div></div>
+<div class="alert info"><strong>Eligibility comes before raw quality.</strong> A verified English source outranks a higher-resolution source that failed Language Guard. Multi-part movies are kept as separate parts, and TV cleanup works at episode identity rather than whole-series level.</div>
+{% if preview.groups %}
+<div class="consolidation-groups">
+{% for group in preview.groups %}
+<section class="consolidation-group">
+  <div class="panelhead"><div><span class="eyebrow">{{ group.kind|upper }}</span><h3>{{ group.key }}</h3><p>{{ group.candidates|length }} versions · keep 1 · remove {{ group.remove|length }}</p></div></div>
+  {% for c in group.candidates %}
+  <div class="consolidation-candidate {{ 'keep' if loop.first else 'remove' }}">
+    <div><strong>{{ 'KEEP' if loop.first else 'REMOVE LINK' }} · {{ c.source_name }}</strong><div class="consolidation-reasons">{% for reason in c.reasons %}<span class="tag">{{ reason }}</span>{% endfor %}</div><div class="consolidation-path">{{ c.link }} → {{ c.target }}</div></div>
+    <div class="consolidation-score"><span class="tag {{ 'green' if loop.first else 'mutedtag' }}">score {{ c.score }}</span></div>
+  </div>
+  {% endfor %}
+</section>
+{% endfor %}
+</div>
+<form class="consolidation-actions" method="post" action="/maintenance/consolidation/apply" onsubmit="return confirm('Remove the recommended redundant library symlinks? The provider cleanup option can also permanently delete exact orphaned Real-Debrid torrents.');">
+  <input type="hidden" name="digest" value="{{ preview.digest }}">
+  <div class="consolidation-warning"><strong>Provider cleanup is separate and optional.</strong> ArrNexus first removes only redundant symlinks, rebuilds the surviving-link index, and only considers Real-Debrid sources that became unreferenced because of this exact operation. Ambiguous RD matches are never deleted.</div>
+  <label class="check"><input type="checkbox" name="remove_provider_sources" value="true"> Also remove exactly matched Real-Debrid torrents that become unreferenced</label>
+  <div class="formactions"><button class="btn primary" type="submit">Apply safe link cleanup</button><a class="btn" href="/maintenance" data-nav>Cancel</a></div>
+</form>
+{% else %}
+<div class="panel"><div class="empty">No redundant movie/episode symlink groups were found. Unique library links are left untouched.</div></div>
+{% endif %}
+{% endblock %}

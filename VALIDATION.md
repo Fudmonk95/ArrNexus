@@ -1,32 +1,60 @@
-# ArrNexus v10.0.0-beta Validation Report
+# ArrNexus v10.1.0-beta Validation Report
 
-Release target: **ArrNexus 10.0.0-beta**
+Release target: **ArrNexus 10.1.0-beta**
 
-The v10 validator executes the complete retained regression chain first:
+## Regression chain
 
-`v7 → v8 → v9 → v9.1 → v9.2 → v9.3 → v9.4 → v10`
+The v10.1 release tree was validated against the retained regression layers individually:
 
-The v10 release layer validates:
+- PASS — v7.0
+- PASS — v8
+- PASS — v9.0.0-beta
+- PASS — v9.1
+- PASS — v9.2
+- PASS — v9.3.0-beta
+- PASS — v9.4.0-beta
+- PASS — v10.0.0-beta compatibility layer
+- PASS — v10.1.0-beta feature layer
 
-- Python compilation across the application and bootstrap supervisor
-- JavaScript syntax when Node.js is available
-- real Jinja template compilation through the ArrNexus environment
-- `/api/health` reporting `10.0.0-beta`
-- public landing-page rendering and all four v10 visual assets
-- administrator first-run setup and Settings rendering
-- native update status/install API wiring
-- SQLite backup preservation using a real temporary database
-- ZIP path-traversal rejection
-- semantic version ordering for beta/stable releases
-- SHA-256/update safety implementation markers
-- `/data/runtime` staging, restart-request and automatic rollback bootstrap design
-- Dockerfile bootstrap entrypoint and absence of Docker-socket dependency
-- collapsed Connections and Ecosystem service accordions
-- product-wide v10 near-black visual layer and update modal
-- service-worker v10 cache marker
-- source-backed native-update Help/User Guide coverage
-- documentation audit coverage for the expanded v10 route surface
+The top-level `validate.py` still invokes the retained v10 validator, which in turn retains the earlier layers. The release-engineering environment runs the layers separately as well so long historical chains do not hide which layer failed.
 
-Final release packaging additionally requires the source tree to be cleaned of runtime data, virtual environments, bytecode/cache files and private credentials; the exact ZIP is then extracted into a separate directory and the full validator is run again against that extracted copy before SHA-256 publication.
+## v10.1 checks
 
-Docker Compose `config`/image-build validation is only claimed when Docker is actually available in the packaging environment. Third-party live services, provider APIs, deployment-specific mount namespaces and reverse proxies still require live-stack testing.
+Validated:
+
+- Python compilation across `app/`, bootstrap and validators.
+- JavaScript syntax when Node is available.
+- Real Jinja template compilation through the ArrNexus environment.
+- `/api/health` reporting `10.1.0-beta`.
+- First-admin setup smoke.
+- Language Guard `remove_rejected_debrid` setting persistence.
+- Separate `Language check failed` and `Language rejected` badge states.
+- Database migration for controlled job `rejected` counts.
+- `complete_with_rejections` workflow markers and immediate DMM Inbox invalidation.
+- Real-Debrid cleanup requires exact source-folder/torrent-name identity and rejects fuzzy/partial matching.
+- Exact provider deletion uses the matched provider torrent ID rather than filesystem deletion.
+- Consolidation ranking gives Language Guard eligibility priority over raw 4K/file-size quality.
+- Preview-first Library Consolidation route and template.
+- Stale-preview digest protection before link removal.
+- Optional provider cleanup remains separate from link cleanup and is off by default in the UI.
+- Provider cleanup only considers sources made unreferenced by the exact consolidation apply operation.
+- v10 updater semantic ordering recognizes `10.1.0-beta` as newer than `10.0.0-beta`.
+- Documentation audit covers 124 application routes/actions including both consolidation routes.
+
+## Real Uvicorn smoke
+
+A real Uvicorn process was started against a temporary SQLite database with the v10 self-update environment enabled.
+
+Verified:
+
+- `GET /api/health` → 200 with `10.1.0-beta`
+- `GET /setup` → 200
+- `GET /` → 200
+
+## Docker
+
+Docker is not available inside the release-packaging environment, so no claim is made that `docker compose build` was executed there. The included Compose/Dockerfile remain covered by the retained v10 source validation. Run `docker compose config` and `docker compose build` on the deployment host before a manual container upgrade.
+
+## Release safety rule
+
+The final distributable ZIP must be created only after transient/runtime files are removed. That exact ZIP must then be extracted into a separate directory and the regression/feature validation repeated against the extracted copy before its SHA-256 is published.
