@@ -51,7 +51,7 @@ async def dumb_logs(process_name: str = "DUMB", limit: int = 1000) -> tuple[list
     cfg = connector_config("dumb")
     if not cfg.get("enabled") or not cfg.get("url"):
         return [], "DUMB connector is not configured"
-    headers = {"User-Agent": "ArrNexus/7.0"}
+    headers = {"User-Agent": "ArrNexus/8.0"}
     if cfg.get("api_key"):
         headers["X-Api-Key"] = str(cfg.get("api_key"))
     try:

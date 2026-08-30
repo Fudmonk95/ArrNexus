@@ -27,7 +27,7 @@ class InfiniDyskClient:
 
     async def health(self) -> dict[str, Any]:
         self._require()
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers={"User-Agent":"ArrNexus/7.0"}) as client:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers={"User-Agent":"ArrNexus/8.0"}) as client:
             r = await client.get(self.url + "/healthz")
         if r.status_code >= 400:
             raise InfiniDyskError(f"Health check failed: HTTP {r.status_code}")
@@ -44,7 +44,7 @@ class InfiniDyskClient:
         query = {"mode": mode, "output": "json", **params}
         if self.api_key:
             query["apikey"] = self.api_key
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers={"User-Agent":"ArrNexus/7.0"}) as client:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers={"User-Agent":"ArrNexus/8.0"}) as client:
             r = await client.get(self.url + "/api", params=query)
         if r.status_code >= 400:
             raise InfiniDyskError(f"SAB API failed: HTTP {r.status_code} {r.text[:300]}")
@@ -77,7 +77,7 @@ class InfiniDyskClient:
             raise InfiniDyskError("InfiniDysk API key is not configured")
         if window not in {"1h", "24h", "7d", "30d", "all"}:
             window = "24h"
-        headers = {"User-Agent": "ArrNexus/7.0", "X-Api-Key": self.api_key}
+        headers = {"User-Agent": "ArrNexus/8.0", "X-Api-Key": self.api_key}
         async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, headers=headers) as client:
             r = await client.get(self.url + "/api/get-overview-stats", params={"window": window, "sections": sections})
         if r.status_code in {401, 403}:
@@ -92,7 +92,7 @@ class InfiniDyskClient:
 
     async def metrics(self) -> list[dict[str, Any]]:
         self._require()
-        headers = {"User-Agent":"ArrNexus/7.0"}
+        headers = {"User-Agent":"ArrNexus/8.0"}
         if self.api_key:
             headers["X-Api-Key"] = self.api_key
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=True, headers=headers) as client:

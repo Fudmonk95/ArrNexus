@@ -1,5 +1,22 @@
 # Changelog
 
+## 8.0.0-beta — AIOStreams Bridge
+
+- Built directly from the validated ArrNexus v7.0.0 source package and retained the full v7 regression suite as `validate_v7.py`.
+- Added an administrator-only AIOStreams Bridge page and status/search APIs.
+- Added AIOStreams User API authentication with raw password or returned `encryptedPassword` reuse; credentials remain persistent secret settings.
+- Added safe full-configuration Auto-Wire workflow: GET current config, digest, masked preview, stale-preview re-check, private backup, merged full PUT and post-write verification.
+- Added refusal of stale previews so a remotely changed AIOStreams configuration cannot be overwritten from an old preview.
+- Added private pre-write and pre-rollback AIOStreams backups under persistent `/data` with restrictive permissions.
+- Added Prowlarr preset Auto-Wire using the existing ArrNexus Prowlarr URL and API key. New presets keep automatic service routing and an empty source selection so both torrent and Usenet remain eligible.
+- Preserved and extended existing explicit Prowlarr service allow-lists instead of replacing them; explicit source selections are also preserved.
+- Added safe Real-Debrid reuse when ArrNexus can identify an existing key, with secret masking in previews/logs/UI.
+- Added conservative NzbDAV enablement: existing AIOStreams credentials win, and ArrNexus only fills clearly identified missing `url`, `publicUrl`, `apiKey`, `username`, `password` or `aiostreamsAuth` values.
+- Added safe Newznab, Torznab and SAB-compatible endpoint helpers.
+- Added movie/series/anime ID search diagnostics with playback URL, request/proxy header, Authorization, Cookie and secret-field redaction.
+- Added deterministic mock AIOStreams HTTP tests covering stale protection, backup-before-write, full-config preservation, search redaction and rollback.
+- Version remains `8.0.0-beta` pending live verification against the user's AIOStreams instance and copied v7 data.
+
 ## 7.0.0 — Personal Music, Language Guard & Live Operations
 
 - Added per-user Spotify OAuth with saved tracks, saved albums, playlists, top tracks/artists and recently played music.

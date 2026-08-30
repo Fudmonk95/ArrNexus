@@ -1,10 +1,38 @@
-# ArrNexus v7.0.0 — Personal Music, Language Guard & Live Media Operations
+# ArrNexus v8.0.0-beta — AIOStreams Bridge & Live Media Operations
 
 ArrNexus is a self-hosted control and intelligence layer for Arr-based media stacks. It is designed to sit above Radarr, Sonarr, Lidarr, Prowlarr, Jellyfin/Seerr, DUMB, InfiniDysk and Decypharr without replacing the specialist applications that already do those jobs well.
 
-v7 turns the unfinished v6.2 work into a release: personal Spotify data, native InfiniDysk telemetry, strict English-language validation for DMM imports, Prowlarr indexer management, corrected Sonarr TV release search, stricter service verification and short-lived namespace caches to reduce repeated filesystem work.
+v8.0.0-beta builds directly on the validated v7 source baseline. It retains v7 personal Spotify data, native InfiniDysk telemetry, strict English-language validation, Prowlarr management, corrected Sonarr search, strict service verification and performance caches, then adds an administrator-only AIOStreams Bridge designed around AIOStreams' full-replacement User API.
 
-## v7 highlights
+## v8.0 beta — AIOStreams Bridge
+
+AIOStreams integration is intentionally conservative because `PUT /api/v1/user` replaces the complete stored user configuration. ArrNexus therefore uses this write sequence:
+
+**GET current config → calculate digest → masked preview → re-check digest → private backup → merged full PUT → verify**
+
+If the remote AIOStreams configuration changes after a preview, ArrNexus refuses Apply and requires a fresh preview. Unrelated AIOStreams settings are copied forward unchanged rather than replaced with an ArrNexus-only object.
+
+The administrator-only **System → AIOStreams** page can:
+
+- store the AIOStreams base URL, UUID/alias and password through ArrNexus' persistent secret settings;
+- authenticate using either the configured password or the `encryptedPassword` returned by AIOStreams;
+- show public instance reachability separately from authenticated User API access;
+- create a masked Auto-Wire preview before any write;
+- reuse the existing ArrNexus Prowlarr URL and API key in a Prowlarr preset;
+- keep a new Prowlarr preset's `sources` empty so both torrent and Usenet indexers remain available;
+- preserve an existing explicit Prowlarr service/source allow-list rather than replacing it;
+- enable/reuse Real-Debrid only when ArrNexus can identify an existing key safely;
+- enable NzbDAV conservatively, preserving existing AIOStreams credentials and filling only clearly identified missing fields;
+- warn instead of inventing NzbDAV credentials when ArrNexus cannot confirm them;
+- show safe Newznab, Torznab and SAB-compatible endpoint helpers;
+- perform ID-based AIOStreams search diagnostics while redacting playback URLs, Authorization/Cookie/header data and secret-bearing fields;
+- create private local AIOStreams configuration backups before Auto-Wire writes and before rollback.
+
+Raw AIOStreams backups can contain credentials. They live under the persistent `/data` area with restrictive permissions and are never included in release ZIPs or rendered in the UI.
+
+**Beta note:** the bridge has deterministic offline/mock API validation, but this version remains `8.0.0-beta` until its preview/apply/rollback flow has been exercised against the real local AIOStreams instance and a copy of the existing v7 data.
+
+## v7 baseline retained
 
 ### Spotify personal account integration
 
@@ -121,31 +149,31 @@ services:
       - ./data:/data
 ```
 
-v7 installs `ffmpeg` in the container because Language Guard uses `ffprobe`. The first Docker build will therefore take longer than older releases.
+v8 retains `ffmpeg` in the container because Language Guard uses `ffprobe`. The first Docker build will therefore take longer than older releases.
 
-## Upgrade from an earlier ArrNexus release
+## Upgrade from ArrNexus v7
 
-Stop the current container, extract v7, then copy the **persistent data directory only** into the new folder.
-
-Example when upgrading from v6.1:
+Do not modify or delete the v7 directory. Extract v8 beside it, then copy **only the persistent `data/` directory** into v8 before starting the beta. This gives you an immediate rollback path to v7.
 
 ```bash
-cd /opt/dmm-arr-router/arrnexus-v6.1
+cd /opt/dmm-arr-router/arrnexus-v7.0
 docker compose down
 
 cd /opt/dmm-arr-router
-unzip /home/renegademonk/arrnexus-v7.0.zip
-mkdir -p arrnexus-v7.0/data
-cp -a arrnexus-v6.1/data/. arrnexus-v7.0/data/
+unzip /home/renegademonk/arrnexus-v8.0.zip
+mkdir -p arrnexus-v8.0/data
+cp -a arrnexus-v7.0/data/. arrnexus-v8.0/data/
 
-cd arrnexus-v7.0
+cd arrnexus-v8.0
 docker compose config
 docker compose up -d --build
 docker compose ps
 docker compose logs --tail=150 arrnexus
 ```
 
-Do not copy an old `.env` unless you intentionally still rely on legacy migration variables.
+After startup, first verify the existing v7 features, then configure **System → AIOStreams**. Use **Preview** before Apply and confirm the preview preserves unrelated AIOStreams settings. Test rollback before considering the beta proven.
+
+Do not copy an old `.env` unless you intentionally still rely on legacy/bootstrap variables. Normal deployment does not require one.
 
 ## Validation
 
@@ -155,7 +183,7 @@ Run:
 python validate.py
 ```
 
-The offline validator covers compilation/templates, authenticated page smoke tests, Discover regressions, music-provider isolation, Spotify OAuth/personal hub aggregation, TV-pack behavior, acquisition fallback, strict connector authentication, native InfiniDysk Overview parsing, English Language Guard policy evaluation, performance-cache presence, Prowlarr indexer UI, version badge and retained v6 behavior.
+`validate.py` first runs the complete preserved v7 suite (`validate_v7.py`), then validates the v8 AIOStreams bridge with a deterministic local mock API. It checks full-config preservation, stale-preview protection, Prowlarr URL/key reuse, Real-Debrid secret masking, conservative NzbDAV credential reuse, pre-write backups, rollback safety backups, search redaction, admin-only routes, real templates and the version/channel UI.
 
 See `VALIDATION.md` for the release validation record.
 
@@ -166,4 +194,7 @@ See `VALIDATION.md` for the release validation record.
 - Language Guard never deletes DMM/Real-Debrid source media
 - Undo removes ArrNexus-created links, not the underlying debrid source
 - JSON community connectors/providers are data-only and do not execute third-party Python
+- AIOStreams full-config writes require an explicit preview and stale-digest check
+- AIOStreams raw backup JSON stays in private persistent storage and is never packaged
+- AIOStreams search diagnostics remove playback URLs and credential-bearing headers
 - destructive actions should remain explicit and bounded

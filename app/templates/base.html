@@ -8,8 +8,8 @@
   <meta name="theme-color" content="#07111f">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/app.css?v=7.0">
-  <script defer src="/static/app.js?v=7.0"></script>
+  <link rel="stylesheet" href="/static/app.css?v=8.0">
+  <script defer src="/static/app.js?v=8.0"></script>
 </head>
 <body class="nx-body">
 <div class="nx-progress" id="nxProgress" aria-hidden="true"></div>
@@ -68,6 +68,7 @@
           <a class="{{ 'active' if request.url.path.startswith('/maintenance') }}" href="/maintenance" data-nav><span class="nx-nav-icon">⚒</span><span>Maintenance</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/logs') }}" href="/logs" data-nav><span class="nx-nav-icon">≡</span><span>Unified Logs</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/ecosystem') }}" href="/ecosystem" data-nav><span class="nx-nav-icon">⌬</span><span>Ecosystem</span></a>
+          {% if request_is_admin(request) %}<a class="{{ 'active' if request.url.path.startswith('/aiostreams') }}" href="/aiostreams" data-nav><span class="nx-nav-icon">A</span><span>AIOStreams</span></a>{% endif %}
         </div>
       </details>
 

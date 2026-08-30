@@ -80,10 +80,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "7.0.0"
-templates.env.globals["release_channel"] = lambda: setting_get("update.channel", "stable") or "stable"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "8.0.0-beta"
+templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "7.0.0"
+APP_VERSION = "8.0.0-beta"
 
 BRAND_ICONS = {
     "radarr": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/radarr.png",
@@ -110,6 +110,16 @@ def brand_icon(key: str) -> str:
     return BRAND_ICONS.get(str(key or "").lower(), "")
 
 templates.env.globals["brand_icon"] = brand_icon
+
+def request_is_admin(request: Request) -> bool:
+    try:
+        uid = int(request.session.get("user_id") or 0)
+        user = get_user(uid) if uid else None
+        return bool(user and user.get("role") == "admin")
+    except Exception:
+        return False
+
+templates.env.globals["request_is_admin"] = request_is_admin
 RUNNING_TASKS: set[asyncio.Task] = set()
 
 
@@ -232,7 +242,7 @@ async def setup_create(request: Request, username: str = Form(...), email: str =
         setting_set("setup.complete", "true")
         log_event("info", "setup", "first_run_complete", f"Administrator {username} created")
         request.session.clear(); request.session["auth"] = True; request.session["user_id"] = uid
-        request.session["theme"] = "nexus"; request.session["display_name"] = display_name or username
+        request.session["theme"] = "nexus"; request.session["display_name"] = display_name or username; request.session["role"] = "admin"
         return RedirectResponse("/settings?notice=" + quote("Welcome to ArrNexus. Configure your connections and library paths here."), status_code=303)
     except Exception as exc:
         return RedirectResponse(f"/setup?error={quote(str(exc))}", status_code=303)
@@ -313,6 +323,7 @@ async def login(request: Request, username: str = Form(...), password: str = For
     request.session["user_id"] = int(user["id"])
     request.session["theme"] = user.get("theme") or "nexus"
     request.session["display_name"] = user.get("display_name") or user.get("username")
+    request.session["role"] = user.get("role") or "user"
     return RedirectResponse("/", status_code=303)
 
 
@@ -2541,3 +2552,233 @@ async def music_search_album(request: Request, artist_name: str = Form(...), alb
         return RedirectResponse(f"/music/artist?name={quote(artist_name)}", status_code=303)
     except Exception as exc:
         return RedirectResponse(f"/music/artist?name={quote(artist_name)}&error={quote(str(exc))}", status_code=303)
+
+# ===== ARRNEXUS V8 AIOSTREAMS ROUTES =========================================
+from . import aiostreams as _aio
+
+
+def _aio_admin(request: Request):
+    return require_admin(request)
+
+
+def _aio_form_bool(value) -> bool:
+    return str(value or "").lower() in {"1", "true", "yes", "on"}
+
+
+def _aio_redirect(message: str, error: bool = False):
+    key = "error" if error else "notice"
+    return RedirectResponse(f"/aiostreams?{key}={quote(str(message))}", status_code=303)
+
+
+async def _aio_page_state(user_data: dict | None = None, user_error: str = "") -> dict:
+    conn = _aio.connection_settings(mask=True)
+    status_state = await _aio.status() if conn.get("url") else {"ok": False, "detail": "AIOStreams URL not configured", "data": {}}
+    raw_user = user_data
+    authenticated = False
+    error = user_error
+    if raw_user is None and conn.get("configured"):
+        try:
+            raw_user = await _aio.get_user(raw=True)
+            authenticated = True
+        except Exception as exc:
+            error = str(exc)
+    elif raw_user is not None:
+        authenticated = True
+    cfg = (raw_user or {}).get("userData") if isinstance(raw_user, dict) else {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    integrations = _aio.discover_arrnexus_integrations()
+    return {
+        "connection": conn,
+        "status": status_state,
+        "user_ok": authenticated,
+        "user_error": error,
+        "service_count": len(cfg.get("services") or []) if isinstance(cfg.get("services"), list) else 0,
+        "preset_count": len(cfg.get("presets") or []) if isinstance(cfg.get("presets"), list) else 0,
+        "integrations": _aio.integration_summary(integrations),
+        "endpoints": _aio.endpoint_helpers(),
+        "backups": _aio.list_backups(30),
+    }
+
+
+@app.get("/aiostreams", response_class=HTMLResponse)
+async def aiostreams_page(request: Request, notice: str = "", error: str = ""):
+    _aio_admin(request)
+    state = await _aio_page_state()
+    return templates.TemplateResponse("aiostreams.html", {
+        "request": request,
+        "state": state,
+        "notice": notice,
+        "error": error,
+        "preview": None,
+        "search_json": "",
+        "search_query": {"type": "movie", "id": ""},
+    })
+
+
+@app.post("/aiostreams/save")
+async def aiostreams_save(request: Request):
+    _aio_admin(request)
+    form = await request.form()
+    try:
+        _aio.save_connection(
+            str(form.get("url") or ""),
+            str(form.get("user") or ""),
+            str(form.get("credential") or ""),
+        )
+        _aio.save_manual_realdebrid_key(str(form.get("realdebrid_api_key") or ""))
+        log_event("info", "aiostreams", "connection_saved", "AIOStreams connection settings updated")
+        return _aio_redirect("AIOStreams settings saved privately")
+    except Exception as exc:
+        log_event("warning", "aiostreams", "connection_save_failed", str(exc))
+        return _aio_redirect(str(exc), True)
+
+
+@app.post("/aiostreams/verify")
+async def aiostreams_verify(request: Request):
+    _aio_admin(request)
+    try:
+        result = await _aio.verify()
+        log_event("info", "aiostreams", "verified", "AIOStreams User API verified", {
+            "services": result.get("services"), "presets": result.get("presets")
+        })
+        return _aio_redirect(f"AIOStreams verified: {result.get('services', 0)} services, {result.get('presets', 0)} presets")
+    except Exception as exc:
+        log_event("warning", "aiostreams", "verify_failed", str(exc))
+        return _aio_redirect(str(exc), True)
+
+
+@app.post("/aiostreams/preview", response_class=HTMLResponse)
+async def aiostreams_preview(request: Request):
+    _aio_admin(request)
+    form = await request.form()
+    wire_prowlarr = _aio_form_bool(form.get("wire_prowlarr"))
+    wire_realdebrid = _aio_form_bool(form.get("wire_realdebrid"))
+    wire_nzbdav = _aio_form_bool(form.get("wire_nzbdav"))
+    try:
+        current = await _aio.get_user(raw=True)
+        existing = current["userData"]
+        integrations = _aio.discover_arrnexus_integrations()
+        plan = _aio.merge_autowire(
+            existing,
+            integrations,
+            wire_prowlarr=wire_prowlarr,
+            wire_realdebrid=wire_realdebrid,
+            wire_nzbdav=wire_nzbdav,
+        )
+        preview = {
+            "digest": _aio.config_digest(existing),
+            "changes": plan["changes"],
+            "warnings": plan["warnings"],
+            "safe_config": _aio.safe_json(plan["config"]),
+            "wire_prowlarr": wire_prowlarr,
+            "wire_realdebrid": wire_realdebrid,
+            "wire_nzbdav": wire_nzbdav,
+        }
+        state = await _aio_page_state(current)
+        return templates.TemplateResponse("aiostreams.html", {
+            "request": request,
+            "state": state,
+            "notice": "Preview created. No AIOStreams configuration has been changed.",
+            "error": "",
+            "preview": preview,
+            "search_json": "",
+            "search_query": {"type": "movie", "id": ""},
+        })
+    except Exception as exc:
+        log_event("warning", "aiostreams", "preview_failed", str(exc))
+        return _aio_redirect(str(exc), True)
+
+
+@app.post("/aiostreams/apply")
+async def aiostreams_apply(request: Request):
+    _aio_admin(request)
+    form = await request.form()
+    try:
+        result = await _aio.apply_autowire(
+            str(form.get("expected_digest") or ""),
+            wire_prowlarr=_aio_form_bool(form.get("wire_prowlarr")),
+            wire_realdebrid=_aio_form_bool(form.get("wire_realdebrid")),
+            wire_nzbdav=_aio_form_bool(form.get("wire_nzbdav")),
+        )
+        if result.get("no_change"):
+            return _aio_redirect("AIOStreams already matches the selected Auto-Wire plan; no PUT was required")
+        backup_name = ((result.get("backup") or {}).get("name") or "created")
+        log_event("warning", "aiostreams", "autowire_applied", "AIOStreams full configuration updated", {
+            "backup": backup_name,
+            "change_count": len(result.get("changes") or []),
+        })
+        return _aio_redirect(f"AIOStreams Auto-Wire applied and verified. Backup: {backup_name}")
+    except Exception as exc:
+        log_event("error", "aiostreams", "autowire_failed", str(exc))
+        return _aio_redirect(str(exc), True)
+
+
+@app.post("/aiostreams/rollback")
+async def aiostreams_rollback(request: Request):
+    _aio_admin(request)
+    form = await request.form()
+    try:
+        result = await _aio.rollback(str(form.get("backup_name") or ""))
+        log_event("warning", "aiostreams", "rollback", "AIOStreams configuration rolled back", {
+            "backup": result.get("restored"),
+            "safety_backup": (result.get("safety_backup") or {}).get("name"),
+        })
+        return _aio_redirect(f"AIOStreams restored from {result.get('restored')}; the pre-rollback state was also backed up")
+    except Exception as exc:
+        log_event("error", "aiostreams", "rollback_failed", str(exc))
+        return _aio_redirect(str(exc), True)
+
+
+@app.get("/aiostreams/search", response_class=HTMLResponse)
+async def aiostreams_search_page(request: Request):
+    _aio_admin(request)
+    media_type = str(request.query_params.get("type") or "movie")
+    external_id = str(request.query_params.get("id") or "")
+    state = await _aio_page_state()
+    search_json = ""
+    error = ""
+    if external_id:
+        try:
+            result = await _aio.search(media_type, external_id, True)
+            search_json = json.dumps(_aio.safe_search_payload(result), indent=2, ensure_ascii=False, sort_keys=True)
+        except Exception as exc:
+            error = str(exc)
+    return templates.TemplateResponse("aiostreams.html", {
+        "request": request,
+        "state": state,
+        "notice": "",
+        "error": error,
+        "preview": None,
+        "search_json": search_json,
+        "search_query": {"type": media_type, "id": external_id},
+    })
+
+
+@app.get("/api/aiostreams/status")
+async def aiostreams_status_api(request: Request):
+    _aio_admin(request)
+    state = await _aio_page_state()
+    return JSONResponse({
+        "ok": bool(state["status"].get("ok") and state["user_ok"]),
+        "reachable": bool(state["status"].get("ok")),
+        "authenticated": bool(state["user_ok"]),
+        "configured": bool(state["connection"].get("configured")),
+        "serviceCount": state["service_count"],
+        "presetCount": state["preset_count"],
+        "lastSync": state["connection"].get("last_sync"),
+        "error": state.get("user_error") or "",
+    })
+
+
+@app.get("/api/aiostreams/search")
+async def aiostreams_search_api(request: Request):
+    _aio_admin(request)
+    media_type = str(request.query_params.get("type") or "movie")
+    external_id = str(request.query_params.get("id") or "")
+    try:
+        data = await _aio.search(media_type, external_id, True)
+        return JSONResponse({"ok": True, "data": _aio.safe_search_payload(data)})
+    except _aio.AIOStreamsError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+# ===== END ARRNEXUS V8 AIOSTREAMS ROUTES ======================================
