@@ -8,8 +8,8 @@
 
 <div class="page-head">
   <div>
-    <p class="nx-aio-muted">ArrNexus v8.0.0-beta</p>
-    <p>Safe AIOStreams configuration linking, masked preview, private backup/rollback and ID-based search diagnostics.</p>
+    <p class="nx-aio-muted">ArrNexus v9.0.0-beta</p>
+    <p>Provider-neutral AIOStreams configuration linking, masked preview, private backup/rollback and ID-based search diagnostics.</p>
   </div>
 </div>
 
@@ -43,7 +43,7 @@
         <label>AIOStreams base URL<input name="url" type="url" value="{{ state.connection.url }}" placeholder="https://aiostreams.example.invalid"></label>
         <label>User UUID or alias<input name="user" type="text" value="" autocomplete="off" placeholder="Leave blank to keep {{ state.connection.user }}"></label>
         <label>Configuration password<input name="credential" type="password" value="" autocomplete="new-password" placeholder="Leave blank to keep stored credential"></label>
-        <label>Optional Real-Debrid key override<input name="realdebrid_api_key" type="password" value="" autocomplete="off" placeholder="Normally auto-detected from ArrNexus"></label>
+        <label>Provider credentials<div class="nx-aio-code"><a href="/providers">Manage Debrid & Usenet providers in the Provider Registry →</a></div></label>
       </div>
       <div class="nx-aio-actions"><button type="submit">Save privately</button></div>
     </form>
@@ -68,6 +68,13 @@
       {% if not state.integrations.nzbdav.fields %}ArrNexus will not invent credential fields.{% endif %}
     </div>
   </section>
+  <section class="nx-aio-card nx-aio-wide">
+    <h3>Configured provider registry</h3>
+    <p class="nx-aio-muted">v9 can safely wire every enabled ArrNexus provider supported by AIOStreams, not only Real-Debrid. Secret values never appear here.</p>
+    <div>
+      {% for provider in state.integrations.providers %}<span class="nx-aio-pill">{{ provider.id }} · {{ provider.fields|length }} field{{ '' if provider.fields|length == 1 else 's' }}</span>{% else %}<span class="nx-aio-muted">No provider-registry services configured yet. <a href="/providers">Open Providers</a>.</span>{% endfor %}
+    </div>
+  </section>
 
   <section class="nx-aio-card nx-aio-wide">
     <h3>2 · Auto-Wire preview</h3>
@@ -75,8 +82,9 @@
     <form action="/aiostreams/preview" method="post">
       <div class="nx-aio-checks">
         <label><input type="checkbox" name="wire_prowlarr" value="true" checked> Prowlarr URL + API key</label>
-        <label><input type="checkbox" name="wire_realdebrid" value="true" checked> Real-Debrid</label>
-        <label><input type="checkbox" name="wire_nzbdav" value="true" checked> NzbDAV / InfiniDysk</label>
+        <label><input type="checkbox" name="wire_realdebrid" value="true" checked> Real-Debrid compatibility wiring</label>
+        <label><input type="checkbox" name="wire_nzbdav" value="true" checked> NzbDAV / InfiniDysk compatibility wiring</label>
+        <span class="nx-aio-muted">Other enabled v9 providers are included automatically and only fill missing AIOStreams credential fields.</span>
       </div>
       <div class="nx-aio-actions"><button type="submit">Build safe preview</button></div>
     </form>

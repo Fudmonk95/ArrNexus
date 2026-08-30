@@ -18,6 +18,7 @@ from urllib.request import Request as URLRequest, urlopen
 from .config import settings
 from .connections import get_connection
 from .db import setting_get, setting_rows, setting_set
+from .providers import provider_credentials_for_aiostreams
 
 
 URL_KEY = "aiostreams.url"
@@ -160,7 +161,7 @@ def _request_sync(
     body: dict[str, Any] | None = None,
     timeout: float = 12.0,
 ) -> dict[str, Any]:
-    headers = {"Accept": "application/json", "User-Agent": "ArrNexus/8.0"}
+    headers = {"Accept": "application/json", "User-Agent": "ArrNexus/9.0"}
     if auth:
         user, password = _effective_auth()
         token = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
@@ -353,10 +354,21 @@ def discover_arrnexus_integrations() -> dict[str, Any]:
         pass
     rd_key = _detect_realdebrid_key()
     nzbdav = _detect_nzbdav_credentials()
+    providers = provider_credentials_for_aiostreams()
+    # Backwards compatibility: v8 installations may have Real-Debrid/NzbDAV
+    # configured outside the v9 provider registry. Keep discovering them, but
+    # never discard explicit provider-registry values.
+    if rd_key:
+        providers.setdefault("realdebrid", {}).setdefault("apiKey", rd_key)
+    if nzbdav:
+        target = providers.setdefault("nzbdav", {})
+        for field, value in nzbdav.items():
+            target.setdefault(field, value)
     return {
         "prowlarr": prowlarr,
         "realdebrid": {"available": bool(rd_key), "api_key": rd_key},
         "nzbdav": {"available": bool(nzbdav), "credentials": nzbdav, "fields": sorted(nzbdav)},
+        "providers": providers,
     }
 
 
@@ -366,16 +378,21 @@ def integration_summary(integrations: dict[str, Any] | None = None) -> dict[str,
     p = integrations.get("prowlarr") or {}
     rd = integrations.get("realdebrid") or {}
     nzb = integrations.get("nzbdav") or {}
+    providers = integrations.get("providers") or {}
     return {
         "prowlarr": {
             "url": str(p.get("url") or ""),
             "has_api_key": bool(p.get("api_key") or p.get("has_api_key")),
         },
-        "realdebrid": {"available": bool(rd.get("api_key") or rd.get("available"))},
+        "realdebrid": {"available": bool(rd.get("api_key") or rd.get("available") or providers.get("realdebrid"))},
         "nzbdav": {
-            "available": bool(nzb.get("available")),
-            "fields": list(nzb.get("fields") or sorted((nzb.get("credentials") or {}).keys())),
+            "available": bool(nzb.get("available") or providers.get("nzbdav")),
+            "fields": list(nzb.get("fields") or sorted((nzb.get("credentials") or providers.get("nzbdav") or {}).keys())),
         },
+        "providers": [
+            {"id": str(provider_id), "fields": sorted((credentials or {}).keys())}
+            for provider_id, credentials in sorted(providers.items())
+        ],
     }
 
 
@@ -415,17 +432,42 @@ def merge_autowire(
     changes: list[str] = []
     warnings: list[str] = []
 
+    # v9 provider-neutral wiring. Values from ArrNexus only fill missing remote
+    # credential fields; operator defaults/forced credentials and user-owned
+    # AIOStreams values are never blindly replaced.
+    provider_payload = integrations.get("providers") or {}
+    if isinstance(provider_payload, dict):
+        for provider_id, detected in provider_payload.items():
+            provider_id = str(provider_id or "").strip()
+            if not provider_id or provider_id in {"realdebrid", "nzbdav"}:
+                continue
+            entry, created = _ensure_service(config, provider_id)
+            was_enabled = bool(entry.get("enabled"))
+            entry["enabled"] = True
+            if created or not was_enabled:
+                changes.append(f"Enable the {provider_id} service in AIOStreams")
+            creds = entry.setdefault("credentials", {})
+            copied: list[str] = []
+            for field, raw in (detected or {}).items():
+                value = str(raw or "").strip()
+                if value and not creds.get(str(field)):
+                    creds[str(field)] = value
+                    copied.append(str(field))
+            if copied:
+                changes.append(f"Reuse ArrNexus {provider_id} provider settings for: " + ", ".join(copied))
+
     if wire_realdebrid:
         rd = integrations.get("realdebrid") or {}
+        provider_rd = (integrations.get("providers") or {}).get("realdebrid") or {}
         entry, created = _ensure_service(config, "realdebrid")
         was_enabled = bool(entry.get("enabled"))
         entry["enabled"] = True
         if created or not was_enabled:
             changes.append("Enable the Real-Debrid service in AIOStreams")
-        api_key = str(rd.get("api_key") or "")
+        api_key = str(provider_rd.get("apiKey") or rd.get("api_key") or "")
         if api_key:
             creds = entry.setdefault("credentials", {})
-            if creds.get("apiKey") != api_key:
+            if not creds.get("apiKey"):
                 creds["apiKey"] = api_key
                 changes.append("Supply the existing ArrNexus Real-Debrid API key to AIOStreams")
         elif not (entry.get("credentials") or {}):
@@ -441,6 +483,8 @@ def merge_autowire(
         if created or not was_enabled:
             changes.append("Enable the NzbDAV service in AIOStreams")
         detected_nzbdav = dict((integrations.get("nzbdav") or {}).get("credentials") or {})
+        for field, value in (((integrations.get("providers") or {}).get("nzbdav") or {}).items()):
+            detected_nzbdav.setdefault(field, value)
         creds = entry.setdefault("credentials", {})
         copied_fields: list[str] = []
         for field in ("url", "publicUrl", "apiKey", "username", "password", "aiostreamsAuth"):
@@ -498,10 +542,7 @@ def merge_autowire(
                 changes.append("Supply the existing ArrNexus Prowlarr API key to the AIOStreams Prowlarr preset")
             preset["enabled"] = True
 
-            selected = [
-                sid for sid in _enabled_service_ids(config)
-                if sid in {"nzbdav", "realdebrid", "aiostreams", "stremthru_newz", "stremio_nntp", "altmount"}
-            ]
+            selected = list(dict.fromkeys(_enabled_service_ids(config)))
             existing_services = options.get("services")
             if isinstance(existing_services, list) and existing_services:
                 # Respect an explicit user allow-list and only extend it with the

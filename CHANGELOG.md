@@ -1,142 +1,44 @@
-# Changelog
+# ArrNexus Changelog
 
-## 8.0.0-beta — AIOStreams Bridge
+## 9.0.0-beta — Product, Onboarding & Provider Architecture
 
-- Built directly from the validated ArrNexus v7.0.0 source package and retained the full v7 regression suite as `validate_v7.py`.
-- Added an administrator-only AIOStreams Bridge page and status/search APIs.
-- Added AIOStreams User API authentication with raw password or returned `encryptedPassword` reuse; credentials remain persistent secret settings.
-- Added safe full-configuration Auto-Wire workflow: GET current config, digest, masked preview, stale-preview re-check, private backup, merged full PUT and post-write verification.
-- Added refusal of stale previews so a remotely changed AIOStreams configuration cannot be overwritten from an old preview.
-- Added private pre-write and pre-rollback AIOStreams backups under persistent `/data` with restrictive permissions.
-- Added Prowlarr preset Auto-Wire using the existing ArrNexus Prowlarr URL and API key. New presets keep automatic service routing and an empty source selection so both torrent and Usenet remain eligible.
-- Preserved and extended existing explicit Prowlarr service allow-lists instead of replacing them; explicit source selections are also preserved.
-- Added safe Real-Debrid reuse when ArrNexus can identify an existing key, with secret masking in previews/logs/UI.
-- Added conservative NzbDAV enablement: existing AIOStreams credentials win, and ArrNexus only fills clearly identified missing `url`, `publicUrl`, `apiKey`, `username`, `password` or `aiostreamsAuth` values.
-- Added safe Newznab, Torznab and SAB-compatible endpoint helpers.
-- Added movie/series/anime ID search diagnostics with playback URL, request/proxy header, Authorization, Cookie and secret-field redaction.
-- Added deterministic mock AIOStreams HTTP tests covering stale protection, backup-before-write, full-config preservation, search redaction and rollback.
-- Version remains `8.0.0-beta` pending live verification against the user's AIOStreams instance and copied v7 data.
+### Brand and public experience
+- Added an original ArrNexus wordmark and application icon.
+- Added a safe public landing/About experience at `/`.
+- Moved the authenticated control centre to `/dashboard`.
+- Added new branded first-run setup and login experiences.
+- Added PWA branding/cache updates for the v9 assets.
+- Shifted the default ArrNexus visual system toward near-black/white with restrained cyan/purple accents while retaining dense operational pages.
 
-## 7.0.0 — Personal Music, Language Guard & Live Operations
+### Guided onboarding
+- First administrator creation now redirects to `/onboarding` rather than claiming setup is complete.
+- Added environment/namespace, application, provider, mount and readiness stages.
+- Added bounded live service verification only on explicit onboarding/readiness pages.
+- Added `/readiness` and a low-cost Dashboard readiness summary.
 
-- Added per-user Spotify OAuth with saved tracks, saved albums, playlists, top tracks/artists and recently played music.
-- Kept ListenBrainz global trends explicitly separated from Spotify personal/catalogue data.
-- Added English Language Guard using ffprobe: English audio + English subtitles policy, Inbox badges/filtering, manual review and non-destructive Arr replacement search.
-- Added ffmpeg/ffprobe to the container image.
-- Switched InfiniDysk telemetry to its authenticated native Overview API with live windows/throughput/provider data.
-- Added Prowlarr indexer control for enable state, priority, RSS and search modes.
-- Corrected Sonarr TV interactive search to query actual seasons rather than treating `seriesId` alone as a series-wide release search.
-- Hardened DUMB/InfiniDysk/Decypharr connection verification.
-- Added short-lived DMM source, library inventory and symlink-index caches plus startup pre-warming.
-- Added actual service/provider artwork where a reliable upstream logo is available, including InfiniDysk and Decypharr.
-- Added persistent version/update-channel display for Stable/Beta/Development.
-- Retained v6 acquisition strategies, Unified Logs, TV pack planning, Self-Healing, Quality Lab and DMM routing.
+### Provider-neutral architecture
+- Added `/providers` provider registry.
+- Added Real-Debrid, TorBox, Premiumize, AllDebrid, Debrid-Link, EasyDebrid, Debrider, Offcloud, put.io, PikPak, Seedr, Easynews, NzbDAV/InfiniDysk, AltMount, Stremio NNTP, StremThru Newz, AIOStreams Native and Torrin identities.
+- Provider credentials are stored privately and masked in the UI.
+- Added conservative migration of clearly named legacy Real-Debrid/NzbDAV settings into the provider registry.
+- Complex structured AIOStreams provider models are not guessed or flattened unsafely.
 
-## 6.1.0 — Interface & Performance Hotfix
-
-### New application shell
-
-- Replaced the v6 sidebar implementation with an isolated `nx-*` shell so legacy responsive CSS can no longer force navigation links into multi-column/wrapped layouts.
-- Navigation groups are collapsible, full-width and independently scrollable, inspired by the clarity of InfiniDysk without copying its branding.
-- Added a sticky translucent command bar and a **Ctrl+K / Cmd+K Jump Anywhere** palette.
-- Reworked the visual language toward flatter operational surfaces, reduced glass effects and stronger hierarchy.
-- Added cache-busted CSS/JS asset URLs so browser caching cannot leave the sidebar half-upgraded.
-- Connections and Ecosystem now cap at three cards per row on large displays, two on medium displays and one on small displays. Long roots, URLs and tags wrap safely instead of forcing horizontal overflow.
-
-### Faster navigation
-
-- Added same-origin soft navigation for normal ArrNexus links: page content is fetched and swapped without reloading the complete shell.
-- Added hover prefetch and an 18-second page cache for recently visited views.
-- Added a thin navigation progress indicator and loading state rather than leaving clicks looking unresponsive.
-- Added a 4-second cache for expensive `/proc` DUMB/Arr instance discovery.
-- Added a 3-second GET cache and persistent HTTP keep-alive pool for Radarr/Sonarr/Lidarr/Prowlarr calls.
-- Dashboard service/library/queue calls are now concurrent rather than sequential.
-- Connections now loads all Arr instances and each instance's status/roots/tags concurrently.
-- Discover loads Seerr shelves and local Arr shelves concurrently; local library shelves also query specialist Arrs in parallel.
-- Download Queue queries all discovered Arr instances concurrently.
+### AIOStreams
+- Extended Auto-Wire from Real-Debrid/NzbDAV-specific discovery to enabled provider-registry services.
+- Generic provider merge only fills missing AIOStreams user credential fields.
+- Preserves existing AIOStreams credentials, unrelated userData and automatic service selection.
+- Keeps v8 stale-preview, pre-write backup, verified full PUT, rollback backup and search redaction protections.
 
 ### Regression protection
+- Preserved `validate_v7.py`.
+- Added retained `validate_v8.py` regression suite.
+- New `validate.py` runs v8/v7 first, then v9-specific tests.
+- Version remains `9.0.0-beta` pending live deployment verification.
 
-- Validator now asserts the isolated navigation shell, soft-navigation/prefetch code, responsive connection grid and instance-discovery cache are present.
-- Existing v6 acquisition, connector-authentication and Unified Logs tests remain enabled.
+## 8.0.0-beta — AIOStreams Bridge
+- Added administrator-only AIOStreams Bridge.
+- Added full User API GET/PUT workflow with digest preview, stale protection, backups, rollback and redacted search diagnostics.
+- Added Prowlarr/Real-Debrid/NzbDAV conservative Auto-Wire behavior.
 
-## 6.0.0
-
-### Acquisition Intelligence
-
-- Added explicit Discover acquisition strategies:
-  - Automatic — compare Usenet and torrent/debrid candidates and grab one best release.
-  - Debrid first → Usenet fallback.
-  - Usenet first → Debrid fallback.
-  - Debrid only.
-  - Usenet only.
-  - Fastest — favour verified Real-Debrid cache hits.
-  - Best quality / score.
-- Discover now adds/monitors a title first, then runs an ArrNexus acquisition job against the target Arr's interactive releases.
-- Added protocol-aware release selection while preserving Arr/Prowlarr indexer/tag visibility.
-- Added Real-Debrid instant-availability enrichment when an info hash is available.
-- Added a configurable final native Arr-search fallback if ArrNexus cannot select an acceptable interactive release.
-- Acquisition grabs exactly one release; comparing both sources never intentionally starts duplicate downloads.
-- Scraping has been reframed as **Acquisition** and now reports planning/search/grab/fallback progress and selected protocol/indexer.
-
-### Verified Ecosystem Connections
-
-- Replaced generic "URL returned HTTP 200" connector tests with service-specific verification.
-- InfiniDysk now verifies both reachability and its SAB API key using an authenticated SAB queue call.
-- Decypharr now verifies `/version` separately from a Bearer-token-protected `/api/torrents` request.
-- AltMount now supports username/password authentication and validates the resulting JWT-backed session against its management API.
-- Connector cards separately report reachability, authentication, API functionality, version and latency.
-- Random/incorrect InfiniDysk or Decypharr credentials now fail verification instead of being reported as connected.
-- Added service-specific credential labels rather than treating every ecosystem project as a generic API-key service.
-
-### Unified Logs & Diagnostics
-
-- Rebuilt the Logs page into an interactive log console.
-- Added ArrNexus, DUMB and InfiniDysk source views.
-- Added DUMB log ingestion through DUMB's `/logs` API with process selection and polling.
-- Added InfiniDysk warning/error ingestion through its documented SAB `warnings` operation.
-- Added level/source/process/text filtering and clickable log rows.
-- Added first-pass diagnostics for common media-stack failures including:
-  - VFS/cache `404 Not Found` errors.
-  - virtual-stream seek failures.
-  - missing/corrupt Usenet articles.
-  - Arr "not enough free space" warnings.
-  - authentication failures.
-- Known log patterns now expand into a plain-language explanation and suggested next actions.
-- External log polling can be toggled live from the browser.
-
-### Decypharr Control Surface
-
-- Added a native Decypharr page using its authenticated REST API.
-- Displays Decypharr version, managed torrent count, connected Arr count, repair state and broken health entries when available.
-- Reuses the same verified connector credential path as the Ecosystem page.
-
-### Interface Redesign
-
-- Rebuilt the global navigation around an InfiniDysk-inspired grouped sidebar while keeping ArrNexus's own branding and visual identity.
-- New navigation groups: Overview, Acquisition, Library & Automation, System and Settings.
-- Added compact top-bar shortcuts for Problems, Logs and Settings.
-- Added new responsive/mobile rules for the v6 navigation and log console.
-- Existing user-selectable themes remain supported.
-
-### Settings / Operations
-
-- Added **Settings → Acquisition** for global strategy, Real-Debrid cache preference, candidate limit and native Arr fallback.
-- Existing Portainer-first, UI-managed configuration remains; no `.env` is required for normal deployment.
-- Application version updated to 6.0.0 and service User-Agent strings updated to ArrNexus/6.1 where applicable.
-
-### Retained from v5 and earlier
-
-- Ecosystem connector SDK, InfiniDysk operations, Quality Lab and Self-Healing.
-- Full-series/season/episode TV pack planning and Sonarr coverage.
-- DMM Inbox routing/imports, specialist Arr support, safe symlinks and import jobs.
-- Discover shelves, Music Hub, Real-Debrid library, Problem Centre, profiles/themes, notifications, diagnostics, backups, PWA and read-only library browser.
-
-## 5.0.0
-
-- Added ecosystem connector platform and JSON connector SDK.
-- Added native InfiniDysk operations.
-- Added Quality Lab.
-- Added Self-Healing / optional non-destructive AutoPilot.
-- Added DUMB topology awareness.
-- Application version updated to 5.0.0.
+## 7.0 — Corrected operational baseline
+- Added personal Spotify OAuth aggregation, Language Guard, native InfiniDysk telemetry, Prowlarr indexer control, season-correct Sonarr search, stricter connector verification and performance caches.

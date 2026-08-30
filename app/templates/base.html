@@ -5,20 +5,20 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark light">
   <title>{% block title %}{{ app_setting('app.title','ArrNexus') }}{% endblock %}</title>
-  <meta name="theme-color" content="#07111f">
+  <meta name="theme-color" content="#050506">
   <link rel="manifest" href="/static/manifest.webmanifest">
-  <link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/app.css?v=8.0">
-  <script defer src="/static/app.js?v=8.0"></script>
+  <link rel="icon" href="/static/arrnexus-icon-v9.png" type="image/png">
+  <link rel="stylesheet" href="/static/app.css?v=9.0">
+  <script defer src="/static/app.js?v=9.0"></script>
 </head>
 <body class="nx-body">
 <div class="nx-progress" id="nxProgress" aria-hidden="true"></div>
 <div class="nx-shell">
   <aside class="nx-sidebar" id="appSidebar">
     <div class="nx-sidebar-head">
-      <a class="nx-brand" href="/" data-nav>
-        <span class="nx-brandmark">∞</span>
-        <span class="nx-brandcopy"><strong>{{ app_setting('app.title','ArrNexus') }}</strong><small>Media Intelligence</small></span>
+      <a class="nx-brand v9-app-brand" href="/dashboard" data-nav>
+        <img class="v9-brand-icon" src="/static/arrnexus-icon-v9.png" alt="">
+        <span class="nx-brandcopy"><strong>{{ app_setting('app.title','ArrNexus') }}</strong><small>Media Intelligence · Connected</small></span>
       </a>
       <button class="nx-sidebar-close" type="button" data-mobile-menu aria-label="Close navigation">×</button>
     </div>
@@ -31,7 +31,7 @@
       <details class="nx-nav-section" open>
         <summary><span>Overview</span><span class="nx-caret">⌄</span></summary>
         <div class="nx-nav-links">
-          <a class="{{ 'active' if request.url.path=='/' }}" href="/" data-nav><span class="nx-nav-icon">⌂</span><span>Dashboard</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/dashboard') }}" href="/dashboard" data-nav><span class="nx-nav-icon">⌂</span><span>Dashboard</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/discover') }}" href="/discover" data-nav><span class="nx-nav-icon">⌕</span><span>Discover</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/music') }}" href="/music" data-nav><span class="nx-nav-icon">♫</span><span>Music Hub</span></a>
         </div>
@@ -42,6 +42,7 @@
         <div class="nx-nav-links">
           <a class="{{ 'active' if request.url.path.startswith('/scraping') }}" href="/scraping" data-nav><span class="nx-nav-icon">↯</span><span>Acquisition</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/debrid') }}" href="/debrid" data-nav><span class="nx-nav-icon">◇</span><span>Debrid / DMM</span></a>
+          {% if request_is_admin(request) %}<a class="{{ 'active' if request.url.path.startswith('/providers') }}" href="/providers" data-nav><span class="nx-nav-icon">◎</span><span>Providers</span></a>{% endif %}
           <a class="{{ 'active' if request.url.path.startswith('/infinidysk') }}" href="/infinidysk" data-nav><span class="nx-nav-icon">☁</span><span>InfiniDysk</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/decypharr') }}" href="/decypharr" data-nav><span class="nx-nav-icon">D</span><span>Decypharr</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/indexers') }}" href="/indexers" data-nav><span class="nx-nav-icon">☷</span><span>Indexers</span></a>
@@ -68,6 +69,7 @@
           <a class="{{ 'active' if request.url.path.startswith('/maintenance') }}" href="/maintenance" data-nav><span class="nx-nav-icon">⚒</span><span>Maintenance</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/logs') }}" href="/logs" data-nav><span class="nx-nav-icon">≡</span><span>Unified Logs</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/ecosystem') }}" href="/ecosystem" data-nav><span class="nx-nav-icon">⌬</span><span>Ecosystem</span></a>
+          {% if request_is_admin(request) %}<a class="{{ 'active' if request.url.path.startswith('/readiness') }}" href="/readiness" data-nav><span class="nx-nav-icon">✓</span><span>Stack Readiness</span></a>{% endif %}
           {% if request_is_admin(request) %}<a class="{{ 'active' if request.url.path.startswith('/aiostreams') }}" href="/aiostreams" data-nav><span class="nx-nav-icon">A</span><span>AIOStreams</span></a>{% endif %}
         </div>
       </details>
@@ -77,6 +79,7 @@
         <div class="nx-nav-links">
           <a class="{{ 'active' if request.url.path.startswith('/arrs') }}" href="/arrs" data-nav><span class="nx-nav-icon">↔</span><span>Connections</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/settings') }}" href="/settings" data-nav><span class="nx-nav-icon">⚙</span><span>Settings</span></a>
+          {% if request_is_admin(request) %}<a class="{{ 'active' if request.url.path.startswith('/onboarding') }}" href="/onboarding" data-nav><span class="nx-nav-icon">→</span><span>Setup Guide</span></a>{% endif %}
         </div>
       </details>
     </nav>
@@ -87,6 +90,7 @@
         <span class="avatar-mini">{{ (request.session.get('display_name') or 'A')[:1]|upper }}</span>
         <span><strong>{{ request.session.get('display_name') or 'Profile' }}</strong><small>Profile & appearance</small></span>
       </a>
+      <a class="nx-logout" href="/">About ArrNexus</a>
       <a class="nx-logout" href="/logout">Log out</a>
     </div>
   </aside>

@@ -1,136 +1,129 @@
-# ArrNexus v8.0.0-beta — AIOStreams Bridge & Live Media Operations
+# ArrNexus v9.0.0-beta — The Product Release
 
-ArrNexus is a self-hosted control and intelligence layer for Arr-based media stacks. It is designed to sit above Radarr, Sonarr, Lidarr, Prowlarr, Jellyfin/Seerr, DUMB, InfiniDysk and Decypharr without replacing the specialist applications that already do those jobs well.
+**Your media stack. One control plane.**
 
-v8.0.0-beta builds directly on the validated v7 source baseline. It retains v7 personal Spotify data, native InfiniDysk telemetry, strict English-language validation, Prowlarr management, corrected Sonarr search, strict service verification and performance caches, then adds an administrator-only AIOStreams Bridge designed around AIOStreams' full-replacement User API.
+ArrNexus is a self-hosted control and intelligence layer that sits above an existing media stack. It integrates with specialist applications instead of unnecessarily replacing them: Radarr, Sonarr, Lidarr, Prowlarr, Jellyfin, Seerr, DUMB, InfiniDysk/NzbDAV, Decypharr, Debrid providers, AIOStreams and music discovery/services.
 
-## v8.0 beta — AIOStreams Bridge
+v9 is a major product/onboarding release built directly on the validated v8 source package. The v7 and v8 regression suites remain part of `validate.py`.
 
-AIOStreams integration is intentionally conservative because `PUT /api/v1/user` replaces the complete stored user configuration. ArrNexus therefore uses this write sequence:
+## What's new in v9
 
-**GET current config → calculate digest → masked preview → re-check digest → private backup → merged full PUT → verify**
+### A real public front door
 
-If the remote AIOStreams configuration changes after a preview, ArrNexus refuses Apply and requires a fresh preview. Unrelated AIOStreams settings are copied forward unchanged rather than replaced with an ArrNexus-only object.
+`/` is now a safe public ArrNexus landing/about page. It explains what ArrNexus is, what it integrates with and how a first deployment works without exposing private library counts, IP addresses, service health, mount paths or credentials.
 
-The administrator-only **System → AIOStreams** page can:
+- Brand-new instance: **Get started** opens `/setup`.
+- Configured but logged out: **Sign in** opens `/login`.
+- Logged in: **Dashboard** opens `/dashboard`.
 
-- store the AIOStreams base URL, UUID/alias and password through ArrNexus' persistent secret settings;
-- authenticate using either the configured password or the `encryptedPassword` returned by AIOStreams;
-- show public instance reachability separately from authenticated User API access;
-- create a masked Auto-Wire preview before any write;
-- reuse the existing ArrNexus Prowlarr URL and API key in a Prowlarr preset;
-- keep a new Prowlarr preset's `sources` empty so both torrent and Usenet indexers remain available;
-- preserve an existing explicit Prowlarr service/source allow-list rather than replacing it;
-- enable/reuse Real-Debrid only when ArrNexus can identify an existing key safely;
-- enable NzbDAV conservatively, preserving existing AIOStreams credentials and filling only clearly identified missing fields;
-- warn instead of inventing NzbDAV credentials when ArrNexus cannot confirm them;
-- show safe Newznab, Torznab and SAB-compatible endpoint helpers;
-- perform ID-based AIOStreams search diagnostics while redacting playback URLs, Authorization/Cookie/header data and secret-bearing fields;
-- create private local AIOStreams configuration backups before Auto-Wire writes and before rollback.
+The authenticated control centre is now explicitly `/dashboard`.
 
-Raw AIOStreams backups can contain credentials. They live under the persistent `/data` area with restrictive permissions and are never included in release ZIPs or rendered in the UI.
+### New ArrNexus identity
 
-**Beta note:** the bridge has deterministic offline/mock API validation, but this version remains `8.0.0-beta` until its preview/apply/rollback flow has been exercised against the real local AIOStreams instance and a copy of the existing v7 data.
+v9 includes a new original ArrNexus wordmark and compact application icon in `app/static/` and uses them throughout the public landing page, first-run setup, login, sidebar, favicon and PWA manifest.
 
-## v7 baseline retained
+The visual system moves toward a near-black/white operational UI with restrained cyan/purple accent lighting. The existing information-dense operational pages remain intact.
 
-### Spotify personal account integration
+### Guided first-run onboarding
 
-Spotify application credentials still provide catalogue search, but v7 adds a separate per-user OAuth flow. Once a user chooses **Music Hub → Spotify → Connect Spotify**, ArrNexus can show:
+Creating the first administrator no longer pretends setup is finished. It redirects to `/onboarding`, which guides an administrator through:
 
-- saved tracks
-- saved albums
-- playlists
-- top tracks
-- top artists
-- recently played tracks
-- Spotify catalogue search
+1. Administrator creation.
+2. Environment and DUMB/Arr namespace detection.
+3. Live bounded API verification for configured Radarr/Sonarr/Lidarr/Prowlarr/Jellyfin/Seerr services.
+4. Provider selection.
+5. Mount/library registry review.
+6. Final Stack Readiness review.
 
-Global trends are shown separately as **ListenBrainz global trend data** and are never presented as Spotify-owned trending data.
+Normal page navigation does **not** run the live readiness probes. They are restricted to explicit setup/readiness pages so v9 does not regress the performance/caching work from v7.
 
-Spotify user data is stored per ArrNexus profile. Refresh tokens are stored as secret settings. A Spotify redirect URI must exactly match the URI configured in the Spotify Developer Dashboard; use HTTPS for normal remote/LAN deployments.
+### Provider Registry
 
-### English Language Guard
+v9 stops treating Real-Debrid as the architecture. It introduces a provider-neutral registry at `/providers`.
 
-DMM/Real-Debrid filenames are not trusted as proof of media language. v7 installs `ffprobe` and can inspect the actual audio and subtitle streams before a source is linked into a Radarr/Sonarr library.
+Supported provider identities include:
 
-Default policy:
+- Real-Debrid
+- TorBox
+- Premiumize
+- AllDebrid
+- Debrid-Link
+- EasyDebrid
+- Debrider
+- Offcloud
+- put.io
+- PikPak
+- Seedr
+- Easynews
+- InfiniDysk / NzbDAV
+- AltMount
+- Stremio NNTP (manual/structured AIOStreams configuration)
+- StremThru Newz
+- AIOStreams Native
+- Torrin
 
-- English audio required
-- English subtitles required
-- unknown language metadata fails closed
-- source media is never deleted by Language Guard
-- a failed source can trigger a replacement search in its owning Arr
+Credential field names for AIOStreams-compatible providers are aligned with the current AIOStreams service schema. Complex structured providers such as direct Stremio NNTP are identified but are deliberately **not** auto-written from a guessed flat credential model.
 
-The DMM Inbox exposes a Language filter/badge and the item review page can run a fresh stream inspection. The policy is configurable under Settings.
+Provider secrets are stored in ArrNexus persistent SQLite settings and masked in the UI. v9 can conservatively seed the new registry from clearly named legacy Real-Debrid/NzbDAV settings during startup; existing settings are not deleted.
 
-### Native InfiniDysk live telemetry
+### Multi-provider AIOStreams Auto-Wire
 
-ArrNexus now uses InfiniDysk's authenticated `/api/get-overview-stats` API rather than depending only on raw Prometheus scraping. The integration supports the native 1h/24h/7d/30d/all windows and can surface live tiles, throughput series, providers, sessions, heatmap, latency/errors and indexer data when returned by InfiniDysk.
+The v8 safety workflow remains:
 
-The InfiniDysk page also keeps queue/history controls and filters long history titles safely inside their panel.
+`GET current config → digest → masked preview → re-check digest → private backup → merged full PUT → verify`
 
-### Prowlarr indexer control
+v9 extends the merge to enabled provider-registry services. Provider credentials only fill **missing** AIOStreams user fields. Existing AIOStreams user credentials and unrelated configuration are preserved. AIOStreams operator-level default/forced credentials are not modified by ArrNexus.
 
-The Indexers page reads Prowlarr indexers and can write supported operational settings back through the Prowlarr API:
+Prowlarr wiring continues to preserve automatic source selection (`sources: []` / omitted service allow-list) so both torrent and Usenet sources can be used when AIOStreams supports them.
 
-- enabled state
-- priority
-- RSS
-- automatic search
-- interactive search
+### Stack Readiness
 
-Indexer cards also expose tag/category context. Routing-critical tags are highlighted because DUMB-managed settings may be restored by DUMB after manual edits.
+`/readiness` gives administrators a dependency-oriented view of whether the stack is ready for automation:
 
-### Correct Sonarr TV interactive search
+- Core Arr/Prowlarr configuration
+- optional Lidarr/Jellyfin/Seerr integrations
+- DUMB/Arr mount namespace availability
+- library mount registry
+- configured acquisition providers
 
-Sonarr does not perform a series-wide interactive search from `seriesId` alone. v7 searches the show's real seasons with `seriesId + seasonNumber`, merges/deduplicates the returned releases and feeds those results into ArrNexus's TV/full-series acquisition planner.
+The Dashboard shows a cheap readiness summary. Live API checks run only on the explicit onboarding/readiness pages.
 
-### Verified ecosystem connections
+## Retained v8 functionality
 
-A green connector means more than “the web page answered”. InfiniDysk credentials are checked against an authenticated SAB-compatible call, Decypharr Bearer tokens are checked against a protected API, and DUMB rejects an HTML frontend response when an API response is expected.
+v9 retains the v8 administrator-only AIOStreams Bridge:
 
-### Performance work
+- separate public status and authenticated User API verification
+- `GET /api/v1/user` full configuration handling
+- full-replacement `PUT /api/v1/user`
+- `encryptedPassword` reuse
+- stale-preview refusal
+- masked preview
+- private pre-write backups
+- rollback with pre-rollback safety backup
+- Prowlarr URL/API-key reuse
+- conservative NzbDAV credential reuse
+- Real-Debrid compatibility wiring
+- Newznab/Torznab/SAB endpoint helpers
+- ID-based AIOStreams search diagnostics
+- aggressive playback URL/header/secret redaction
 
-The DMM source scanner, library inventory and source→symlink index now have bounded short-lived caches and are pre-warmed after startup. Arr/Dashboard work remains concurrent and network calls use short operational timeouts. This removes much of the repeated full-tree work that previously made normal page navigation increasingly expensive.
+## Retained v7 functionality
 
-## Acquisition strategies
+The preserved v7 suite continues to cover the corrected v7 baseline, including:
 
-Discover supports:
+- per-user Spotify OAuth/personal library aggregation logic
+- native InfiniDysk Overview telemetry parsing
+- English audio **and** English subtitle Language Guard
+- non-destructive Language Guard rejection path
+- Prowlarr indexer management
+- correct Sonarr season-by-season interactive search
+- strict DUMB/InfiniDysk/Decypharr connector verification
+- DMM/source/link/library caches and startup prewarming
+- the existing ArrNexus acquisition, routing, quality, self-healing and maintenance workflows
 
-- Automatic — compare Usenet + Debrid and grab one best candidate
-- Debrid first → Usenet fallback
-- Usenet first → Debrid fallback
-- Debrid only
-- Usenet only
-- Fastest / prefer cached RD
-- Best quality / score
+## Deployment model
 
-The Arr remains responsible for final hand-off: NZBs go to the configured Usenet client (normally InfiniDysk) and torrents go to the configured torrent/debrid client (normally Decypharr).
-
-## Other retained features
-
-- DMM/Real-Debrid Inbox with metadata, routing, duplicate grouping and bulk import
-- full-series / season-pack / episode classification
-- Sonarr season coverage visualisation
-- release-scoring Quality Lab
-- Scraping/Acquisition timeline
-- Download Queue aggregation
-- self-healing search controls
-- broken symlink detection/repair
-- routing rules and specialist libraries
-- Jellyfin integration and library browser
-- Unified Logs + known-error explanations
-- DUMB/InfiniDysk/Decypharr ecosystem connectors
-- profiles, themes and request permissions
-- notifications
-- backups, diagnostics and sanitized config export/import
-- PWA/mobile shell
-- version/update channel badge (Stable / Beta / Development)
-
-## Portainer / Docker deployment
-
-A normal ArrNexus deployment does not require an `.env` file. Persistent application state lives in `/data` and is configured through the browser.
+Normal deployment remains Portainer/Docker Compose friendly and does not require an `.env` file for application settings.
 
 ```yaml
 services:
@@ -149,52 +142,96 @@ services:
       - ./data:/data
 ```
 
-v8 retains `ffmpeg` in the container because Language Guard uses `ffprobe`. The first Docker build will therefore take longer than older releases.
+The `pid: host` + `SYS_PTRACE` architecture is intentional. ArrNexus follows the live Radarr/DUMB namespace when `/mnt/debrid` is not mounted on the Debian host itself.
 
-## Upgrade from ArrNexus v7
-
-Do not modify or delete the v7 directory. Extract v8 beside it, then copy **only the persistent `data/` directory** into v8 before starting the beta. This gives you an immediate rollback path to v7.
+## Fresh install
 
 ```bash
-cd /opt/dmm-arr-router/arrnexus-v7.0
-docker compose down
-
+mkdir -p /opt/dmm-arr-router
 cd /opt/dmm-arr-router
-unzip /home/renegademonk/arrnexus-v8.0.zip
-mkdir -p arrnexus-v8.0/data
-cp -a arrnexus-v7.0/data/. arrnexus-v8.0/data/
+unzip /path/to/arrnexus-v9.0.zip
+cd arrnexus-v9.0
 
-cd arrnexus-v8.0
 docker compose config
 docker compose up -d --build
 docker compose ps
-docker compose logs --tail=150 arrnexus
 ```
 
-After startup, first verify the existing v7 features, then configure **System → AIOStreams**. Use **Preview** before Apply and confirm the preview preserves unrelated AIOStreams settings. Test rollback before considering the beta proven.
+Open:
 
-Do not copy an old `.env` unless you intentionally still rely on legacy/bootstrap variables. Normal deployment does not require one.
+```text
+http://YOUR-SERVER:8484/
+```
+
+The public ArrNexus landing page will offer **Start setup**. Create the first administrator and complete the guided setup.
+
+## Upgrade from v8
+
+Do **not** overwrite or delete v8. Keep it as rollback protection.
+
+```bash
+cd /opt/dmm-arr-router/arrnexus-v8.0
+docker compose down
+
+cd /opt/dmm-arr-router
+unzip /path/to/arrnexus-v9.0.zip
+mkdir -p arrnexus-v9.0/data
+cp -a arrnexus-v8.0/data/. arrnexus-v9.0/data/
+
+cd arrnexus-v9.0
+python3 validate.py
+
+docker compose config
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail=200 arrnexus
+curl -fsS http://127.0.0.1:8484/api/health && echo
+```
+
+Then open:
+
+```text
+http://YOUR-SERVER:8484/
+```
+
+On an upgraded installation the first page is intentionally the new public About page. Click **Dashboard** to enter the authenticated control centre.
+
+## Rollback to v8
+
+```bash
+cd /opt/dmm-arr-router/arrnexus-v9.0
+docker compose down
+
+cd /opt/dmm-arr-router/arrnexus-v8.0
+docker compose up -d
+```
+
+v9 should be tested against a **copy** of v8 persistent data before v8 is removed.
 
 ## Validation
 
 Run:
 
 ```bash
-python validate.py
+python3 validate.py
 ```
 
-`validate.py` first runs the complete preserved v7 suite (`validate_v7.py`), then validates the v8 AIOStreams bridge with a deterministic local mock API. It checks full-config preservation, stale-preview protection, Prowlarr URL/key reuse, Real-Debrid secret masking, conservative NzbDAV credential reuse, pre-write backups, rollback safety backups, search redaction, admin-only routes, real templates and the version/channel UI.
+`validate.py` runs:
 
-See `VALIDATION.md` for the release validation record.
+1. `validate_v8.py`
+2. which runs the preserved `validate_v7.py`
+3. then v9-specific product/provider/onboarding tests
 
-## Security model
+The release process additionally compiles Python and Jinja templates, checks JavaScript syntax, performs a clean Uvicorn smoke test, scans the package for credential artifacts, creates the ZIP, extracts that exact ZIP into a new directory and runs validation again.
 
-- secrets are stored in the ArrNexus persistent database, not rendered back in plaintext
-- diagnostics sanitize secrets
-- Language Guard never deletes DMM/Real-Debrid source media
-- Undo removes ArrNexus-created links, not the underlying debrid source
-- JSON community connectors/providers are data-only and do not execute third-party Python
-- AIOStreams full-config writes require an explicit preview and stale-digest check
-- AIOStreams raw backup JSON stays in private persistent storage and is never packaged
-- AIOStreams search diagnostics remove playback URLs and credential-bearing headers
-- destructive actions should remain explicit and bounded
+## Beta status
+
+`9.0.0-beta` is intentional. Offline/deterministic release validation cannot prove your real DUMB namespace, Arr credentials, provider accounts, Spotify OAuth or AIOStreams instance. Keep v8 intact until the live server test is complete.
+
+## Security notes
+
+- Credentials are never bundled in the release ZIP.
+- Provider and connector secrets remain in persistent `/data`.
+- AIOStreams raw backup JSON may contain credentials and is stored privately beside persistent data; it is never packaged.
+- Public pages do not expose library/service/mount details.
+- Destructive operations remain preview/confirmation oriented and should target ArrNexus-created links rather than raw Debrid content.

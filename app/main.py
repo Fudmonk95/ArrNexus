@@ -72,6 +72,8 @@ from .language_guard import (
     cached_language_result, inspect_source_languages, load_language_policy,
     save_language_policy, result_badge as language_result_badge,
 )
+from .providers import list_provider_states, save_provider, provider_definition, categories as provider_categories, migrate_legacy_providers
+from .readiness import stack_readiness
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title="ArrNexus")
@@ -80,10 +82,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "8.0.0-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "9.0.0-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "8.0.0-beta"
+APP_VERSION = "9.0.0-beta"
 
 BRAND_ICONS = {
     "radarr": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/radarr.png",
@@ -126,6 +128,13 @@ RUNNING_TASKS: set[asyncio.Task] = set()
 @app.on_event("startup")
 async def startup():
     init_db()
+    try:
+        migrated = migrate_legacy_providers()
+        if migrated:
+            log_event("info", "providers", "legacy_provider_migration", f"Seeded {len(migrated)} provider field(s) from legacy settings")
+    except Exception as exc:
+        try: log_event("warning", "providers", "legacy_provider_migration_failed", str(exc))
+        except Exception: pass
     # Keep a rolling daily database backup without requiring an external cron job.
     try:
         enabled = setting_get("backup.auto_enabled", "true").lower() in {"1","true","yes","on"}
@@ -239,11 +248,12 @@ async def setup_create(request: Request, username: str = Form(...), email: str =
     try:
         uid = create_user(username, email, display_name or username, password, "admin")
         setting_set("app.title", "ArrNexus")
-        setting_set("setup.complete", "true")
-        log_event("info", "setup", "first_run_complete", f"Administrator {username} created")
+        setting_set("setup.complete", "false")
+        setting_set("setup.stage", "administrator")
+        log_event("info", "setup", "administrator_created", f"Administrator {username} created")
         request.session.clear(); request.session["auth"] = True; request.session["user_id"] = uid
         request.session["theme"] = "nexus"; request.session["display_name"] = display_name or username; request.session["role"] = "admin"
-        return RedirectResponse("/settings?notice=" + quote("Welcome to ArrNexus. Configure your connections and library paths here."), status_code=303)
+        return RedirectResponse("/onboarding", status_code=303)
     except Exception as exc:
         return RedirectResponse(f"/setup?error={quote(str(exc))}", status_code=303)
 
@@ -324,7 +334,7 @@ async def login(request: Request, username: str = Form(...), password: str = For
     request.session["theme"] = user.get("theme") or "nexus"
     request.session["display_name"] = user.get("display_name") or user.get("username")
     request.session["role"] = user.get("role") or "user"
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/dashboard", status_code=303)
 
 
 @app.get("/logout")
@@ -341,6 +351,51 @@ async def arr_status(client, timeout: float = 4.0):
         return {"ok": False, "error": f"Timed out after {timeout:.0f}s"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+async def live_stack_readiness() -> dict:
+    """Readiness snapshot used only on explicit setup/readiness pages.
+
+    Unlike the normal Dashboard path, this may perform bounded live checks. It
+    intentionally does not run on every navigation.
+    """
+    state = stack_readiness()
+    clients = {
+        "radarr": RadarrClient(), "sonarr": SonarrClient(), "lidarr": LidarrClient(),
+        "prowlarr": ProwlarrClient(), "seerr": SeerrClient(),
+    }
+
+    async def jf_check():
+        try:
+            data = await asyncio.wait_for(jellyfin_status(), timeout=4.0)
+            return {"ok": True, "version": data.get("Version") or data.get("version") or "Connected"}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    results = await asyncio.gather(*(arr_status(client, 4.0) for client in clients.values()), jf_check())
+    live = dict(zip(list(clients) + ["jellyfin"], results))
+    for check in state["checks"]:
+        if not check["key"].startswith("connection-"):
+            continue
+        service = check["key"].split("connection-", 1)[1]
+        if not check["ok"]:
+            continue
+        result = live.get(service) or {}
+        check["ok"] = bool(result.get("ok"))
+        check["detail"] = (f"API verified · {result.get('version') or 'connected'}" if result.get("ok") else f"Configured but API check failed · {result.get('error') or 'unknown error'}")
+
+    required = [c for c in state["checks"] if c["required"]]
+    optional = [c for c in state["checks"] if not c["required"]]
+    score = 0
+    if required:
+        score += round(85 * sum(1 for c in required if c["ok"]) / len(required))
+    if optional:
+        score += round(15 * sum(1 for c in optional if c["ok"]) / len(optional))
+    state["score"] = min(100, score)
+    state["ready"] = all(c["ok"] for c in required)
+    state["required_ok"] = sum(1 for c in required if c["ok"])
+    state["required_total"] = len(required)
+    return state
 
 
 def _title_map(entries: list[dict]) -> dict[str, list[dict]]:
@@ -524,6 +579,16 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
 
 
 @app.get("/", response_class=HTMLResponse)
+async def public_landing(request: Request):
+    return templates.TemplateResponse("landing.html", {
+        "request": request,
+        "configured": user_count() > 0,
+        "logged_in": logged_in(request),
+        "version": APP_VERSION,
+    })
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
     require_auth(request)
     try:
@@ -589,6 +654,7 @@ async def dashboard(request: Request):
         "dest_counts":dest_top,"dest_max":max([x[1] for x in dest_top],default=1),"activity_days":activity_days,"activity_max":max([int(x.get("count") or 0) for x in activity_days],default=1),
         "recent":recent_imports(8),"activity":recent_activity(12),"jobs":recent_jobs(6),"source_root":source_root(),"namespace":namespace_status(),"rd_connected":rd.connected(),"rd_user":rd_user,
         "dashboard_layout":user.get("dashboard_layout") or "default",
+        "readiness": stack_readiness() if user.get("role") == "admin" else None,
     })
 
 
@@ -2599,6 +2665,68 @@ async def _aio_page_state(user_data: dict | None = None, user_error: str = "") -
         "endpoints": _aio.endpoint_helpers(),
         "backups": _aio.list_backups(30),
     }
+
+
+# ---------------------------------------------------------------------------
+# ARRNEXUS V9 PRODUCT / PROVIDER / ONBOARDING ROUTES
+# ---------------------------------------------------------------------------
+
+@app.get("/about", response_class=HTMLResponse)
+async def about_page(request: Request):
+    return templates.TemplateResponse("landing.html", {"request": request, "configured": user_count() > 0, "logged_in": logged_in(request), "version": APP_VERSION})
+
+
+@app.get("/onboarding", response_class=HTMLResponse)
+async def onboarding_page(request: Request, notice: str = ""):
+    require_admin(request)
+    return templates.TemplateResponse("onboarding.html", {
+        "request": request,
+        "notice": notice,
+        "readiness": await live_stack_readiness(),
+        "providers": list_provider_states(mask=True),
+    })
+
+
+@app.post("/onboarding/finish")
+async def onboarding_finish(request: Request):
+    require_admin(request)
+    state = await live_stack_readiness()
+    setting_set("setup.complete", "true")
+    setting_set("setup.stage", "complete")
+    log_event("info", "setup", "onboarding_complete", f"Readiness score {state['score']}%")
+    return RedirectResponse("/dashboard?notice=" + quote(f"Setup saved · readiness {state['score']}%"), status_code=303)
+
+
+@app.get("/providers", response_class=HTMLResponse)
+async def providers_page(request: Request, notice: str = ""):
+    require_admin(request)
+    states = list_provider_states(mask=True)
+    grouped = {}
+    for state in states:
+        grouped.setdefault(state["category"], []).append(state)
+    return templates.TemplateResponse("providers.html", {
+        "request": request, "providers": states, "grouped": grouped,
+        "categories": provider_categories(), "notice": notice,
+    })
+
+
+@app.post("/providers/{provider_id}")
+async def provider_save_route(request: Request, provider_id: str):
+    require_admin(request)
+    definition = provider_definition(provider_id)
+    if not definition:
+        raise HTTPException(404, "Unknown provider")
+    form = await request.form()
+    values = {field: str(form.get(field) or "") for field, _label, _secret in definition.credential_fields}
+    save_provider(provider_id, str(form.get("enabled") or "").lower() in {"1", "true", "on", "yes"}, values)
+    log_event("info", "providers", "provider_updated", f"{definition.name} provider settings updated")
+    return RedirectResponse("/providers?notice=" + quote(f"{definition.name} saved"), status_code=303)
+
+
+@app.get("/readiness", response_class=HTMLResponse)
+async def readiness_page(request: Request):
+    require_admin(request)
+    return templates.TemplateResponse("readiness.html", {"request": request, "readiness": await live_stack_readiness()})
 
 
 @app.get("/aiostreams", response_class=HTMLResponse)
