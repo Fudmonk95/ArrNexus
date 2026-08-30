@@ -3,9 +3,25 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from .config import settings
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 PLUGIN_DIR = Path(settings.db_path).resolve().parent / "providers"
+
+
+def safe_plugin_search_template(template: str) -> bool:
+    """Reject documentation/placeholder catalogue templates before UI exposure."""
+    value = str(template or "").strip()
+    if "{query}" not in value or not value.startswith(("https://", "http://")):
+        return False
+    try:
+        host = (urlparse(value.replace("{query}", "validator")).hostname or "").lower().rstrip(".")
+    except Exception:
+        return False
+    if not host:
+        return False
+    if host in {"example.com", "example.org", "example.net", "example.invalid"} or host.endswith((".example.com", ".example.org", ".example.net", ".example.invalid")):
+        return False
+    return True
 
 
 def load_catalog_plugins() -> list[dict]:
@@ -25,7 +41,7 @@ def load_catalog_plugins() -> list[dict]:
             key = str(raw.get("key") or path.stem).strip().lower().replace(" ", "-")
             name = str(raw.get("name") or key).strip()
             template = str(raw.get("search_url") or "").strip()
-            if not key or not name or "{query}" not in template or not template.startswith(("https://", "http://")):
+            if not key or not name or not safe_plugin_search_template(template):
                 continue
             out.append({
                 "key": f"plugin-{key}",

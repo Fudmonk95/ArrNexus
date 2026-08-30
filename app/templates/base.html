@@ -8,8 +8,8 @@
   <meta name="theme-color" content="#050506">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/arrnexus-icon-v9.png" type="image/png">
-  <link rel="stylesheet" href="/static/app.css?v=9.2">
-  <script defer src="/static/app.js?v=9.2"></script>
+  <link rel="stylesheet" href="/static/app.css?v=9.3">
+  <script defer src="/static/app.js?v=9.3"></script>
 </head>
 <body class="nx-body">
 <div class="nx-progress" id="nxProgress" aria-hidden="true"></div>
@@ -79,6 +79,7 @@
         <div class="nx-nav-links">
           <a class="{{ 'active' if request.url.path.startswith('/arrs') }}" href="/arrs" data-nav><span class="nx-nav-icon">↔</span><span>Connections</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/settings') }}" href="/settings" data-nav><span class="nx-nav-icon">⚙</span><span>Settings</span></a>
+          {% if request_is_admin(request) %}<a class="{{ 'active' if request.url.path.startswith('/music/settings') }}" href="/music/settings" data-nav><span class="nx-nav-icon">♫</span><span>Music API Settings</span></a>{% endif %}
           {% if request_is_admin(request) %}<a class="{{ 'active' if request.url.path.startswith('/onboarding') }}" href="/onboarding" data-nav><span class="nx-nav-icon">→</span><span>Setup Guide</span></a>{% endif %}
         </div>
       </details>
@@ -90,7 +91,7 @@
         <span class="avatar-mini">{{ (request.session.get('display_name') or 'A')[:1]|upper }}</span>
         <span><strong>{{ request.session.get('display_name') or 'Profile' }}</strong><small>Account & preferences</small></span>
       </a>
-      <a class="nx-logout" href="/">About ArrNexus</a>
+      <a class="nx-logout v93-public-home-link" href="/">⌂ Public Home / About</a>
       <a class="nx-logout" href="/logout">Log out</a>
     </div>
   </aside>
@@ -99,11 +100,12 @@
     <header class="nx-topbar">
       <button class="nx-mobile-menu" type="button" data-mobile-menu aria-label="Open navigation">☰</button>
       <div class="nx-title-wrap">
-        <span class="nx-kicker">ARR · DEBRID · USENET · JELLYFIN · MUSIC</span>
+        <span class="nx-kicker">ARR · DEBRID · USENET · MEDIA SERVERS · MUSIC</span>
         <h1>{% block heading %}Dashboard{% endblock %}</h1>
       </div>
       <div class="nx-top-actions">
         <a class="nx-version-badge" href="/settings" data-nav data-update-check="{{ '1' if app_setting('update.repo','') else '0' }}" title="ArrNexus version and update channel"><strong>v{{ app_version() }}</strong><small>{{ release_channel()|upper }}</small><em data-version-update hidden>UPDATE</em></a>
+        <a class="nx-top-button v93-home-button" href="/" title="Public ArrNexus home" data-no-soft-nav>⌂</a>
         <button class="nx-top-button" type="button" data-command-open title="Jump anywhere">⌕</button>
         <a class="nx-top-button" href="/problems" data-nav title="Problem Centre">!</a>
         <a class="nx-top-button" href="/logs" data-nav title="Logs">≡</a>

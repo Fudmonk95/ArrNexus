@@ -23,7 +23,7 @@
   document.addEventListener('DOMContentLoaded',()=>{updateSelected();pollActive();setInterval(pollActive,7000);setInterval(refreshExternalLogs,4500);if('serviceWorker' in navigator)navigator.serviceWorker.register('/static/sw.js').catch(()=>{});});
 })();
 
-/* ArrNexus v9.2: persistent shell, intent prefetch and stale-while-revalidate page cache. */
+/* ArrNexus v9.3: persistent shell, intent prefetch, route timing and stale-while-revalidate page cache. */
 (function(){
   const pageCache=new Map(),inflight=new Map();
   const FRESH_MS=45000,STALE_MS=180000,MAX_PAGES=36;

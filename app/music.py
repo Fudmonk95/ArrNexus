@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import time
+import copy
 from urllib.parse import quote_plus, urlencode
 import httpx
 from .config import settings
@@ -9,6 +10,20 @@ from .plugins import load_catalog_plugins, plugin_search_url
 
 _mb_lock = asyncio.Lock()
 _mb_last = 0.0
+_MUSIC_DISCOVERY_CACHE: dict[str, tuple[float, object]] = {}
+
+
+async def _music_cached(key: str, ttl: float, loader):
+    now = time.monotonic()
+    cached = _MUSIC_DISCOVERY_CACHE.get(key)
+    if cached and now - cached[0] < ttl:
+        return copy.deepcopy(cached[1])
+    value = await loader()
+    _MUSIC_DISCOVERY_CACHE[key] = (time.monotonic(), copy.deepcopy(value))
+    if len(_MUSIC_DISCOVERY_CACHE) > 250:
+        for old_key, _ in sorted(_MUSIC_DISCOVERY_CACHE.items(), key=lambda kv: kv[1][0])[:50]:
+            _MUSIC_DISCOVERY_CACHE.pop(old_key, None)
+    return value
 
 async def _mb_get(path: str, params: dict) -> dict:
     global _mb_last
@@ -322,6 +337,18 @@ def provider_catalog() -> list[dict]:
         {"key":"discogs","name":"Discogs","mode":"external","description":"Release database launcher"},
     ]
     return builtins + load_catalog_plugins()
+
+
+def safe_external_url(url: str) -> str:
+    value = (url or "").strip()
+    if not value.startswith(("https://", "http://")):
+        return ""
+    lowered = value.lower()
+    # Community provider samples must never send users to documentation/example
+    # placeholder domains as if they were real catalogues.
+    if any(host in lowered for host in ("example.com", "example.org", "example.net", "example.invalid")):
+        return ""
+    return value
 
 
 def external_music_links(artist: str, album: str = "") -> dict[str, str]:
@@ -742,7 +769,7 @@ async def spotify_search(term: str, kind: str = "album", count: int = 20) -> lis
     return out[:count]
 
 
-async def provider_featured(source: str, genre: str = "", count: int = 24) -> tuple[list[dict], str]:
+async def _provider_featured_uncached(source: str, genre: str = "", count: int = 24) -> tuple[list[dict], str]:
     """Return truly source-specific browse content and a human status note."""
     source=(source or "unified").lower()
     if source=="listenbrainz":
@@ -780,7 +807,7 @@ async def provider_featured(source: str, genre: str = "", count: int = 24) -> tu
     return [], "This provider is an external catalogue launcher; ArrNexus does not fake its recommendations with another provider's data"
 
 
-async def provider_search(source: str, term: str, kind: str = "artist", count: int = 30) -> tuple[list[dict], str]:
+async def _provider_search_uncached(source: str, term: str, kind: str = "artist", count: int = 30) -> tuple[list[dict], str]:
     source=(source or "unified").lower(); term=term.strip()
     if not term: return [], ""
     if source=="apple": return await itunes_search(term,"album" if kind=="album" else "musicArtist",count), ""
@@ -794,9 +821,9 @@ async def provider_search(source: str, term: str, kind: str = "artist", count: i
     if source=="spotify": return await spotify_search(term,kind,count), ""
     if source.startswith("plugin-"):
         plugin=next((p for p in provider_catalog() if p.get("key")==source),None)
-        return [], plugin_search_url(plugin or {},term) if plugin else ""
+        return [], safe_external_url(plugin_search_url(plugin or {},term)) if plugin else ""
     if source in {"amazon","beatport","bandcamp","discogs"}:
-        return [], external_music_links(term).get(source,"")
+        return [], safe_external_url(external_music_links(term).get(source,""))
     # For You searches multiple *real* providers then dedupes.
     mb,apple,au,dz,arc=await asyncio.gather(search_musicbrainz(term,kind,12),itunes_search(term,"album" if kind=="album" else "musicArtist",12),audius_search(term,12),deezer_search(term,kind,12),internet_archive_search(term,8))
     seen=set(); rows=[]
@@ -805,6 +832,16 @@ async def provider_search(source: str, term: str, kind: str = "artist", count: i
         if key in seen: continue
         seen.add(key); rows.append(row)
     return rows[:count], ""
+
+
+async def provider_featured(source: str, genre: str = "", count: int = 24) -> tuple[list[dict], str]:
+    key = f"featured:{(source or 'unified').lower()}:{genre.strip().lower()}:{int(count)}"
+    return await _music_cached(key, 300.0, lambda: _provider_featured_uncached(source, genre, count))
+
+
+async def provider_search(source: str, term: str, kind: str = "artist", count: int = 30) -> tuple[list[dict], str]:
+    key = f"search:{(source or 'unified').lower()}:{kind.lower()}:{term.strip().lower()}:{int(count)}"
+    return await _music_cached(key, 180.0, lambda: _provider_search_uncached(source, term, kind, count))
 
 
 # Replace provider catalog with capability-aware v4 list.

@@ -164,7 +164,7 @@ def main() -> int:
     landing = (root / "app" / "templates" / "landing.html").read_text(encoding="utf-8")
     providers = (root / "app" / "providers.py").read_text(encoding="utf-8")
     aio_source = (root / "app" / "aiostreams.py").read_text(encoding="utf-8")
-    require(any(v in main_source for v in ('APP_VERSION = "9.2.0-beta"', 'APP_VERSION = "9.1.0-beta"', 'APP_VERSION = "9.0.0-beta"')), "v9+ beta version string missing")
+    require(any(v in main_source for v in ('APP_VERSION = "9.3.0-beta"', 'APP_VERSION = "9.2.0-beta"', 'APP_VERSION = "9.1.0-beta"', 'APP_VERSION = "9.0.0-beta"')), "v9+ beta version string missing")
     for route in ("/dashboard", "/onboarding", "/providers", "/readiness"):
         require(route in main_source, f"missing v9 route {route}")
     require("arrnexus-icon-v9.png" in base and "arrnexus-icon-v9.png" in landing, "v9 brand icon not integrated")

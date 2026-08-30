@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% block heading %}DMM Inbox{% endblock %}
 {% block content %}
+<div class="v93-snapshot-bar"><span>DMM snapshot · {{ snapshot_age or 0 }}s old{% if snapshot_refreshing %} · refreshing in background{% endif %}</span><a class="btn small" href="/inbox?refresh=1&status={{ status }}&view={{ view }}" data-nav>Refresh DMM</a></div>
 <div class="status-tabs">
   <a class="status-tab {{ 'active' if status=='all' }}" href="/inbox?status=all&view={{ view }}">All <b>{{ counts.all }}</b></a>
   <a class="status-tab {{ 'active' if status=='waiting' }}" href="/inbox?status=waiting&view={{ view }}">Waiting <b>{{ counts.waiting }}</b></a>

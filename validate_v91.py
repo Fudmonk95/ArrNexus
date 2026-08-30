@@ -96,7 +96,7 @@ def main() -> int:
             ]
             require(not forbidden, f"public release included runtime/private files: {forbidden[:3]}")
             checksum = client.get("/download/latest.sha256")
-            require(checksum.status_code == 200 and "arrnexus-v9.2.0-beta.zip" in checksum.text, "public checksum endpoint")
+            require(checksum.status_code == 200 and "arrnexus-v9.3.0-beta.zip" in checksum.text, "public checksum endpoint")
 
             private = client.get("/dashboard", follow_redirects=False)
             require(private.status_code == 303 and private.headers.get("location") == "/setup", "unconfigured dashboard should route to setup")
@@ -195,7 +195,7 @@ def main() -> int:
     aio_source = (root / "app" / "aiostreams.py").read_text(encoding="utf-8")
     release_source = (root / "app" / "release_export.py").read_text(encoding="utf-8")
 
-    require('APP_VERSION = "9.2.0-beta"' in main_source, "compatible v9.2 beta version string missing")
+    require(any(v in main_source for v in ('APP_VERSION = "9.3.0-beta"','APP_VERSION = "9.2.0-beta"')), "compatible v9.1+ beta version string missing")
     for route in ("/dashboard", "/onboarding", "/providers", "/readiness", "/download/latest"):
         require(route in main_source, f"missing v9.1 route {route}")
     require("data-theme" not in base, "private app still selects legacy themes")
@@ -208,7 +208,7 @@ def main() -> int:
     require("provider_credentials_for_aiostreams" in providers and '"torbox"' in providers, "provider registry integration missing")
     require("provider_payload" in aio_source and "only fill missing remote" in aio_source, "provider-neutral AIOStreams safety merge missing")
 
-    print("PASS: ArrNexus v9.1 regression layer retained inside v9.2")
+    print("PASS: ArrNexus v9.1 regression layer retained")
     return 0
 
 

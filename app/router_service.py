@@ -52,12 +52,20 @@ async def _all_instances(service: str):
 async def existing_match_any(item: ScanItem) -> tuple[dict | None, ArrInstance | None, Any | None]:
     service = "radarr" if item.media_type == "movie" else "sonarr"
     target = normalize_title(item.title_guess)
-    for client, inst in await _all_instances(service):
+    pairs = await _all_instances(service)
+
+    async def load(pair):
+        client, inst = pair
         try:
             entries = await (client.movies() if service == "radarr" else client.series())
+            return client, inst, entries or []
         except Exception:
-            continue
-        for entry in entries or []:
+            return client, inst, []
+
+    # Specialist DUMB Arr instances are independent; serially downloading each
+    # full library made Item Review wait for every instance in turn.
+    for client, inst, entries in await asyncio.gather(*(load(pair) for pair in pairs)):
+        for entry in entries:
             if normalize_title(entry.get("title", "")) != target:
                 continue
             if item.year_guess and entry.get("year") and int(entry.get("year")) != int(item.year_guess):

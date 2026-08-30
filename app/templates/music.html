@@ -19,7 +19,7 @@
 {% block content %}
 {% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
 <section class="music-landing panel">
-  <div><span class="eyebrow">DISCOVER MUSIC · PERSONALISE · SEND TO LIDARR</span><h2>Discovery from open catalogues and your own music services.</h2><p>Spotify can be linked per ArrNexus user for Your Music, personal highlights and recently played tracks. Lidarr + Prowlarr still handle acquisition.</p></div>
+  <div><span class="eyebrow">DISCOVER MUSIC · PERSONALISE · SEND TO LIDARR</span><h2>Discovery from open catalogues and your own music services.</h2><p>Spotify can be linked per ArrNexus user for Your Music, personal highlights and recently played tracks. Lidarr + Prowlarr still handle acquisition.</p><div class="inline-actions v93-music-hero-actions">{% if request_is_admin(request) %}<a class="btn primary" href="/music/settings" data-nav>Music API settings</a>{% endif %}<a class="btn" href="/" data-no-soft-nav>Public home</a></div></div>
   <div class="music-orb">♫</div>
 </section>
 
@@ -30,7 +30,7 @@
   <form class="searchbar" method="get"><input type="hidden" name="source" value="{{ source }}"><select name="kind"><option value="artist" {{ 'selected' if kind=='artist' }}>Artists</option><option value="album" {{ 'selected' if kind=='album' }}>Albums</option></select><input name="q" value="{{ q }}" placeholder="Search this catalogue"><button class="btn primary">Search</button></form>
   {% if source_note %}<div class="provider-note">{{ source_note }}</div>{% endif %}
   {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-  {% if source=='soundcloud' and not soundcloud_configured %}<div class="alert">SoundCloud needs optional application credentials. Add them in Settings → Music providers.</div>{% endif %}
+  {% if source=='soundcloud' and not soundcloud_configured %}<div class="alert">SoundCloud needs optional application credentials. Open Music API settings to add them.</div>{% endif %}
   {% if source=='jamendo' and not jamendo_configured %}<div class="alert">Jamendo needs an optional developer client ID.</div>{% endif %}
   {% if source=='lastfm' and not lastfm_configured %}<div class="alert">Last.fm needs an optional application API key for charts/search.</div>{% endif %}
   {% if source=='spotify' %}
@@ -40,16 +40,16 @@
         <div>
           {% if spotify_linked %}<strong>Spotify linked{% if spotify_hub.profile %} · {{ spotify_hub.profile.display_name or spotify_hub.profile.id }}{% endif %}</strong><small>Your saved music and listening highlights are available below.</small>
           {% elif spotify_configured %}<strong>Spotify app ready — account not linked</strong><small>Connect your Spotify account to show Your Music, playlists, top tracks/artists and recent listening.</small>
-          {% else %}<strong>Spotify application not configured</strong><small>Add the Spotify Client ID, Client Secret and callback URI in Settings first.</small>{% endif %}
+          {% else %}<strong>Spotify application not configured</strong><small>Add the Spotify Client ID, Client Secret and callback URI in Music API settings first.</small>{% endif %}
         </div>
       </div>
       <div class="inline-actions">
         {% if spotify_linked %}<form method="post" action="/music/spotify/disconnect"><button class="btn ghost">Disconnect Spotify</button></form>
         {% elif spotify_configured and spotify_redirect_ready %}<a class="btn primary" href="/music/spotify/connect" data-no-soft-nav>Connect Spotify</a>
-        {% elif spotify_configured %}<a class="btn" href="/settings">Set OAuth callback</a>{% endif %}
+        {% elif spotify_configured %}<a class="btn" href="/music/settings" data-nav>Set OAuth callback</a>{% endif %}
       </div>
     </div>
-    {% if spotify_configured and not spotify_redirect_ready %}<div class="alert warning"><strong>Spotify user linking is not ready.</strong> Your callback is <code>{{ spotify_redirect_uri }}</code>. Spotify requires HTTPS except for explicit 127.0.0.1/[::1] loopback development. Set an HTTPS callback in Settings and register exactly the same URI in the Spotify Developer Dashboard.</div>{% endif %}
+    {% if spotify_configured and not spotify_redirect_ready %}<div class="alert warning"><strong>Spotify user linking is not ready.</strong> Your callback is <code>{{ spotify_redirect_uri }}</code>. Spotify requires HTTPS except for explicit 127.0.0.1/[::1] loopback development. Set an HTTPS callback in Music API settings and register exactly the same URI in the Spotify Developer Dashboard.</div>{% endif %}
     {% if spotify_hub.errors %}<div class="alert warning"><strong>Some Spotify sections could not load.</strong><ul>{% for e in spotify_hub.errors %}<li>{{ e }}</li>{% endfor %}</ul></div>{% endif %}
   {% endif %}
   {% if external_url %}<div class="external-provider-callout"><div><strong>{{ selected_provider.name }} catalogue</strong><p>This source is an external catalogue rather than another provider relabelled as it.</p></div><a class="btn primary" href="{{ external_url }}" target="_blank" rel="noopener">Open catalogue search ↗</a></div>{% endif %}

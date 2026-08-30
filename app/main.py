@@ -43,7 +43,7 @@ from .music import (
     external_music_links, GENRES, audius_trending, audius_search,
     provider_catalog, enrich_artist_art, enrich_release_art, representative_artwork,
     internet_archive_search, jamendo_search, soundcloud_search, lastfm_search,
-    lastfm_top, provider_featured, provider_search,
+    lastfm_top, provider_featured, provider_search, safe_external_url,
     spotify_app_configured, spotify_user_linked, spotify_authorize_url, spotify_exchange_code,
     spotify_user_hub, spotify_disconnect_user,
 )
@@ -55,7 +55,7 @@ from .policy import load_policy, score_release
 from .tvpacks import classify_release, pack_matches, coverage_summary, choose_best_complete, choose_best_season_packs
 from .notifications import send_notification
 from .admin_tools import create_database_backup, list_backups, sanitized_config, diagnostics_zip
-from .plugins import load_catalog_plugins, plugin_search_url
+from .plugins import load_catalog_plugins, plugin_search_url, safe_plugin_search_template
 from .ecosystem import (
     connector_definitions, connector_config, save_connector as save_ecosystem_connector,
     probe_connector, probe_enabled_connectors, install_connector_plugin,
@@ -77,6 +77,8 @@ from .language_guard import (
 from .providers import list_provider_states, save_provider, provider_definition, categories as provider_categories, migrate_legacy_providers
 from .readiness import stack_readiness
 from .release_export import build_public_release
+from .runtime_cache import StaleSnapshot
+from .media_servers import definitions as media_server_definitions, builtin_state as media_server_builtin_state, probe_builtin as probe_media_server, list_custom as list_custom_media_servers, save_custom as save_custom_media_server, delete_custom as delete_custom_media_server, probe_custom as probe_custom_media_server
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title="ArrNexus")
@@ -85,10 +87,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "9.2.0-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "9.3.0-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "9.2.0-beta"
+APP_VERSION = "9.3.0-beta"
 
 
 @app.middleware("http")
@@ -120,6 +122,8 @@ BRAND_ICONS = {
     "lidarr": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/lidarr.png",
     "prowlarr": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/prowlarr.png",
     "jellyfin": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/jellyfin.png",
+    "plex": "https://cdn.simpleicons.org/plex/E5A00D",
+    "emby": "https://cdn.simpleicons.org/emby/52B54B",
     "seerr": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/seerr.png",
     "infinidysk": "https://raw.githubusercontent.com/infinidysk/infinidysk/main/frontend/public/logo-square.png",
     "decypharr": "https://raw.githubusercontent.com/sirrobot01/decypharr/main/docs/public/favicon.png",
@@ -150,6 +154,20 @@ def request_is_admin(request: Request) -> bool:
 
 templates.env.globals["request_is_admin"] = request_is_admin
 RUNNING_TASKS: set[asyncio.Task] = set()
+
+# v9.3 route snapshots.  These pages used to synchronously fan out across the
+# filesystem and several remote APIs on every click.  Keep one usable snapshot
+# and refresh it behind the current page once it goes stale.
+_MAINTENANCE_SNAPSHOT = StaleSnapshot(90.0)
+_PROBLEMS_SNAPSHOT = StaleSnapshot(30.0)
+_READINESS_SNAPSHOT = StaleSnapshot(30.0)
+_INBOX_SNAPSHOT = StaleSnapshot(45.0)
+_INFINI_SNAPSHOTS: dict[str, StaleSnapshot] = {}
+_INSTANCE_CATALOG_SNAPSHOT = StaleSnapshot(45.0)
+_BROKEN_LINK_SNAPSHOT = StaleSnapshot(60.0)
+_LIDARR_ARTISTS_SNAPSHOT = StaleSnapshot(45.0)
+_MUSIC_ARTIST_SNAPSHOTS: dict[str, StaleSnapshot] = {}
+
 
 
 @app.on_event("startup")
@@ -202,12 +220,50 @@ async def startup():
     except Exception:
         pass
 
-    # Build the first v9.2 dashboard snapshot in the background so opening the
+    # Build the first dashboard snapshot in the background so opening the
     # Control Centre does not have to fan out to every service on demand.
     try:
         dash = asyncio.create_task(_refresh_dashboard_snapshot())
         RUNNING_TASKS.add(dash)
         dash.add_done_callback(RUNNING_TASKS.discard)
+    except Exception:
+        pass
+
+    # Stagger the two most frequently opened expensive operational pages.  The
+    # work happens after startup and never blocks the web server becoming ready.
+    async def _prewarm_v93_ui():
+        # Fresh installations have nothing useful to prewarm yet.  Existing
+        # configured stacks get a deliberately staggered server-side warm-up
+        # instead of the browser crawling every expensive sidebar route.
+        if user_count() == 0 or setting_get("setup.complete", "false").lower() not in {"1", "true", "yes", "on"}:
+            return
+        await asyncio.sleep(1.5)
+        try:
+            await _INBOX_SNAPSHOT.get(_build_inbox_snapshot)
+        except Exception:
+            pass
+        await asyncio.sleep(0.75)
+        try:
+            if connector_config("infinidysk").get("enabled"):
+                await _infini_snapshot_cache("24h").get(lambda: _build_infinidysk_snapshot("24h"))
+        except Exception:
+            pass
+        # Give normal startup/navigation priority before warming the heavier
+        # maintenance/readiness views once in the background.
+        await asyncio.sleep(4.0)
+        try:
+            await _MAINTENANCE_SNAPSHOT.get(_build_maintenance_snapshot)
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+        try:
+            await _READINESS_SNAPSHOT.get(_live_stack_readiness_uncached)
+        except Exception:
+            pass
+    try:
+        warm_ui = asyncio.create_task(_prewarm_v93_ui())
+        RUNNING_TASKS.add(warm_ui)
+        warm_ui.add_done_callback(RUNNING_TASKS.discard)
     except Exception:
         pass
 
@@ -389,13 +445,13 @@ async def arr_status(client, timeout: float = 4.0):
         return {"ok": False, "error": str(e)}
 
 
-async def live_stack_readiness() -> dict:
-    """Readiness snapshot used only on explicit setup/readiness pages.
+async def _live_stack_readiness_uncached() -> dict:
+    """Bounded live readiness probe.
 
-    Unlike the normal Dashboard path, this may perform bounded live checks. It
-    intentionally does not run on every navigation.
+    v9.2 built the synchronous namespace/configuration state first and only then
+    started API probes.  On DUMB mount namespaces that serialized several
+    seconds of work.  v9.3 runs the base snapshot and remote checks together.
     """
-    state = stack_readiness()
     clients = {
         "radarr": RadarrClient(), "sonarr": SonarrClient(), "lidarr": LidarrClient(),
         "prowlarr": ProwlarrClient(), "seerr": SeerrClient(),
@@ -403,12 +459,14 @@ async def live_stack_readiness() -> dict:
 
     async def jf_check():
         try:
-            data = await asyncio.wait_for(jellyfin_status(), timeout=4.0)
+            data = await asyncio.wait_for(jellyfin_status(), timeout=3.5)
             return {"ok": True, "version": data.get("Version") or data.get("version") or "Connected"}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
-    results = await asyncio.gather(*(arr_status(client, 4.0) for client in clients.values()), jf_check())
+    base_task = asyncio.to_thread(stack_readiness)
+    api_task = asyncio.gather(*(arr_status(client, 3.5) for client in clients.values()), jf_check())
+    state, results = await asyncio.gather(base_task, api_task)
     live = dict(zip(list(clients) + ["jellyfin"], results))
     for check in state["checks"]:
         if not check["key"].startswith("connection-"):
@@ -419,6 +477,21 @@ async def live_stack_readiness() -> dict:
         result = live.get(service) or {}
         check["ok"] = bool(result.get("ok"))
         check["detail"] = (f"API verified · {result.get('version') or 'connected'}" if result.get("ok") else f"Configured but API check failed · {result.get('error') or 'unknown error'}")
+
+    # Plex/Emby/custom media servers are optional.  They are included in the
+    # readiness detail when configured but never make an Arr-only stack fail.
+    media_checks = []
+    for definition in media_server_definitions():
+        if definition.key == "jellyfin":
+            continue
+        state_row = media_server_builtin_state(definition.key)
+        if state_row.get("url") or state_row.get("has_token"):
+            result = await probe_media_server(definition.key, state_row.get("url") or "", get_connection(definition.key).api_key)
+            media_checks.append({"key": f"media-{definition.key}", "label": f"{definition.name} media server", "ok": bool(result.get("ok")), "detail": result.get("version") or result.get("error") or result.get("detail") or "Configured", "required": False, "action": "/arrs"})
+    for custom in list_custom_media_servers(mask=True):
+        result = await probe_custom_media_server(custom)
+        media_checks.append({"key": f"media-custom-{custom.get('id')}", "label": custom.get("name") or "External media server", "ok": bool(result.get("ok")), "detail": result.get("detail") or result.get("error") or "Configured", "required": False, "action": "/arrs"})
+    state["checks"].extend(media_checks)
 
     required = [c for c in state["checks"] if c["required"]]
     optional = [c for c in state["checks"] if not c["required"]]
@@ -434,6 +507,13 @@ async def live_stack_readiness() -> dict:
     return state
 
 
+async def live_stack_readiness(force: bool = False) -> dict:
+    data, age, refreshing = await _READINESS_SNAPSHOT.get(_live_stack_readiness_uncached, force=force)
+    data["snapshot_age"] = age
+    data["refreshing"] = refreshing
+    return data
+
+
 def _title_map(entries: list[dict]) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {}
     for x in entries or []:
@@ -441,7 +521,7 @@ def _title_map(entries: list[dict]) -> dict[str, list[dict]]:
     return out
 
 
-async def _instance_catalogs():
+async def _instance_catalogs_uncached():
     instances = discover_instances()
     movie_entries: list[tuple[dict, object]] = []
     tv_entries: list[tuple[dict, object]] = []
@@ -459,6 +539,11 @@ async def _instance_catalogs():
         target = movie_entries if inst.service == "radarr" else tv_entries
         target.extend((row, inst) for row in rows)
     return movie_entries, tv_entries
+
+
+async def _instance_catalogs():
+    data, _age, _refreshing = await _INSTANCE_CATALOG_SNAPSHOT.get(_instance_catalogs_uncached)
+    return data
 
 
 async def enrich_items(items):
@@ -490,16 +575,10 @@ async def enrich_items(items):
         lookup = []
         cache_key = f"lookup:{item.media_type}:{normalize_title(item.title_guess)}:{item.year_guess or 0}"
         if metadata is None:
+            # Inbox is a list view, not a metadata-search endpoint.  Reuse any
+            # lookup cached by Item Review/Discover but never launch dozens of
+            # Radarr/Sonarr lookups while rendering the inbox.
             lookup = cache_get(cache_key) or []
-            if not lookup:
-                async with sem:
-                    try:
-                        lookup = await (RadarrClient().lookup(f"{item.title_guess} {item.year_guess or ''}".strip()) if item.media_type == "movie" else SonarrClient().lookup(item.title_guess))
-                    except Exception:
-                        lookup = []
-                lookup = (lookup or [])[:8]
-                if lookup:
-                    cache_set(cache_key, lookup)
             metadata = lookup[0] if lookup else {}
 
         if match and match_inst and match_inst.destination_key:
@@ -530,10 +609,10 @@ async def enrich_items(items):
                 existing_res = 0
 
         jf_conn = get_connection("jellyfin")
-        jf = {"configured": bool(jf_conn.api_key), "found": False}
-        if jf_conn.api_key and state in {"imported", "linked"}:
-            async with sem:
-                jf = await search_jellyfin(item.title_guess, 3)
+        # A per-card Jellyfin query multiplied inbox latency by the number of
+        # imported items.  Exact media-server detection belongs on Item Review;
+        # list views only advertise that a media server is configured.
+        jf = {"configured": bool(jf_conn.api_key), "found": False, "deferred": True}
 
         display_title = (metadata or {}).get("title") or item.title_guess
         display_year = (metadata or {}).get("year") or item.year_guess
@@ -864,13 +943,19 @@ async def refresh_dashboard(request: Request):
     return {"ok": True, "age": age}
 
 
+async def _build_inbox_snapshot() -> dict:
+    items = await asyncio.to_thread(scan_source)
+    rows = dedupe_rows(await enrich_items(items))
+    return {"rows": rows, "built_at": time.time()}
+
+
 @app.get("/inbox", response_class=HTMLResponse)
-async def inbox(request: Request, q: str = "", status: str = "all", media_type: str = "all", view: str = "grid"):
+async def inbox(request: Request, q: str = "", status: str = "all", media_type: str = "all", view: str = "grid", refresh: int = 0):
     require_auth(request)
-    items = scan_source()
+    snapshot, snapshot_age, refreshing = await _INBOX_SNAPSHOT.get(_build_inbox_snapshot, force=bool(refresh))
+    enriched = list(snapshot.get("rows") or [])
     if media_type in {"movie", "tv"}:
-        items = [x for x in items if x.media_type == media_type]
-    enriched = dedupe_rows(await enrich_items(items))
+        enriched = [x for x in enriched if x["item"].media_type == media_type]
     if q:
         nq = normalize_title(q)
         enriched = [x for x in enriched if nq in normalize_title(x.get("display_title") or "") or nq in normalize_title(x["item"].name) or nq in normalize_title(x["item"].title_guess)]
@@ -901,6 +986,7 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
         "movie_roots": movie_roots(),
         "tv_roots": tv_roots(),
         "q": q, "status": status, "media_type": media_type, "view": view,
+        "snapshot_age": snapshot_age, "snapshot_refreshing": refreshing,
     })
 
 
@@ -1169,56 +1255,82 @@ async def browser_file(request: Request, path: str):
     return FileResponse(actual,filename=Path(path).name)
 
 
-@app.get("/problems", response_class=HTMLResponse)
-async def problems_page(request: Request):
-    require_auth(request)
-    problems=[]; service_rows=[]
-    ns=namespace_status()
+async def _build_problems_snapshot() -> dict:
+    async def service_probe(name, client):
+        result = await arr_status(client, 3.5)
+        return {"name": name, "ok": bool(result.get("ok")), "detail": result.get("version") or result.get("error") or "Connected"}
+
+    ns_task = asyncio.to_thread(namespace_status)
+    broken_task = _BROKEN_LINK_SNAPSHOT.get(lambda: asyncio.to_thread(scan_broken_symlinks, 500))
+    services_task = asyncio.gather(
+        service_probe("Radarr", RadarrClient()), service_probe("Sonarr", SonarrClient()),
+        service_probe("Lidarr", LidarrClient()), service_probe("Prowlarr", ProwlarrClient()),
+    )
+    ns_result, broken_result, service_rows = await asyncio.gather(ns_task, broken_task, services_task, return_exceptions=True)
+    ns = ns_result if isinstance(ns_result, dict) else {"ok": False, "error": str(ns_result)}
+    if isinstance(broken_result, Exception):
+        broken = []
+    else:
+        broken_value = broken_result[0] if isinstance(broken_result, tuple) else broken_result
+        broken = list(broken_value or [])[:250]
+    problems = []
     if not ns.get("ok"):
         problems.append({"severity":"critical","kind":"Namespace","title":"DUMB namespace unavailable","detail":ns.get("error") or "Mount namespace could not be resolved","href":"/maintenance"})
-    # Live service checks are deliberately isolated so one dead service does not break the page.
-    for name,client in (("Radarr",RadarrClient()),("Sonarr",SonarrClient()),("Lidarr",LidarrClient()),("Prowlarr",ProwlarrClient())):
-        try:
-            st=await client.status(); service_rows.append({"name":name,"ok":True,"detail":st.get("version") or "Connected"})
-        except Exception as exc:
-            service_rows.append({"name":name,"ok":False,"detail":str(exc)})
-            problems.append({"severity":"error","kind":"Connection","title":f"{name} unavailable","detail":str(exc),"href":"/arrs"})
-    try:
-        broken=scan_broken_symlinks(250)
-    except Exception as exc:
-        broken=[]; problems.append({"severity":"warning","kind":"Maintenance","title":"Broken-link scan failed","detail":str(exc),"href":"/maintenance"})
-    if broken:
+    if isinstance(service_rows, Exception):
+        service_error = str(service_rows)
+        service_rows = []
+        problems.append({"severity":"warning","kind":"Connection","title":"Service health check failed","detail":service_error,"href":"/arrs"})
+    for row in service_rows:
+        if not row.get("ok"):
+            problems.append({"severity":"error","kind":"Connection","title":f"{row['name']} unavailable","detail":row.get("detail") or "Connection failed","href":"/arrs"})
+    if isinstance(broken_result, Exception):
+        problems.append({"severity":"warning","kind":"Maintenance","title":"Broken-link scan failed","detail":str(broken_result),"href":"/maintenance"})
+    elif broken:
         problems.append({"severity":"error","kind":"Library","title":f"{len(broken)} broken symlink(s)","detail":"Open Maintenance to inspect and repair links.","href":"/maintenance"})
-    failed_jobs=[]
+    failed_jobs = []
     for j in recent_jobs(50):
-        if int(j["failed"] or 0)>0 or j["status"] in {"failed","error"}:
+        if int(j["failed"] or 0) > 0 or j["status"] in {"failed", "error"}:
             failed_jobs.append(dict(j))
     if failed_jobs:
         problems.append({"severity":"error","kind":"Import","title":f"{len(failed_jobs)} recent import job(s) with failures","detail":"Open Import Jobs for per-item reasons.","href":"/jobs"})
-    error_logs=list_logs("error","all","",30)
-    score=100
-    score-=min(35,sum(15 for x in service_rows if not x["ok"]))
-    score-=min(25,len(broken)*2)
-    score-=min(25,sum(int(x.get("failed") or 0) for x in failed_jobs)*3)
-    if not ns.get("ok"): score-=30
-    score=max(0,score)
-    return templates.TemplateResponse("problems.html",{"request":request,"problems":problems,"services":service_rows,"broken":broken,"failed_jobs":failed_jobs,"error_logs":error_logs,"health_score":score,"namespace":ns})
+    error_logs = list_logs("error", "all", "", 30)
+    score = 100
+    score -= min(35, sum(15 for x in service_rows if not x["ok"]))
+    score -= min(25, len(broken) * 2)
+    score -= min(25, sum(int(x.get("failed") or 0) for x in failed_jobs) * 3)
+    if not ns.get("ok"):
+        score -= 30
+    return {"problems": problems, "services": service_rows, "broken": broken, "failed_jobs": failed_jobs, "error_logs": error_logs, "health_score": max(0, score), "namespace": ns, "built_at": time.time()}
+
+
+@app.get("/problems", response_class=HTMLResponse)
+async def problems_page(request: Request, refresh: int = 0):
+    require_auth(request)
+    data, age, refreshing = await _PROBLEMS_SNAPSHOT.get(_build_problems_snapshot, force=bool(refresh))
+    return templates.TemplateResponse("problems.html", {"request": request, **data, "snapshot_age": age, "snapshot_refreshing": refreshing})
+
+
+async def _build_maintenance_snapshot() -> dict:
+    try:
+        broken_task = _BROKEN_LINK_SNAPSHOT.get(lambda: asyncio.to_thread(scan_broken_symlinks, 500))
+        items_task = asyncio.to_thread(scan_source)
+        links_task = asyncio.to_thread(build_source_link_index)
+        imports_task = asyncio.to_thread(latest_import_by_source)
+        broken_result, items, links, imports = await asyncio.gather(broken_task, items_task, links_task, imports_task)
+        broken = broken_result[0] if isinstance(broken_result, tuple) else broken_result
+        broken = list(broken or [])
+        orphans = [x for x in items if x.path not in links and not ((imports.get(x.path) or {}).get("status") in {"complete", "linked"} and not (imports.get(x.path) or {}).get("undone"))]
+        return {"broken": broken, "orphans": orphans, "error": None, "built_at": time.time()}
+    except Exception as exc:
+        log_event("warning", "maintenance", "scan_unavailable", str(exc))
+        return {"broken": [], "orphans": [], "error": str(exc), "built_at": time.time()}
 
 
 @app.get("/maintenance", response_class=HTMLResponse)
-async def maintenance_page(request: Request):
+async def maintenance_page(request: Request, refresh: int = 0):
     require_auth(request)
-    error = None
-    try:
-        broken = scan_broken_symlinks(500)
-        items = scan_source()
-        links = build_source_link_index()
-        imports = latest_import_by_source()
-        orphans = [x for x in items if x.path not in links and not ((imports.get(x.path) or {}).get("status") in {"complete", "linked"} and not (imports.get(x.path) or {}).get("undone"))]
-    except Exception as exc:
-        broken, orphans, error = [], [], str(exc)
-        log_event("warning","maintenance","scan_unavailable",error)
-    return templates.TemplateResponse("maintenance.html", {"request": request, "broken": broken, "orphans": orphans, "error": error})
+    data, age, refreshing = await _MAINTENANCE_SNAPSHOT.get(_build_maintenance_snapshot, force=bool(refresh))
+    return templates.TemplateResponse("maintenance.html", {"request": request, **data, "snapshot_age": age, "snapshot_refreshing": refreshing})
 
 
 @app.post("/maintenance/repair")
@@ -1281,6 +1393,22 @@ async def arrs_page(request: Request, notice: str = ""):
         except Exception as exc:
             return {"kind":"jellyfin","service":"jellyfin","instance_name":"main","ok":False,"status":{},"roots":[],"tags":[],"url":jc.url,"has_key":bool(jc.api_key),"error":str(exc)}
 
+    async def _load_media_server(kind: str):
+        state = media_server_builtin_state(kind)
+        conn = get_connection(kind)
+        result = await probe_media_server(kind, conn.url, conn.api_key)
+        return {
+            "kind": "media", "service": kind, "instance_name": "main",
+            "ok": bool(result.get("ok") and conn.api_key), "status": {"version": result.get("version") or result.get("detail") or ""},
+            "roots": [], "tags": [], "url": conn.url, "has_key": bool(conn.api_key),
+            "error": result.get("error") or "", "media_name": state.get("name"),
+            "media_description": state.get("description"), "token_label": state.get("token_label"),
+        }
+
+    async def _load_custom_media(row):
+        result = await probe_custom_media_server(row)
+        return {**row, "kind": "media_custom", "ok": bool(result.get("ok")), "error": result.get("error") or "", "detail": result.get("detail") or "", "status_code": result.get("status_code"), "content_type": result.get("content_type") or ""}
+
     async def _load_seerr():
         sc = get_connection("seerr")
         try:
@@ -1289,15 +1417,20 @@ async def arrs_page(request: Request, notice: str = ""):
         except Exception as exc:
             return {"kind":"seerr","service":"seerr","instance_name":"main","ok":False,"status":{},"roots":[],"tags":[],"url":sc.url,"has_key":bool(sc.api_key),"error":str(exc)}
 
-    rows = list(await asyncio.gather(*(_load_arr(i) for i in instances), _load_prowlarr(), _load_jellyfin(), _load_seerr()))
-    return templates.TemplateResponse("arrs.html", {"request": request, "rows": rows, "notice": notice})
+    custom_media = list_custom_media_servers(mask=True)
+    rows = list(await asyncio.gather(
+        *(_load_arr(i) for i in instances),
+        _load_prowlarr(), _load_media_server("jellyfin"), _load_media_server("plex"), _load_media_server("emby"), _load_seerr(),
+    ))
+    custom_rows = list(await asyncio.gather(*(_load_custom_media(row) for row in custom_media))) if custom_media else []
+    return templates.TemplateResponse("arrs.html", {"request": request, "rows": rows, "custom_media": custom_rows, "notice": notice})
 
 
 @app.post("/settings/connection")
 async def save_connection_route(request: Request, service: str = Form(...), instance: str = Form("main"), url: str = Form(...), api_key: str = Form("")):
     require_admin(request)
     service = service.lower().strip(); instance = instance.strip() or "main"
-    if service not in {"radarr","sonarr","lidarr","prowlarr","jellyfin","seerr"}:
+    if service not in {"radarr","sonarr","lidarr","prowlarr","jellyfin","plex","emby","seerr"}:
         raise HTTPException(400, "Unsupported service")
     save_connection(service, url, api_key, instance)
     invalidate_instance_cache()
@@ -1308,6 +1441,25 @@ async def save_connection_route(request: Request, service: str = Form(...), inst
     add_activity("settings", service.title(), f"Updated {instance} connection")
     return RedirectResponse(f"/arrs?notice={quote(f'{service.title()} / {instance} saved')}", status_code=303)
 
+
+
+@app.post("/media-servers/custom")
+async def save_custom_media_server_route(request: Request, name: str = Form(...), url: str = Form(...), health_path: str = Form("/"), auth_mode: str = Form("none"), auth_name: str = Form("Authorization"), secret_value: str = Form(""), media_id: str = Form("")):
+    require_admin(request)
+    try:
+        save_custom_media_server(name, url, health_path, auth_mode, auth_name, secret_value, media_id)
+        log_event("info", "media_server", "custom_saved", f"External media server {name} saved")
+        return RedirectResponse("/arrs?notice=" + quote(f"{name} media server saved"), status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/arrs?notice=" + quote(f"Could not save media server: {exc}"), status_code=303)
+
+
+@app.post("/media-servers/custom/{media_id}/delete")
+async def delete_custom_media_server_route(request: Request, media_id: str):
+    require_admin(request)
+    delete_custom_media_server(media_id)
+    log_event("warning", "media_server", "custom_removed", f"External media server {media_id} removed")
+    return RedirectResponse("/arrs?notice=" + quote("External media server removed"), status_code=303)
 
 
 @app.get("/profile", response_class=HTMLResponse)
@@ -1396,6 +1548,34 @@ async def settings_mount_delete(request: Request, mount_id: int):
     require_admin(request)
     delete_mount(mount_id); log_event('warning','settings','mount_removed',f'Mount #{mount_id} removed')
     return RedirectResponse('/settings?notice='+quote('Library path removed'),status_code=303)
+
+
+@app.get("/music/settings", response_class=HTMLResponse)
+async def music_settings_page(request: Request, notice: str = ""):
+    require_admin(request)
+    return templates.TemplateResponse("music_settings.html", {
+        "request": request, "notice": notice,
+        "soundcloud_configured": bool(setting_get("music.soundcloud.client_id") and setting_get("music.soundcloud.client_secret")),
+        "jamendo_configured": bool(setting_get("music.jamendo.client_id")),
+        "jamendo_client_id": setting_get("music.jamendo.client_id", ""),
+        "lastfm_configured": bool(setting_get("music.lastfm.api_key")),
+        "spotify_configured": bool(setting_get("music.spotify.client_id") and setting_get("music.spotify.client_secret")),
+        "spotify_redirect_uri": setting_get("music.spotify.redirect_uri", ""),
+    })
+
+
+@app.post("/music/settings")
+async def music_settings_save(request: Request, soundcloud_client_id: str = Form(''), soundcloud_client_secret: str = Form(''), jamendo_client_id: str = Form(''), lastfm_api_key: str = Form(''), spotify_client_id: str = Form(''), spotify_client_secret: str = Form(''), spotify_redirect_uri: str = Form('')):
+    require_admin(request)
+    if soundcloud_client_id.strip(): setting_set('music.soundcloud.client_id',soundcloud_client_id.strip(),True)
+    if soundcloud_client_secret.strip() and soundcloud_client_secret != '********': setting_set('music.soundcloud.client_secret',soundcloud_client_secret.strip(),True)
+    setting_set('music.jamendo.client_id',jamendo_client_id.strip(),True)
+    if lastfm_api_key.strip() and lastfm_api_key != '********': setting_set('music.lastfm.api_key',lastfm_api_key.strip(),True)
+    if spotify_client_id.strip(): setting_set('music.spotify.client_id',spotify_client_id.strip(),True)
+    if spotify_client_secret.strip() and spotify_client_secret != '********': setting_set('music.spotify.client_secret',spotify_client_secret.strip(),True)
+    setting_set('music.spotify.redirect_uri', spotify_redirect_uri.strip())
+    log_event('info','settings','music_provider_settings','Music provider application credentials updated from Music Hub')
+    return RedirectResponse('/music/settings?notice='+quote('Music provider settings saved'),status_code=303)
 
 
 @app.post("/settings/music-providers")
@@ -1583,7 +1763,7 @@ async def settings_import_config(request: Request, config_file: UploadFile = Fil
 async def diagnostics_download(request: Request):
     require_admin(request)
     ns = namespace_status()
-    extra = {"version": APP_VERSION, "namespace": ns, "connections": {s: {"url": get_connection(s).url, "api_key_configured": bool(get_connection(s).api_key)} for s in ("radarr","sonarr","lidarr","prowlarr","jellyfin","seerr")}}
+    extra = {"version": APP_VERSION, "namespace": ns, "connections": {s: {"url": get_connection(s).url, "api_key_configured": bool(get_connection(s).api_key)} for s in ("radarr","sonarr","lidarr","prowlarr","jellyfin","plex","emby","seerr")}}
     data = diagnostics_zip(extra)
     log_event('info','diagnostics','bundle_created','Sanitized diagnostics bundle generated')
     return Response(data, media_type='application/zip', headers={'Content-Disposition':'attachment; filename="arrnexus-diagnostics.zip"'})
@@ -1648,8 +1828,8 @@ async def settings_provider_plugin(request: Request, provider_file: UploadFile =
     require_admin(request)
     try:
         raw=await provider_file.read(); data=json.loads(raw.decode('utf-8'))
-        if not str(data.get('search_url') or '').startswith(('https://','http://')) or '{query}' not in str(data.get('search_url') or ''):
-            raise ValueError('Provider search_url must be http(s) and contain {query}')
+        if not safe_plugin_search_template(str(data.get('search_url') or '')):
+            raise ValueError('Provider search_url must be a real http(s) catalogue URL containing {query}; example/documentation domains are refused')
         key=str(data.get('key') or Path(provider_file.filename or 'provider').stem).lower().replace(' ','-')
         dest=Path(settings.db_path).resolve().parent/'providers'; dest.mkdir(parents=True,exist_ok=True)
         (dest/f'{key}.json').write_text(json.dumps(data,indent=2),encoding='utf-8')
@@ -1743,22 +1923,22 @@ def _infini_graph_points(overview: dict) -> str:
     return " ".join(points)
 
 
-@app.get("/infinidysk", response_class=HTMLResponse)
-async def infinidysk_page(request: Request, notice: str = "", window: str = "24h", history_filter: str = "all"):
-    require_auth(request)
-    if window not in {"1h", "24h", "7d", "30d", "all"}:
-        window = "24h"
-    if history_filter not in {"all", "movies", "tv"}:
-        history_filter = "all"
+async def _build_infinidysk_snapshot(window: str) -> dict:
     cfg = connector_config("infinidysk")
     health = {}; queue = {}; history = {}; overview = {}; metrics = []; errors = []
     if cfg.get("enabled") and cfg.get("url"):
         client = InfiniDyskClient()
-        values = await asyncio.gather(
-            client.health(), client.queue(), client.history(), client.overview(window, "all"),
-            return_exceptions=True,
+
+        async def bounded(call, label):
+            try:
+                return await asyncio.wait_for(call, timeout=4.5)
+            except Exception as exc:
+                return exc
+
+        health_v, queue_v, history_v, overview_v = await asyncio.gather(
+            bounded(client.health(), "health"), bounded(client.queue(), "queue"),
+            bounded(client.history(), "history"), bounded(client.overview(window, "all"), "overview"),
         )
-        health_v, queue_v, history_v, overview_v = values
         if isinstance(health_v, Exception): errors.append(str(health_v))
         else: health = health_v or {}
         if isinstance(queue_v, Exception): errors.append(str(queue_v))
@@ -1767,33 +1947,55 @@ async def infinidysk_page(request: Request, notice: str = "", window: str = "24h
         else: history = history_v or {}
         if isinstance(overview_v, Exception):
             errors.append(str(overview_v))
-            try: metrics = await client.metrics()
-            except Exception: metrics = []
         else:
             overview = overview_v or {}
+    return {"config": cfg, "health": health, "queue_raw": queue, "history_raw": history, "overview": overview, "metrics": metrics, "errors": errors, "built_at": time.time()}
+
+
+def _infini_snapshot_cache(window: str) -> StaleSnapshot:
+    cache = _INFINI_SNAPSHOTS.get(window)
+    if cache is None:
+        cache = StaleSnapshot(30.0)
+        _INFINI_SNAPSHOTS[window] = cache
+    return cache
+
+
+@app.get("/infinidysk", response_class=HTMLResponse)
+async def infinidysk_page(request: Request, notice: str = "", window: str = "24h", history_filter: str = "all", refresh: int = 0):
+    require_auth(request)
+    if window not in {"1h", "24h", "7d", "30d", "all"}:
+        window = "24h"
+    if history_filter not in {"all", "movies", "tv"}:
+        history_filter = "all"
+    snapshot, age, refreshing = await _infini_snapshot_cache(window).get(lambda: _build_infinidysk_snapshot(window), force=bool(refresh))
+    queue = snapshot.get("queue_raw") or {}
+    history = snapshot.get("history_raw") or {}
     q = queue.get("queue", {}) if isinstance(queue, dict) else {}
     h = history.get("history", {}) if isinstance(history, dict) else {}
     history_slots = h.get("slots", []) if isinstance(h, dict) else []
     history_slots = [x for x in history_slots if _infini_history_matches(x, history_filter)]
+    errors = snapshot.get("errors") or []
+    overview = snapshot.get("overview") or {}
     return templates.TemplateResponse("infinidysk.html", {
-        "request": request, "notice": notice, "config": cfg, "health": health, "queue": q,
+        "request": request, "notice": notice, "config": snapshot.get("config") or {}, "health": snapshot.get("health") or {}, "queue": q,
         "queue_slots": q.get("slots", []) if isinstance(q, dict) else [], "history_slots": history_slots,
-        "overview": overview, "graph_points": _infini_graph_points(overview), "metrics": metrics,
+        "overview": overview, "graph_points": _infini_graph_points(overview), "metrics": snapshot.get("metrics") or [],
         "error": " · ".join(dict.fromkeys(x for x in errors if x)), "window": window, "history_filter": history_filter,
+        "snapshot_age": age, "snapshot_refreshing": refreshing,
     })
 
 
 @app.get("/api/infinidysk/live")
-async def infinidysk_live(request: Request, window: str = "24h"):
+async def infinidysk_live(request: Request, window: str = "24h", force: int = 0):
     require_auth(request)
     if window not in {"1h", "24h", "7d", "30d", "all"}:
         window = "24h"
-    client = InfiniDyskClient()
-    overview_v, queue_v = await asyncio.gather(client.overview(window, "window,detail"), client.queue(), return_exceptions=True)
-    if isinstance(overview_v, Exception):
-        return JSONResponse({"ok": False, "error": str(overview_v)}, status_code=502)
-    queue_data = {} if isinstance(queue_v, Exception) else (queue_v or {}).get("queue", {})
-    return {"ok": True, "overview": overview_v or {}, "queue": queue_data}
+    try:
+        snapshot, age, refreshing = await _infini_snapshot_cache(window).get(lambda: _build_infinidysk_snapshot(window), force=bool(force))
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+    queue_data = (snapshot.get("queue_raw") or {}).get("queue", {}) if isinstance(snapshot.get("queue_raw"), dict) else {}
+    return {"ok": True, "overview": snapshot.get("overview") or {}, "queue": queue_data, "age": age, "refreshing": refreshing}
 
 
 @app.post("/infinidysk/action")
@@ -2580,6 +2782,11 @@ def _spotify_redirect_is_acceptable(uri: str) -> bool:
     return value.startswith("https://") or value.startswith("http://127.0.0.1") or value.startswith("http://[::1]")
 
 
+async def _lidarr_artists_cached(force: bool = False):
+    value, age, refreshing = await _LIDARR_ARTISTS_SNAPSHOT.get(lambda: LidarrClient().artists(), force=force)
+    return list(value or []), age, refreshing
+
+
 @app.get("/music", response_class=HTMLResponse)
 async def music_page(request: Request, q: str = "", kind: str = "artist", source: str = "unified", genre: str = "", notice: str = "", error: str = ""):
     user = current_user(request)
@@ -2610,7 +2817,8 @@ async def music_page(request: Request, q: str = "", kind: str = "artist", source
 
     async def _lidarr():
         try:
-            return await LidarrClient().artists(), ""
+            artists, _, _ = await _lidarr_artists_cached()
+            return artists, ""
         except Exception as exc:
             return [], str(exc)
 
@@ -2649,6 +2857,7 @@ async def music_page(request: Request, q: str = "", kind: str = "artist", source
         provider_error = provider_error or str(search_value)
     else:
         results, external_url = search_value or ([], "")
+        external_url = safe_external_url(external_url)
 
     lidarr_value = loaded.get("lidarr")
     if isinstance(lidarr_value, Exception):
@@ -2700,10 +2909,10 @@ async def music_page(request: Request, q: str = "", kind: str = "artist", source
 async def spotify_connect(request: Request):
     user = current_user(request)
     if not spotify_app_configured():
-        return RedirectResponse("/music?source=spotify&error=" + quote("Configure the Spotify Client ID and Client Secret in Settings first."), status_code=303)
+        return RedirectResponse("/music?source=spotify&error=" + quote("Configure the Spotify Client ID and Client Secret in Music API settings first."), status_code=303)
     redirect_uri = _spotify_redirect_uri(request)
     if not _spotify_redirect_is_acceptable(redirect_uri):
-        message = "Spotify user linking needs an HTTPS redirect URI (or 127.0.0.1 for local development). Add the exact callback URL in Settings and in your Spotify app."
+        message = "Spotify user linking needs an HTTPS redirect URI (or 127.0.0.1 for local development). Add the exact callback URL in Music API settings and in your Spotify app."
         return RedirectResponse("/music?source=spotify&error=" + quote(message), status_code=303)
     state = secrets.token_urlsafe(32)
     request.session["spotify_oauth_state"] = state
@@ -2740,22 +2949,50 @@ async def spotify_disconnect(request: Request):
     return RedirectResponse("/music?source=spotify&notice=" + quote("Spotify account disconnected"), status_code=303)
 
 
-@app.get("/music/artist", response_class=HTMLResponse)
-async def music_artist_page(request: Request, name: str):
-    require_auth(request)
+def _music_artist_snapshot(name: str) -> StaleSnapshot:
+    key = normalize_title(name) or name.strip().lower()
+    snap = _MUSIC_ARTIST_SNAPSHOTS.get(key)
+    if snap is None:
+        snap = StaleSnapshot(60.0)
+        _MUSIC_ARTIST_SNAPSHOTS[key] = snap
+    return snap
+
+
+async def _build_music_artist_state(name: str) -> dict:
     lc = LidarrClient()
-    lookup = await lc.artist_lookup(name)
-    exact = lookup[0] if lookup else None
-    mb = await search_musicbrainz(name, "artist", 6)
-    links = external_music_links(name)
-    existing = None
-    for a in await lc.artists():
-        if normalize_title(a.get("artistName") or a.get("name") or "") == normalize_title(name):
-            existing = a
-            break
-    albums = await lc.albums(int(existing["id"])) if existing else []
-    artwork = await representative_artwork(name)
-    return templates.TemplateResponse("music_artist.html", {"request": request, "name": name, "lookup": exact, "mb": mb, "existing": existing, "albums": albums, "links": links, "artwork": artwork})
+
+    async def bounded(coro, timeout: float, default):
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except Exception:
+            return default
+
+    # These calls are independent.  v9.2 performed them mostly one after the
+    # other, so a slow MusicBrainz/Apple response stacked on top of Lidarr.
+    artists_task = asyncio.create_task(_lidarr_artists_cached())
+    lookup_task = asyncio.create_task(bounded(lc.artist_lookup(name), 3.5, []))
+    mb_task = asyncio.create_task(bounded(search_musicbrainz(name, "artist", 6), 3.0, []))
+    artwork_task = asyncio.create_task(bounded(representative_artwork(name), 2.75, ""))
+
+    artists_v, _, _ = await artists_task
+    existing = next((a for a in (artists_v or []) if normalize_title(a.get("artistName") or a.get("name") or "") == normalize_title(name)), None)
+    albums_task = asyncio.create_task(bounded(lc.albums(int(existing["id"])), 3.5, [])) if existing else None
+    lookup_v, mb_v, artwork_v = await asyncio.gather(lookup_task, mb_task, artwork_task)
+    albums = await albums_task if albums_task is not None else []
+    links = {k: safe_external_url(v) for k, v in external_music_links(name).items()}
+    links = {k: v for k, v in links.items() if v}
+    return {
+        "name": name, "lookup": (lookup_v or [None])[0] if lookup_v else None,
+        "mb": mb_v or [], "existing": existing, "albums": albums or [],
+        "links": links, "artwork": artwork_v or "", "built_at": time.time(),
+    }
+
+
+@app.get("/music/artist", response_class=HTMLResponse)
+async def music_artist_page(request: Request, name: str, refresh: int = 0):
+    require_auth(request)
+    data, age, refreshing = await _music_artist_snapshot(name).get(lambda: _build_music_artist_state(name), force=bool(refresh))
+    return templates.TemplateResponse("music_artist.html", {"request": request, **data, "snapshot_age": age, "snapshot_refreshing": refreshing})
 
 
 @app.post("/music/add-result")
@@ -2923,9 +3160,9 @@ async def provider_save_route(request: Request, provider_id: str):
 
 
 @app.get("/readiness", response_class=HTMLResponse)
-async def readiness_page(request: Request):
+async def readiness_page(request: Request, refresh: int = 0):
     require_admin(request)
-    return templates.TemplateResponse("readiness.html", {"request": request, "readiness": await live_stack_readiness()})
+    return templates.TemplateResponse("readiness.html", {"request": request, "readiness": await live_stack_readiness(force=bool(refresh))})
 
 
 @app.get("/aiostreams", response_class=HTMLResponse)

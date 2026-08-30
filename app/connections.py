@@ -19,6 +19,7 @@ def _env_pair(service: str) -> tuple[str, str]:
     if service == "prowlarr": return settings.prowlarr_url, settings.prowlarr_api_key
     if service == "jellyfin": return settings.jellyfin_url, settings.jellyfin_api_key
     if service == "seerr": return settings.seerr_url, settings.seerr_api_key
+    if service in {"plex", "emby"}: return "", ""
     raise KeyError(service)
 
 

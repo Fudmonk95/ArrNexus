@@ -1,72 +1,115 @@
 # ArrNexus Changelog
 
+## 9.3.0-beta — Music, Media Servers & Targeted Performance
+
+### Performance
+
+- Added targeted stale-while-revalidate snapshots for the routes shown as slow by live `performance / slow_request` logs:
+  - DMM Inbox
+  - Maintenance
+  - Problem Centre
+  - Stack Readiness
+  - InfiniDysk
+  - Music Artist
+- Added a shared broken-link snapshot so Maintenance and Problem Centre do not independently repeat the same expensive symlink walk.
+- Maintenance now runs broken-link, DMM source, source→link and import-state work concurrently on worker threads.
+- Problem Centre now runs namespace resolution, broken-link state and Arr service probes concurrently.
+- InfiniDysk now requests health, queue, history and native Overview telemetry concurrently with bounded timeouts and per-window snapshots.
+- Music Artist now runs Lidarr library, Lidarr lookup, MusicBrainz and artwork work concurrently; stable Lidarr artist inventory is reused for 45 seconds.
+- Specialist Arr existing-match checks remain concurrent across discovered Arr instances.
+- Existing configured installs receive a staggered server-side warm-up for commonly expensive snapshots after startup rather than browser-side automatic crawling.
+- Retained `Server-Timing`, `X-ArrNexus-Elapsed-Ms` and `performance / slow_request` diagnostics from v9.2.
+
+### Music
+
+- Added a dedicated administrator-only **Music API Settings** page.
+- Added Music API Settings to the persistent Settings navigation.
+- Music Hub now exposes direct Music API Settings and Public Home controls.
+- Spotify, SoundCloud, Jamendo and Last.fm application credentials can be managed from the dedicated page.
+- Spotify OAuth guidance now points to Music API Settings.
+- Added caching for provider-specific featured/search results.
+- Added safe external music URL validation; known documentation/example domains are refused rather than opened as if they were live catalogues.
+- Reduced optional external metadata timeouts so catalogue/artwork services cannot serially block the artist page.
+
+### Media servers
+
+- Retained Jellyfin as the deepest current media-server integration.
+- Added first-class **Plex Media Server** connection support using `X-Plex-Token` verification.
+- Added first-class **Emby Server** connection support using the protected system-info API and `X-Emby-Token`.
+- Added a safe **External / custom media server** connector with:
+  - name
+  - base URL
+  - health/status path
+  - no-auth, bearer, custom-header or query-parameter authentication
+  - privately stored secret/token
+- Custom media-server connectors perform bounded HTTP probes and do not execute arbitrary third-party code.
+- Added Plex/Emby media-server entries to diagnostics connection summaries and Stack Readiness checks.
+
+### Navigation / UI
+
+- Added an always-visible Public Home button to the authenticated top bar.
+- Added **Public Home / About** to the sidebar footer.
+- Updated the authenticated header wording from Jellyfin-specific to generic **Media Servers**.
+- Bumped CSS/JavaScript/service-worker assets to v9.3 so browsers do not keep stale v9.2 assets.
+- Added snapshot-age/refresh indicators to expensive operational pages.
+- Extended the product-wide black ArrNexus visual lock to new v9.3 connection/music/snapshot components.
+
+### Documentation / deployment
+
+- Rewrote the public README for v9.3.
+- Expanded the public landing page installation guide.
+- Documented host validator setup using `python3-venv` and a local `.venv` rather than Debian system Python.
+- Added explicit installation paths for:
+  - release ZIP + Docker Compose source build
+  - Git clone + Docker Compose source build
+  - Portainer Git stack
+  - future official GitHub Container Registry image
+  - Portainer Web Editor / Stack file using the future official image
+- Added Plex, Emby and external media-server architecture/documentation.
+- Marked GHCR examples as templates until an official image is actually published.
+
+### Validation
+
+- Preserved v9.2, v9.1, v9, v8 and v7 regression suites.
+- Added deterministic v9.3 checks for:
+  - Music API Settings UI/save
+  - placeholder music URL rejection
+  - Plex XML API probe
+  - Emby JSON API probe
+  - custom media-server secret masking
+  - Plex/Emby connection persistence
+  - stale snapshot reuse
+  - Maintenance concurrency
+  - InfiniDysk concurrency
+  - Music Artist concurrency
+  - Public Home navigation
+  - v9.3 static/service-worker versioning
+  - Git/Compose/Portainer/GHCR installation documentation
+
 ## 9.2.0-beta — Reliability, Documentation & Performance
 
-### Dashboard production-data fix
-- Fixed an HTTP 500 on upgraded/live databases caused by `copy.deepcopy()` receiving cached `sqlite3.Row` objects from recent imports, jobs and activity.
-- Dashboard snapshot rows are normalised to plain dictionaries before caching.
-- Added a migrated/non-empty database regression that reproduces the original failure.
-- Added degraded Dashboard rendering plus diagnostic logging so a future integration failure does not become an opaque Internal Server Error.
+- Fixed Dashboard HTTP 500 on real upgraded databases by converting `sqlite3.Row` history objects to plain dictionaries before snapshot caching.
+- Added degraded Dashboard fallback and performance route timing/logging.
+- Expanded public documentation and host virtualenv validation guidance.
+- Removed aggressive automatic browser prefetch of expensive sidebar routes.
 
-### Public documentation
-- Rebuilt `/` from the detailed public README structure rather than a short marketing summary.
-- Added problem statement, project origin, reference architecture, requirements matrix, installation, upgrade, Python virtualenv validation, Docker networking, integrations, DMM/virtual-media explanation, acquisition strategies, feature guide, security and troubleshooting.
-- Kept the public current-build ZIP and SHA-256 controls.
+## 9.1.0-beta — Unified Product UI & Navigation Performance
 
-### Performance
-- Removed v9.1's automatic idle crawl/prefetch of expensive sidebar destinations.
-- Retained persistent-shell soft navigation, in-flight request de-duplication and stale-while-revalidate caching.
-- Increased recently visited page freshness and changed hover prefetch to sustained user intent.
-- Added `Server-Timing` and `X-ArrNexus-Elapsed-Ms` response headers.
-- Added `performance / slow_request` log events for requests taking 1.5 seconds or longer.
+- Applied the public ArrNexus visual system across authenticated pages.
+- Removed user-selectable theme switching from the product UI.
+- Added persistent-shell navigation, page cache, request de-duplication and stale-while-revalidate client navigation.
+- Added safe public source-release export.
 
-### Regression protection
-- Added `validate_v91.py` to retain v9.1 regression coverage.
-- v9.2 `validate.py` runs v9.1 → v9 → v8 → v7 before v9.2-specific tests.
-- Added non-empty Dashboard history, degraded Dashboard, public documentation and route timing tests.
+## 9.0.0-beta — Product / Onboarding / Providers
 
-## 9.1.0-beta — Unified UI & Performance
-
-### Product-wide visual identity
-- Removed theme switching from the public/private UI.
-- Existing theme database fields remain only for backwards compatibility.
-- Applied the black ArrNexus visual system across the sidebar, top bar, panels, forms, tables, cards, settings, profile and operational pages.
-- Restyled password recovery to match the v9 branded login/setup experience.
-- Kept the ArrNexus logo/icon as the single product identity.
-
-### Public product page
-- Expanded `/` using the project README feature set.
-- Added architecture, feature, integration, workflow, safety and release sections.
-- Added public current-build source download and SHA-256 endpoints.
-- Public source exporter excludes persistent data, secrets, databases, backups, virtualenvs and runtime caches.
-
-### Performance
-- Extended client soft-navigation cache to 45 seconds.
-- Added client stale-while-revalidate reuse for recently visited pages.
-- Added in-flight navigation request de-duplication.
-- Added pointer-down/hover prefetch and low-priority idle prefetch of common routes.
-- Added short-lived server-side Dashboard snapshot caching.
-- Dashboard now serves stale state immediately while refreshing expired snapshots in the background.
-- Moved source/link/library namespace work off the async event loop with worker threads where practical.
-- Shortened Dashboard service fan-out timeouts and removed mandatory fresh service fan-out from every Dashboard navigation.
-
-### Regression protection
-- Preserved `validate_v7.py`.
-- Preserved `validate_v8.py` and extended its version acceptance for v9.1.
-- Preserved v9.0 validation as `validate_v9.py`.
-- v9.1 `validate.py` runs v9 → v8 → v7 before new tests.
-- Added public release-export hygiene checks, single-theme checks and v9.1 performance architecture checks.
-
-## 9.0.0-beta — Product, Onboarding & Provider Architecture
 - Added original ArrNexus branding and public landing page.
-- Added guided onboarding and Stack Readiness.
-- Added provider-neutral registry and multi-provider AIOStreams Auto-Wire.
-- Preserved v8/v7 acquisition and safety functionality.
+- Added guided first-run onboarding and Stack Readiness.
+- Added provider-neutral Provider Registry and multi-provider AIOStreams wiring.
 
 ## 8.0.0-beta — AIOStreams Bridge
-- Added administrator-only AIOStreams Bridge.
-- Added full User API GET/PUT workflow with digest preview, stale protection, backups, rollback and redacted search diagnostics.
-- Added Prowlarr/Real-Debrid/NzbDAV conservative Auto-Wire behaviour.
 
-## 7.0 — Corrected operational baseline
-- Added personal Spotify OAuth aggregation, Language Guard, native InfiniDysk telemetry, Prowlarr indexer control, season-correct Sonarr search, stricter connector verification and performance caches.
+- Added safe AIOStreams full-config preview/apply/backup/rollback/search integration while retaining v7 functionality.
+
+## 7.0 — Spotify, Language Guard, Telemetry & Performance
+
+- Added Spotify personal OAuth, Language Guard, native InfiniDysk telemetry, Prowlarr indexer control, corrected Sonarr season search, strict connector verification and performance caches.

@@ -1,5 +1,5 @@
 {% extends 'base.html' %}{% block heading %}InfiniDysk{% endblock %}{% block content %}
-{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
+{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}<div class="v93-snapshot-bar"><span>InfiniDysk snapshot · {{ snapshot_age or 0 }}s old{% if snapshot_refreshing %} · refreshing in background{% endif %}</span><a class="btn small" href="/infinidysk?window={{ window }}&history_filter={{ history_filter }}&refresh=1" data-nav>Refresh now</a></div>
 <section class="hero compact-hero"><div><span class="eyebrow">NATIVE USENET CONTROL · LIVE OVERVIEW</span><h2>InfiniDysk operations</h2><p>ArrNexus now uses InfiniDysk's native Overview API for the same structured throughput, provider, latency and activity data behind its own dashboard.</p></div><div class="inline-actions"><a class="btn" href="/ecosystem">Connector settings</a>{% if config.url %}<a class="btn" href="{{ config.url }}" target="_blank">Open InfiniDysk ↗</a>{% endif %}</div></section>
 {% if not config.enabled %}<div class="alert warning">InfiniDysk is not enabled. Open <a href="/ecosystem">Ecosystem</a> and configure the connector first.</div>{% endif %}
 {% if error %}<div class="alert warning"><strong>Some InfiniDysk data could not be loaded.</strong><br>{{ error }}</div>{% endif %}

@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block heading %}Music Provider Settings{% endblock %}
+{% block content %}
+{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
+<section class="hero compact-hero v93-music-settings-hero">
+  <div><span class="eyebrow">MUSIC HUB · APPLICATION CREDENTIALS</span><h2>Keep catalogue APIs easy to find.</h2><p>These are application-level credentials used for optional music catalogues. Spotify listener access is still linked separately per ArrNexus user from Music Hub.</p></div>
+  <div class="inline-actions"><a class="btn" href="/music" data-nav>← Music Hub</a><a class="btn" href="/settings" data-nav>All settings</a></div>
+</section>
+
+<form method="post" action="/music/settings" class="formgrid">
+  <div class="v93-provider-config-grid">
+    <section class="panel">
+      <div class="panelhead"><div class="service-title"><span class="service-logo soundcloud">{% if brand_icon('soundcloud') %}<img class="brand-img" src="{{ brand_icon('soundcloud') }}" alt="">{% endif %}</span><div><h2>SoundCloud</h2><p>Optional application credentials for catalogue search.</p></div></div><span class="connection-state {{ 'online' if soundcloud_configured else 'offline' }}">{{ 'Configured' if soundcloud_configured else 'Optional' }}</span></div>
+      <label>Client ID<input name="soundcloud_client_id" placeholder="{{ 'Configured — leave blank to keep' if soundcloud_configured else 'SoundCloud app client ID' }}"></label>
+      <label>Client secret<input type="password" name="soundcloud_client_secret" placeholder="{{ 'Configured — leave blank to keep' if soundcloud_configured else 'SoundCloud app client secret' }}"></label>
+    </section>
+
+    <section class="panel">
+      <div class="panelhead"><div><h2>Jamendo</h2><p>Optional developer client ID for Jamendo catalogue browsing.</p></div><span class="connection-state {{ 'online' if jamendo_configured else 'offline' }}">{{ 'Configured' if jamendo_configured else 'Optional' }}</span></div>
+      <label>Client ID<input name="jamendo_client_id" value="{{ jamendo_client_id }}" placeholder="Optional Jamendo developer client ID"></label>
+    </section>
+
+    <section class="panel">
+      <div class="panelhead"><div><h2>Last.fm</h2><p>Optional application API key for global charts and catalogue search.</p></div><span class="connection-state {{ 'online' if lastfm_configured else 'offline' }}">{{ 'Configured' if lastfm_configured else 'Optional' }}</span></div>
+      <label>API key<input type="password" name="lastfm_api_key" placeholder="{{ 'Configured — leave blank to keep' if lastfm_configured else 'Last.fm application API key' }}"></label>
+    </section>
+
+    <section class="panel spotify-hero-panel">
+      <div class="panelhead"><div class="service-title"><span class="service-logo spotify">{% if brand_icon('spotify') %}<img class="brand-img" src="{{ brand_icon('spotify') }}" alt="">{% endif %}</span><div><h2>Spotify</h2><p>App credentials enable catalogue access; individual users then link their own account with OAuth.</p></div></div><span class="connection-state {{ 'online' if spotify_configured else 'offline' }}">{{ 'App configured' if spotify_configured else 'Needs app credentials' }}</span></div>
+      <label>Client ID<input name="spotify_client_id" placeholder="{{ 'Configured — leave blank to keep' if spotify_configured else 'Spotify app Client ID' }}"></label>
+      <label>Client secret<input type="password" name="spotify_client_secret" placeholder="{{ 'Configured — leave blank to keep' if spotify_configured else 'Spotify app Client Secret' }}"></label>
+      <label>OAuth redirect URI<input name="spotify_redirect_uri" value="{{ spotify_redirect_uri }}" placeholder="https://your-arrnexus.example/music/spotify/callback"><small>Must exactly match the redirect URI registered in the Spotify developer application. Remote deployments should use HTTPS.</small></label>
+    </section>
+  </div>
+  <div class="formactions"><button class="btn primary" type="submit">Save music provider settings</button><a class="btn" href="/music" data-nav>Cancel</a></div>
+</form>
+<section class="panel note"><strong>No API key required</strong><p>ListenBrainz, Apple/iTunes public search, Audius, MusicBrainz, Deezer and Internet Archive can continue to work without adding application secrets here. External catalogue launchers such as Beatport/Bandcamp/Amazon Music are links rather than account integrations.</p></section>
+{% endblock %}
