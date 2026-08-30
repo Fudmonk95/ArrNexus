@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.2.0--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.3.0--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -59,6 +59,42 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 ### Supported ecosystem
 
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
+
+---
+
+## 🆕 Version 10.3 — Archive Rescue & Advanced Media Recovery
+
+v10.3 closes several real-world DMM/TV recovery gaps and adds an Archive.org fallback path for media that normal indexers cannot find.
+
+### Archive Rescue
+
+- Scan all discovered Sonarr instances for monitored missing media.
+- Search Internet Archive through the existing Prowlarr integration.
+- Inspect the actual `.torrent` file manifest before acquisition.
+- Select only the files you need, then send the torrent directly to Real-Debrid.
+- Fail closed if selected paths cannot be mapped exactly to the newly-added RD torrent.
+
+### Advanced TV Recovery
+
+- Recognises archive-style names such as `Season 6 episode 1`, `Series 1` and `Season 1 Complete`.
+- Manual destinations are typed (`tv:bbc`, `tv:kids`, `movie:default`, etc.), so an explicit TV choice cannot be rejected as a movie route.
+- Detects one-file combined seasons and redirects them to a dedicated recovery workflow.
+- Uses exact chapter counts for high-confidence splits; runtime-estimated boundaries require explicit confirmation.
+- Uses FFmpeg stream copy where possible, verifies outputs with ffprobe and always retains the original source.
+
+### DMM Language workflow
+
+- Check selected languages, Check all unchecked and Force re-check all from DMM Inbox.
+- Old-policy results display **Re-check required** rather than the misleading Language unchecked.
+- Confirmed rejected RD sources can be removed directly or in bulk only after current-policy, fingerprint, surviving-link and exact-provider checks pass.
+
+### Trakt Device OAuth
+
+The normal Trakt connection flow now uses a device code. Trakt application credentials remain available under an explicit Advanced section because Trakt still requires an application-level Client ID/Secret underneath user authorization.
+
+### Dark / Light appearance rebuild
+
+Dark and Light now use product-wide neutral surface and typography tokens. Light mode uses dark text throughout the shell, cards, tables, controls and operational panels; historical navy/blue component surfaces are neutralised rather than merely covered by another partial theme. Purple/cyan remain restrained ArrNexus accents.
 
 ---
 

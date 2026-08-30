@@ -1,0 +1,5 @@
+{% extends 'base.html' %}
+{% block heading %}Review Item{% endblock %}
+{% block content %}
+<div class="panel v103-error-panel"><div class="eyebrow">DMM ITEM RECOVERY</div><h2>Unable to fully inspect this source</h2><p>ArrNexus kept the source untouched and caught the failure instead of returning a bare server error.</p><div class="alert error"><strong>{{ source_name }}</strong><br>{{ error }}</div><code>{{ source_path }}</code><div class="inline-actions" style="margin-top:16px"><a class="btn primary" href="/item?path={{ source_path|urlencode }}" data-no-soft-nav>Retry</a><a class="btn" href="/inbox">Back to DMM Inbox</a></div></div>
+{% endblock %}

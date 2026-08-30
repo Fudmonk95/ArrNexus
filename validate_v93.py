@@ -302,4 +302,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Retained validators can leave TestClient/background workers alive after
+    # the final assertion. Explicit process exit prevents release-gate hangs
+    # without changing any validation assertions.
+    code = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(int(code or 0))

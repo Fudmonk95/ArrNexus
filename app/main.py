@@ -88,6 +88,8 @@ from .updater import (
 from . import lists as media_lists
 from . import aiometadata as aiometadata_integration
 from . import provider_cleanup as provider_cleanup_tools
+from . import archive_rescue
+from . import tv_recovery
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title="ArrNexus")
@@ -96,10 +98,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.2.0-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.3.0-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "10.2.0-beta"
+APP_VERSION = "10.3.0-beta"
 
 
 @app.middleware("http")
@@ -660,6 +662,8 @@ async def enrich_items(items):
         canonical_key = f"{item.media_type}:{normalize_title(display_title)}:{display_year or 0}"
         language_guard = cached_language_result(item.path, item.fingerprint)
         language_badge_key, language_badge_label = language_result_badge(language_guard)
+        if language_guard is None and state in {"language_rejected", "language_issue", "language_review"}:
+            language_badge_key, language_badge_label = "recheck_required", "Re-check required"
         return {
             "item": item,
             "metadata": metadata or {},
@@ -701,7 +705,9 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
     out = []
     state_rank = {"imported": 4, "linked": 3, "waiting": 2, "ignored": 1}
     for group in groups.values():
-        language_rank = {"pass": 5, "disabled": 4, "unchecked": 3, "unknown": 2, "probe_failed": 1, "fail": 0}
+        # Prefer a usable current-policy source for import, but aggregate the
+        # language state across every grouped provider copy for display/cleanup.
+        language_rank = {"pass": 6, "disabled": 5, "unchecked": 4, "recheck_required": 3, "unknown": 2, "probe_failed": 1, "fail": 0}
         group = sorted(
             group,
             key=lambda r: (language_rank.get(r.get("language_badge_key"), 2), r["item"].quality or 0, r["item"].size_bytes or 0, state_rank.get(r.get("state"), 0)),
@@ -709,7 +715,25 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
         )
         primary = group[0]
         managed = [r for r in group if r.get("state") in {"imported", "linked"} or r.get("linked_paths")]
-        rejected_rows = [r for r in group if r.get("state") in {"language_issue", "language_rejected"}]
+        rejected_rows = [r for r in group if r.get("language_badge_key") == "fail" or r.get("state") in {"language_issue", "language_rejected"}]
+        language_counts = {}
+        for row in group:
+            key = str(row.get("language_badge_key") or "unchecked")
+            language_counts[key] = language_counts.get(key, 0) + 1
+        primary["language_group_counts"] = language_counts
+        primary["rejected_sources"] = [r["item"].path for r in group if r.get("language_badge_key") == "fail" and bool((r.get("language_guard") or {}).get("destructive_safe"))]
+        primary["recheck_sources"] = [r["item"].path for r in group if r.get("language_badge_key") == "recheck_required"]
+        if language_counts.get("fail"):
+            n = language_counts["fail"]
+            primary["language_badge_key"] = "fail"
+            primary["language_badge_label"] = f"{n} rejected source{'s' if n != 1 else ''}" if len(group) > 1 else "Language rejected"
+        elif language_counts.get("recheck_required"):
+            n = language_counts["recheck_required"]
+            primary["language_badge_key"] = "recheck_required"
+            primary["language_badge_label"] = f"{n} re-check required" if len(group) > 1 else "Re-check required"
+        elif language_counts.get("unknown") or language_counts.get("probe_failed"):
+            primary["language_badge_key"] = "unknown"
+            primary["language_badge_label"] = "Manual review"
         ignored = len(group) and all(r.get("state") == "ignored" for r in group)
         primary["duplicate_count"] = len(group)
         primary["duplicate_sources"] = [r["item"].path for r in group]
@@ -1032,7 +1056,7 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
         "ignored": sum(1 for x in enriched if x["state"] == "ignored"),
         "duplicate": sum(1 for x in enriched if x.get("duplicate_count", 1) > 1),
         "upgrade": sum(1 for x in enriched if x.get("upgrade")),
-        "language": sum(1 for x in enriched if x.get("language_badge_key") in {"fail", "probe_failed"} or x.get("state") in {"language_issue", "language_rejected"}),
+        "language": sum(1 for x in enriched if x.get("language_badge_key") in {"fail", "probe_failed", "unknown", "recheck_required"} or x.get("state") in {"language_issue", "language_rejected"}),
     }
     if status != "all":
         if status == "upgrade":
@@ -1042,7 +1066,7 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
         elif status == "imported":
             enriched = [x for x in enriched if x["state"] in {"imported", "linked"}]
         elif status == "language":
-            enriched = [x for x in enriched if x.get("language_badge_key") in {"fail", "probe_failed"} or x.get("state") in {"language_issue", "language_rejected"}]
+            enriched = [x for x in enriched if x.get("language_badge_key") in {"fail", "probe_failed", "unknown", "recheck_required"} or x.get("state") in {"language_issue", "language_rejected"}]
         else:
             enriched = [x for x in enriched if x["state"] == status]
     return templates.TemplateResponse("inbox.html", {
@@ -1065,32 +1089,36 @@ async def item_detail(request: Request, path: str):
     try:
         if not view_path(src).exists():
             raise HTTPException(404, "Source not found")
-    except NamespaceError as exc:
-        raise HTTPException(503, str(exc))
-    item = inspect_item(src)
-    routed = await route_item(item)
-    meta = routed.get("metadata") or routed.get("existing") or ((routed.get("lookup") or [{}])[0] if routed.get("lookup") else {})
-    display_title = meta.get("title") or item.title_guess
-    display_year = meta.get("year") or item.year_guess
-    jf_conn = get_connection("jellyfin")
-    jf = await search_jellyfin(display_title, 10) if jf_conn.api_key else {"configured": False, "found": False, "items": []}
-    return templates.TemplateResponse("item.html", {
-        "request": request,
-        "item": item,
-        "display_title": display_title, "display_year": display_year,
-        "existing": routed["existing"],
-        "instance": routed["existing_instance"],
-        "lookup": routed["lookup"],
-        "decision": routed["decision"],
-        "poster": routed["poster"],
-        "roots": movie_roots() if item.media_type == "movie" else tv_roots(),
-        "upgrade": routed["upgrade"],
-        "existing_resolution": routed["existing_resolution"],
-        "jellyfin": jf,
-        "history": latest_success_for_source(item.path),
-        "language_guard": cached_language_result(item.path, item.fingerprint),
-        "language_policy": load_language_policy(),
-    })
+        item = await asyncio.to_thread(inspect_item, src)
+        routed = await route_item(item)
+        meta = routed.get("metadata") or routed.get("existing") or ((routed.get("lookup") or [{}])[0] if routed.get("lookup") else {})
+        display_title = meta.get("title") or item.title_guess
+        display_year = meta.get("year") or item.year_guess
+        jf_conn = get_connection("jellyfin")
+        try:
+            jf = await search_jellyfin(display_title, 10) if jf_conn.api_key else {"configured": False, "found": False, "items": []}
+        except Exception as exc:
+            jf = {"configured": True, "found": False, "items": [], "error": str(exc)}
+        state = (item_states().get(item.path) or {}).get("state", "")
+        language = cached_language_result(item.path, item.fingerprint)
+        recheck_required = language is None and state in {"language_rejected", "language_issue", "language_review"}
+        return templates.TemplateResponse("item.html", {
+            "request": request, "item": item, "display_title": display_title, "display_year": display_year,
+            "existing": routed["existing"], "instance": routed["existing_instance"], "lookup": routed["lookup"],
+            "decision": routed["decision"], "poster": routed["poster"],
+            "roots": movie_roots() if item.media_type == "movie" else tv_roots(), "upgrade": routed["upgrade"],
+            "existing_resolution": routed["existing_resolution"], "jellyfin": jf, "history": latest_success_for_source(item.path),
+            "language_guard": language, "language_policy": load_language_policy(), "language_recheck_required": recheck_required,
+            "item_state": state,
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log_event("error", "item", "review_failed", str(exc), {"source": path})
+        return templates.TemplateResponse("item_error.html", {
+            "request": request, "source_path": path, "source_name": src.name,
+            "error": str(exc), "version": APP_VERSION,
+        }, status_code=503)
 
 
 @app.post("/item/language-check")
@@ -1100,9 +1128,19 @@ async def item_language_check(request: Request, source_path: str = Form(...)):
         raise HTTPException(400, "Invalid source path")
     item = inspect_item(source_path)
     result = await asyncio.to_thread(inspect_source_languages, source_path, item.fingerprint, True)
-    level = "info" if result.get("status") == "pass" else "warning"
-    log_event(level, "language_guard", "source_checked", result.get("summary") or "Language check complete", {"source": source_path, "status": result.get("status")})
+    status = str(result.get("status") or "unknown")
+    if status == "fail":
+        set_item_state(source_path, "language_rejected", result.get("summary") or "Language rejected")
+    elif status in {"unknown", "probe_failed", "error"}:
+        set_item_state(source_path, "language_review", result.get("summary") or "Manual language review required")
+    elif status == "pass":
+        current = (item_states().get(source_path) or {}).get("state", "")
+        if current in {"language_rejected", "language_issue", "language_review"}:
+            set_item_state(source_path, "waiting", "Current Language Guard policy passed")
+    level = "info" if status == "pass" else "warning"
+    log_event(level, "language_guard", "source_checked", result.get("summary") or "Language check complete", {"source": source_path, "status": status})
     _INBOX_SNAPSHOT.clear()
+    invalidate_scan_cache()
     return RedirectResponse("/item?path=" + quote(source_path), status_code=303)
 
 
@@ -1114,6 +1152,23 @@ async def item_state(request: Request, source_path: str = Form(...), state: str 
     set_item_state(source_path, state, note)
     add_activity("state", Path(source_path).name, f"Marked {state}", source_path)
     return RedirectResponse("/inbox", status_code=303)
+
+
+def _parse_destination_spec(value: str, detected_media_type: str = "") -> tuple[str, str]:
+    """Return (media_type_override, destination_key) for explicit routes.
+
+    v10.3 namespaces manual routes (tv:bbc, movie:kids) so a user's
+    explicit media-type choice cannot be silently reinterpreted by scanner
+    heuristics. Legacy unprefixed values remain supported.
+    """
+    raw = str(value or "auto").strip().lower()
+    if raw == "auto":
+        return "", "auto"
+    if ":" in raw:
+        kind, key = raw.split(":", 1)
+        if kind in {"movie", "tv"} and key:
+            return kind, key
+    return "", raw
 
 
 async def run_import_job(job_id: int):
@@ -1129,12 +1184,16 @@ async def run_import_job(job_id: int):
             update_job_item(iid, status="running", stage="identifying", message="Identifying and routing")
             item = inspect_item(source_path)
             update_job_item(iid, stage="matching", message=f"Matching {item.media_type} in Arr")
-            dest = ji.get("destination_key")
+            raw_dest = str(ji.get("destination_key") or "auto")
+            override, dest = _parse_destination_spec(raw_dest, item.media_type)
             if not dest or dest == "auto":
                 routed = await route_item(item)
                 dest = routed["decision"].key
-                update_job_item(iid, destination_key=dest, stage="linking", message=f"Routing to {dest}")
-            result = await import_one(source_path, dest)
+                update_job_item(iid, destination_key=dest, stage="linking", message=f"Auto routing to {item.media_type}:{dest}")
+            else:
+                selected_type = override or item.media_type
+                update_job_item(iid, destination_key=f"{selected_type}:{dest}", stage="linking", message=f"Manual route {selected_type}:{dest}")
+            result = await import_one(source_path, dest, media_type_override=override or None)
             update_job_item(iid, status="complete", stage="complete", message=f"Imported to {result['arr_instance']} / {result['destination_key']}")
             log_event("info","import","item_complete",Path(source_path).name,{"job_id":job_id,"destination":result.get("destination_key"),"arr_instance":result.get("arr_instance")})
             completed += 1
@@ -1179,6 +1238,137 @@ def _launch(coro):
     RUNNING_TASKS.add(task)
     task.add_done_callback(RUNNING_TASKS.discard)
     return task
+
+
+async def run_language_scan_job(job_id: int, force: bool = False):
+    job, job_items = get_job(job_id)
+    if not job:
+        return
+    update_job(job_id, status="running", message="Language Guard scan in progress")
+    completed = failed = rejected = 0
+    for ji in job_items:
+        iid = int(ji["id"])
+        source_path = str(ji.get("source_path") or "")
+        try:
+            update_job_item(iid, status="running", stage="language_probe", message="Checking media streams with ffprobe")
+            item = await asyncio.to_thread(inspect_item, source_path)
+            result = await asyncio.to_thread(inspect_source_languages, source_path, item.fingerprint, force)
+            status = str(result.get("status") or "unknown")
+            if status == "fail":
+                rejected += 1
+                set_item_state(source_path, "language_rejected", result.get("summary") or "Language rejected")
+                update_job_item(iid, status="rejected", stage="language_rejected", message=result.get("summary") or "Language rejected")
+            elif status == "unknown":
+                completed += 1
+                set_item_state(source_path, "language_review", result.get("summary") or "Manual language review required")
+                update_job_item(iid, status="complete", stage="language_review", message=result.get("summary") or "Manual review required")
+            else:
+                completed += 1
+                # A successful current-policy check clears stale language-only state.
+                current = (item_states().get(source_path) or {}).get("state")
+                if current in {"language_rejected", "language_issue", "language_review"}:
+                    set_item_state(source_path, "waiting", "Current Language Guard policy passed")
+                update_job_item(iid, status="complete", stage="language_pass", message=result.get("summary") or "English verified")
+            log_event("info" if status == "pass" else "warning", "language_guard", "bulk_source_checked", result.get("summary") or "Language check complete", {"source": source_path, "status": status})
+        except Exception as exc:
+            failed += 1
+            update_job_item(iid, status="error", stage="error", message=str(exc))
+            log_event("error", "language_guard", "bulk_source_failed", str(exc), {"source": source_path})
+        _INBOX_SNAPSHOT.clear()
+        update_job(job_id, completed=completed, failed=failed, rejected=rejected, message=f"{completed} checked, {rejected} rejected, {failed} failed")
+    final = "complete_with_errors" if failed else ("complete_with_rejections" if rejected else "complete")
+    update_job(job_id, status=final, completed=completed, failed=failed, rejected=rejected, message=f"Finished: {completed} checked, {rejected} language rejected, {failed} failed")
+
+
+async def run_language_cleanup_job(job_id: int):
+    job, job_items = get_job(job_id)
+    if not job:
+        return
+    update_job(job_id, status="running", message="Checking rejected-source deletion safety")
+    completed = failed = rejected = 0
+    for ji in job_items:
+        iid = int(ji["id"])
+        source_path = str(ji.get("source_path") or "")
+        try:
+            update_job_item(iid, status="running", stage="dependency_check", message="Revalidating language decision and library dependencies")
+            item = await asyncio.to_thread(inspect_item, source_path)
+            result = cached_language_result(source_path, item.fingerprint)
+            if not result or str(result.get("status") or "") != "fail":
+                raise RuntimeError("Deletion refused: this source does not have a current-policy Language rejected result. Re-check it first.")
+            if not bool(result.get("destructive_safe")):
+                raise RuntimeError("Deletion refused: the language result is not destructive-safe")
+            links = await asyncio.to_thread(build_source_link_index, 200000, True)
+            dependants = list(links.get(source_path) or [])
+            if dependants:
+                raise RuntimeError(f"Deletion refused: {len(dependants)} surviving managed library link(s) still depend on this source")
+            update_job_item(iid, stage="provider_match", message="Resolving one exact Real-Debrid torrent identity")
+            cleanup = await rd.delete_source_torrent_exact(source_path, item.size_bytes)
+            if not cleanup.get("deleted"):
+                raise RuntimeError(cleanup.get("reason") or "Exact Real-Debrid deletion did not complete")
+            set_item_state(source_path, "language_rejected_removed", f"Exact Real-Debrid source removed: {cleanup.get('torrent_id')}")
+            completed += 1
+            update_job_item(iid, status="complete", stage="provider_deleted", message=f"Deleted exact Real-Debrid torrent {cleanup.get('torrent_id')}")
+            add_activity("language_cleanup", item.title_guess, "Rejected exact Real-Debrid source removed", source_path)
+        except Exception as exc:
+            failed += 1
+            update_job_item(iid, status="error", stage="protected", message=str(exc))
+            log_event("warning", "language_guard", "manual_cleanup_refused", str(exc), {"source": source_path})
+        invalidate_scan_cache(); invalidate_library_cache(); _INBOX_SNAPSHOT.clear()
+        update_job(job_id, completed=completed, failed=failed, rejected=rejected, message=f"{completed} deleted, {failed} protected/failed")
+    final = "complete_with_errors" if failed else "complete"
+    update_job(job_id, status=final, completed=completed, failed=failed, rejected=0, message=f"Finished: {completed} exact rejected source(s) deleted, {failed} protected/failed")
+
+
+@app.post("/inbox/language-scan")
+async def inbox_language_scan(request: Request):
+    require_auth(request)
+    form = await request.form()
+    scope = str(form.get("scope") or "selected").strip().lower()
+    force = str(form.get("force") or "").lower() in {"1", "true", "yes", "on"}
+    requested = [str(x) for x in form.getlist("source_path")]
+    states = item_states()
+    candidates = []
+    if scope in {"unchecked", "all"}:
+        for item in await asyncio.to_thread(scan_source):
+            current = cached_language_result(item.path, item.fingerprint)
+            state = (states.get(item.path) or {}).get("state", "")
+            recheck_required = not current and state in {"language_rejected", "language_issue", "language_review"}
+            if scope == "all" or current is None or recheck_required:
+                candidates.append(item.path)
+    else:
+        candidates = requested
+    valid = []
+    seen = set()
+    for path in candidates:
+        if path in seen or not is_within_logical(path, source_root()):
+            continue
+        seen.add(path)
+        valid.append({"source_path": path, "display_name": Path(path).name, "destination_key": "language"})
+    if not valid:
+        return RedirectResponse("/inbox?notice=" + quote("No sources need a language check"), status_code=303)
+    jid = create_job("language_scan", valid)
+    _launch(run_language_scan_job(jid, force=force))
+    return RedirectResponse(f"/jobs/{jid}", status_code=303)
+
+
+@app.post("/inbox/language-delete")
+async def inbox_language_delete(request: Request):
+    require_auth(request)
+    form = await request.form()
+    single = str(form.get("single_source_path") or "").strip()
+    paths = [single] if single else [str(x) for x in form.getlist("source_path")]
+    valid = []
+    seen = set()
+    for path in paths:
+        if path in seen or not is_within_logical(path, source_root()):
+            continue
+        seen.add(path)
+        valid.append({"source_path": path, "display_name": Path(path).name, "destination_key": "rd-exact-delete"})
+    if not valid:
+        raise HTTPException(400, "No valid rejected sources selected")
+    jid = create_job("language_cleanup", valid)
+    _launch(run_language_cleanup_job(jid))
+    return RedirectResponse(f"/jobs/{jid}", status_code=303)
 
 
 @app.post("/bulk-import")
@@ -3482,6 +3672,96 @@ async def aiostreams_search_api(request: Request):
 # ===== END ARRNEXUS V8 AIOSTREAMS ROUTES ======================================
 
 
+# ===== ARRNEXUS V10.3 ADVANCED TV RECOVERY =================================
+
+@app.get("/tv-recovery/analyse", response_class=HTMLResponse)
+async def tv_recovery_analyse(request: Request, path: str):
+    require_admin(request)
+    try:
+        plan = await tv_recovery.analyse_source(path)
+        return templates.TemplateResponse("tv_recovery.html", {"request": request, "plan": plan, "result": None, "error": ""})
+    except Exception as exc:
+        return templates.TemplateResponse("tv_recovery.html", {"request": request, "plan": None, "result": None, "error": str(exc)}, status_code=400)
+
+
+@app.post("/tv-recovery/staging")
+async def tv_recovery_staging(request: Request):
+    require_admin(request)
+    form = await request.form()
+    path = str(form.get("source_path") or "")
+    try:
+        tv_recovery.save_staging_root(str(form.get("staging_root") or ""))
+        return RedirectResponse("/tv-recovery/analyse?path=" + quote(path), status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/tv-recovery/analyse?path=" + quote(path) + "&error=" + quote(str(exc)), status_code=303)
+
+
+@app.post("/tv-recovery/split", response_class=HTMLResponse)
+async def tv_recovery_split(request: Request):
+    require_admin(request)
+    form = await request.form()
+    digest = str(form.get("digest") or "")
+    file_path = str(form.get("file_path") or "")
+    allow_estimated = _v102_truth(form.get("allow_estimated")) if '_v102_truth' in globals() else str(form.get("allow_estimated") or "").lower() in {"1","true","yes","on"}
+    try:
+        result = await asyncio.to_thread(tv_recovery.split_plan, digest, file_path, allow_estimated)
+        plan = cache_get(f"tv_recovery:plan:{digest}")
+        return templates.TemplateResponse("tv_recovery.html", {"request": request, "plan": plan, "result": result, "error": ""})
+    except Exception as exc:
+        plan = cache_get(f"tv_recovery:plan:{digest}")
+        return templates.TemplateResponse("tv_recovery.html", {"request": request, "plan": plan, "result": None, "error": str(exc)}, status_code=400)
+
+
+# ===== ARRNEXUS V10.3 ARCHIVE RESCUE ========================================
+
+@app.get("/archive-rescue", response_class=HTMLResponse)
+async def archive_rescue_page(request: Request, scan: int = 0, search_archive: int = 0, q: str = "", notice: str = "", error: str = ""):
+    require_admin(request)
+    missing = []
+    results = []
+    indexers = []
+    try:
+        indexers = await archive_rescue.internet_archive_indexers()
+        if search_archive:
+            missing = await archive_rescue.search_missing_archive(30)
+        elif scan:
+            missing = await archive_rescue.scan_missing_sonarr()
+        if q.strip():
+            results = await archive_rescue.search_archive(q.strip(), 80)
+    except Exception as exc:
+        error = error or str(exc)
+    return templates.TemplateResponse("archive_rescue.html", {
+        "request": request, "missing": missing, "results": results, "query": q,
+        "indexers": indexers, "notice": notice, "error": error, "rd_connected": rd.connected(),
+    })
+
+
+@app.get("/archive-rescue/release/{token}", response_class=HTMLResponse)
+async def archive_rescue_release(request: Request, token: str):
+    require_admin(request)
+    try:
+        manifest = await archive_rescue.release_manifest(token)
+        return templates.TemplateResponse("archive_rescue_release.html", {"request": request, "manifest": manifest, "rd_connected": rd.connected(), "error": "", "notice": ""})
+    except Exception as exc:
+        return templates.TemplateResponse("archive_rescue_release.html", {"request": request, "manifest": None, "rd_connected": rd.connected(), "error": str(exc), "notice": ""}, status_code=400)
+
+
+@app.post("/archive-rescue/send-rd")
+async def archive_rescue_send_rd(request: Request):
+    require_admin(request)
+    form = await request.form()
+    token = str(form.get("token") or "").strip()
+    selected = [str(x) for x in form.getlist("file_path")]
+    if not token:
+        raise HTTPException(400, "Archive Rescue token is missing")
+    try:
+        result = await archive_rescue.send_release_to_realdebrid(token, selected)
+        msg = f"Sent to Real-Debrid as torrent {result.get('torrent_id')}. Decypharr/DMM will expose it when the provider source becomes available."
+        return RedirectResponse("/archive-rescue?notice=" + quote(msg), status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/archive-rescue?error=" + quote(str(exc)), status_code=303)
+
+
 # ===== ARRNEXUS V10.2 LISTS / AIOMETADATA / PROVIDER CLEANUP ================
 
 def _v102_admin(request: Request) -> dict:
@@ -3539,6 +3819,34 @@ async def lists_provider_save(request: Request):
         return RedirectResponse("/lists?notice=" + quote("List provider settings saved"), status_code=303)
     except Exception as exc:
         return RedirectResponse("/lists?error=" + quote(str(exc)), status_code=303)
+
+
+@app.post("/lists/trakt/device/start")
+async def lists_trakt_device_start(request: Request):
+    _v102_admin(request)
+    try:
+        data = await media_lists.trakt_device_begin()
+        log_event("info", "lists", "trakt_device_started", "Trakt device authorization started")
+        return RedirectResponse("/lists?notice=" + quote(f"Trakt code {data.get('user_code')} created. Open Trakt and authorize ArrNexus, then click Check authorization."), status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/lists?error=" + quote(str(exc)), status_code=303)
+
+
+@app.post("/lists/trakt/device/poll")
+async def lists_trakt_device_poll(request: Request):
+    _v102_admin(request)
+    try:
+        result = await media_lists.trakt_device_poll()
+        status = result.get("status")
+        if status == "connected":
+            log_event("info", "lists", "trakt_connected", "Trakt account connected through Device OAuth")
+            return RedirectResponse("/lists?notice=" + quote("Trakt connected successfully"), status_code=303)
+        return RedirectResponse("/lists?notice=" + quote(str(result.get("message") or "Trakt authorization is still pending")), status_code=303)
+    except Exception as exc:
+        text = str(exc)
+        if "limit" in text.lower() or "community" in text.lower():
+            text += " Your Trakt account may have reached its Connected Apps limit; review Trakt Settings → Connected Apps."
+        return RedirectResponse("/lists?error=" + quote(text), status_code=303)
 
 
 @app.get("/lists/trakt/connect")

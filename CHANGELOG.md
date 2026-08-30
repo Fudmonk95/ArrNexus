@@ -1,5 +1,19 @@
 # Changelog
 
+## 10.3.0-beta — Archive Rescue & Advanced Media Recovery
+
+- Added **Archive Rescue**: scan monitored Sonarr gaps, search Prowlarr's Internet Archive indexer, inspect real `.torrent` manifests and hand selected files to Real-Debrid.
+- Added selective Real-Debrid file selection for archive torrents and fail-closed cleanup if selected manifest paths cannot be matched safely.
+- Added **Advanced TV Recovery** with archive-style episode/season parsing, combined-season detection, chapter-aware splitting, lower-confidence runtime estimates requiring explicit confirmation, configurable staging and ffprobe output verification.
+- Added explicit typed manual routes (`movie:*` / `tv:*`) so a selected TV destination cannot be reinterpreted as a movie route; restored TV Default and TV Kids in DMM bulk routing.
+- Added DMM Inbox bulk Language Guard actions: Check selected, Check all unchecked and Force re-check all, plus persistent Re-check required state for stale policy results.
+- Added direct and bulk safe deletion of confirmed rejected Real-Debrid sources with current-policy, fingerprint, dependency and exact-provider revalidation at apply time.
+- Hardened Item Review so inspection failures render an ArrNexus diagnostic page instead of a bare HTTP 500.
+- Reworked Trakt account linking around **Device OAuth** as the normal flow; moved application Client ID/Secret into Advanced setup and added pending/slow-down/denial/expiry handling.
+- Rebuilt Dark/Light appearance around product-wide neutral surface/text tokens so Light uses dark typography and legacy navy/blue component surfaces no longer leak through.
+- Updated Help Centre, generated User Guide, Documentation Audit and service-worker cache to v10.3.
+- Added v10.3 regression coverage while retaining the complete v7 → v10.2 chain.
+
 ## 10.2.0-beta — Lists, Language Guard v2 & Product Appearance
 
 - Added Lists & Watchlists automation with Trakt OAuth/watchlist/lists, IMDb, TMDb, Plex Watchlist, Simkl, RSS/Atom and Custom JSON adapters.

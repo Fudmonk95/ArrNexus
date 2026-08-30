@@ -22,7 +22,7 @@
 
 <div class="panel language-guard-panel">
   <div class="panelhead"><div><h2>Language Guard</h2><p>Checks the actual media streams with ffprobe before ArrNexus creates library symlinks.</p></div>
-  {% if language_guard %}<span class="tag language-{{ language_guard.status }}">{{ 'English verified' if language_guard.status=='pass' else 'Needs replacement' if language_guard.status=='fail' else language_guard.status|capitalize }}</span>{% else %}<span class="tag language-unchecked">Not checked</span>{% endif %}</div>
+  {% if language_guard %}<span class="tag language-{{ language_guard.status }}">{{ 'English verified' if language_guard.status=='pass' else 'Language rejected' if language_guard.status=='fail' else 'Manual review' }}</span>{% elif language_recheck_required %}<span class="tag language-recheck_required">Re-check required</span>{% else %}<span class="tag language-unchecked">Not checked</span>{% endif %}</div>
   {% if not language_policy.enabled %}<div class="alert warning">Language Guard is disabled in Settings.</div>
   {% elif language_guard %}
     <div class="language-summary-grid">
@@ -34,15 +34,17 @@
     <p>{{ language_guard.summary }}</p>
     {% if language_guard.missing %}<div class="tags">{% for missing in language_guard.missing %}<span class="tag red">{{ missing }}</span>{% endfor %}</div>{% endif %}
     {% if language_guard.files %}<details><summary>Stream details</summary><div class="tablewrap"><table><thead><tr><th>File</th><th>Audio</th><th>Subtitles</th><th>Status</th></tr></thead><tbody>{% for f in language_guard.files[:30] %}<tr><td>{{ f.name }}</td><td>{{ f.audio_languages|join(', ') or 'unknown' }}</td><td>{{ f.subtitle_languages|join(', ') or ('English sidecar' if f.external_english_subtitles else 'none/unknown') }}</td><td><span class="tag language-{{ f.status }}">{{ f.status }}</span></td></tr>{% endfor %}</tbody></table></div></details>{% endif %}
-  {% else %}<p class="muted">This source has not been checked yet.</p>{% endif %}
-  <form method="post" action="/item/language-check" class="inline-actions"><input type="hidden" name="source_path" value="{{ item.path }}"><button class="btn">Check language now</button></form>
+  {% elif language_recheck_required %}<div class="alert warning"><strong>Re-check required.</strong> This source has a persistent language state from an older policy, but no result for the current Language Guard policy. ArrNexus will not allow destructive cleanup until it is checked again.</div>{% else %}<p class="muted">This source has not been checked yet.</p>{% endif %}
+  <div class="inline-actions"><form method="post" action="/item/language-check"><input type="hidden" name="source_path" value="{{ item.path }}"><button class="btn">{{ 'Re-check language' if language_recheck_required or language_guard else 'Check language now' }}</button></form>{% if language_guard and language_guard.status=='fail' and language_guard.destructive_safe %}<form method="post" action="/inbox/language-delete" onsubmit="return confirm('Delete this exact rejected Real-Debrid source? ArrNexus will re-check surviving library dependencies and exact provider identity first.')"><input type="hidden" name="single_source_path" value="{{ item.path }}"><button class="btn danger">Delete rejected RD source</button></form>{% endif %}</div>
   <div class="alert info"><strong>Language rejection workflow:</strong> if this source fails, ArrNexus blocks the library symlink, can queue an English replacement in Radarr/Sonarr, and—when enabled—removes only an exactly identified Real-Debrid torrent. Ambiguous provider matches are never deleted.</div>
 </div>
+
+{% if item.combined_season %}<div class="panel v103-combined-season"><div class="panelhead"><div><h2>Combined season source detected</h2><p>ArrNexus found season-labelled video file(s) without normal episode tokens. Analyse chapters/runtime before importing as individual Sonarr episodes.</p></div><span class="tag amber">Season {{ item.combined_season_numbers|join(', ') }}</span></div><div class="inline-actions"><a class="btn primary" href="/tv-recovery/analyse?path={{ item.path|urlencode }}" data-no-soft-nav>Analyse for splitting</a></div></div>{% endif %}
 
 <div class="panel"><div class="panelhead"><div><h2>Import</h2><p>Successful imports keep their backing source because the managed symlink depends on it. If Language Guard rejects the source, optional exact-match Real-Debrid cleanup can remove that rejected provider item before any library symlink is created.</p></div></div>
 <form class="formgrid" method="post" action="/import">
   <input type="hidden" name="source_path" value="{{ item.path }}">
-  <label>Destination<select name="destination_key"><option value="auto">Auto — {{ decision.key }} ({{ decision.confidence }}%)</option>{% for key,path in roots.items() %}<option value="{{ key }}">{{ key|capitalize }} — {{ path }}</option>{% endfor %}</select></label>
+  <label>Destination<select name="destination_key"><option value="auto">Auto — {{ decision.key }} ({{ decision.confidence }}%)</option>{% for key,path in roots.items() %}<option value="{{ item.media_type }}:{{ key }}">{{ item.media_type|upper }} · {{ key|capitalize }} — {{ path }}</option>{% endfor %}</select></label>
   <div class="formactions"><button class="btn primary" type="submit">Import with progress</button></div>
 </form>
 {% if history %}<div class="alert success">Imported previously: {{ history.created_at }} · {{ history.destination_key }}{% if not history.undone %}<form method="post" action="/undo/{{ history.id }}" class="inline"><button class="btn small" type="submit">Undo Router links</button></form>{% endif %}</div>{% endif %}

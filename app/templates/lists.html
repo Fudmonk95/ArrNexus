@@ -10,23 +10,31 @@
   <div class="v102-flow"><span>List source</span><i>→</i><span>Identity match</span><i>→</i><span>Library route</span><i>→</i><span>Usenet / Debrid</span></div>
 </section>
 
-<section class="panel">
-  <details class="v102-disclosure">
-    <summary><div><strong>List provider connections</strong><small>Trakt OAuth, TMDb, Simkl and existing Plex token</small></div><span>Configure</span></summary>
+<section class="panel v103-trakt-panel">
+  <div class="panelhead"><div><span class="eyebrow">TRAKT ACCOUNT</span><h2>Connect Trakt</h2><p>Device OAuth is the normal self-hosted flow. Your account authorizes ArrNexus without needing an installation-specific callback URL.</p></div><span class="tag {{ 'green' if provider_state.trakt_connected else 'mutedtag' }}">{{ ('Connected as ' ~ provider_state.trakt_user) if provider_state.trakt_connected and provider_state.trakt_user else ('Connected' if provider_state.trakt_connected else 'Not connected') }}</span></div>
+  {% if provider_state.trakt_connected %}
+    <div class="v103-trakt-connect"><div><strong>Authorization healthy</strong><p class="muted">Access/refresh tokens are stored privately and refreshed atomically.</p></div><form method="post" action="/lists/trakt/disconnect"><button class="btn ghost">Disconnect Trakt</button></form></div>
+  {% elif provider_state.trakt_pending %}
+    <div class="v103-device-code"><div><small>TRAKT DEVICE CODE</small><strong>{{ provider_state.trakt_user_code }}</strong><p>Open Trakt, enter this code, approve ArrNexus, then return here.</p></div><div class="inline-actions"><a class="btn primary" href="{{ provider_state.trakt_verification_url or 'https://trakt.tv/activate' }}" target="_blank" rel="noopener">Open Trakt authorization</a><form method="post" action="/lists/trakt/device/poll"><button class="btn">Check authorization</button></form></div></div>
+  {% elif provider_state.trakt_client_configured %}
+    <form method="post" action="/lists/trakt/device/start"><button class="btn primary">Connect Trakt</button></form>
+  {% else %}
+    <div class="alert warning"><strong>Trakt application credentials are not configured.</strong> Trakt still requires an application-level Client ID and Secret underneath Device OAuth. New API application creation may be restricted by Trakt account/VIP policy. Configure an existing ArrNexus Trakt application in Advanced setup below.</div>
+  {% endif %}
+
+  <details class="v102-disclosure v103-advanced" style="margin-top:16px">
+    <summary><div><strong>Advanced Trakt application setup</strong><small>Developer-level application credentials — not normal per-user account credentials.</small></div><span>Advanced</span></summary>
     <div class="v102-disclosure-body">
       <form method="post" action="/lists/providers" class="formgrid">
         <div class="grid-2"><label>Trakt client ID<input name="trakt_client_id" value="{{ provider_state.trakt_client_id if provider_state.trakt_client_id is defined else '' }}" placeholder="Trakt application client ID"></label><label>Trakt client secret<input type="password" name="trakt_client_secret" placeholder="{{ 'Configured — leave blank to keep' if provider_state.trakt_client_configured else 'Trakt application secret' }}"></label></div>
         <div class="grid-2"><label>TMDb API key<input type="password" name="tmdb_api_key" placeholder="{{ 'Configured — leave blank to keep' if provider_state.tmdb_configured else 'Optional for TMDb list sources' }}"></label><label>Simkl client ID<input name="simkl_client_id" value="{{ provider_state.simkl_client_id if provider_state.simkl_client_id is defined else '' }}" placeholder="Optional"></label></div>
         <label>Simkl OAuth access token<input type="password" name="simkl_access_token" placeholder="{{ 'Configured — leave blank to keep' if provider_state.simkl_configured else 'Optional' }}"></label>
-        <div class="formactions"><button class="btn primary">Save list providers</button></div>
+        <div class="formactions"><button class="btn">Save advanced provider settings</button></div>
       </form>
-      <div class="v102-provider-status">
-        <div><strong>Trakt</strong><span class="tag {{ 'green' if provider_state.trakt_connected else 'mutedtag' }}">{{ ('Connected as ' ~ provider_state.trakt_user) if provider_state.trakt_connected and provider_state.trakt_user else ('Connected' if provider_state.trakt_connected else 'Not connected') }}</span>{% if provider_state.trakt_client_configured and not provider_state.trakt_connected %}<a class="btn small primary" href="/lists/trakt/connect" data-no-soft-nav>Connect Trakt</a>{% endif %}{% if provider_state.trakt_connected %}<form method="post" action="/lists/trakt/disconnect"><button class="btn small ghost">Disconnect</button></form>{% endif %}</div>
-        <div><strong>Plex Watchlist</strong><span class="tag {{ 'green' if provider_state.plex_configured else 'mutedtag' }}">{{ 'Uses saved Plex token' if provider_state.plex_configured else 'Configure Plex in Connections' }}</span></div>
-        {% if trakt_lists %}<div><strong>Your Trakt lists</strong><span class="muted">Use <code>me/&lt;ID or slug&gt;</code> as the Trakt List reference:</span>{% for tl in trakt_lists[:12] %}<span class="tag">{{ tl.name }} · me/{{ tl.slug or tl.id }}</span>{% endfor %}</div>{% endif %}
-      </div>
+      <div class="alert info"><strong>Connected Apps limit:</strong> if Trakt refuses authorization because the account has reached its Community Apps limit, open Trakt Settings → Connected Apps and revoke an unused application or change the applicable Trakt plan.</div>
     </div>
   </details>
+  <div class="v102-provider-status" style="margin-top:14px"><div><strong>Plex Watchlist</strong><span class="tag {{ 'green' if provider_state.plex_configured else 'mutedtag' }}">{{ 'Uses saved Plex token' if provider_state.plex_configured else 'Configure Plex in Connections' }}</span></div>{% if trakt_lists %}<div><strong>Your Trakt lists</strong><span class="muted">Use <code>me/&lt;ID or slug&gt;</code> as the Trakt List reference:</span>{% for tl in trakt_lists[:12] %}<span class="tag">{{ tl.name }} · me/{{ tl.slug or tl.id }}</span>{% endfor %}</div>{% endif %}</div>
 </section>
 
 <section class="panel">

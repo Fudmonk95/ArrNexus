@@ -343,3 +343,89 @@ html[data-appearance="light"] .btn:not(.primary){background:#fff!important}
 /* v10.2 feature surfaces --------------------------------------------------- */
 .v102-hero{display:flex;justify-content:space-between;gap:22px;align-items:center;padding:24px}.v102-hero h2{margin:4px 0 5px;font-size:26px}.v102-flow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}.v102-flow span{border:1px solid var(--line);background:var(--panel2);border-radius:999px;padding:7px 10px;font-size:11px}.v102-flow i{color:var(--muted);font-style:normal}.v102-disclosure{border:1px solid var(--line);border-radius:13px;overflow:hidden;background:var(--panel2)}.v102-disclosure>summary{cursor:pointer;list-style:none;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px}.v102-disclosure>summary::-webkit-details-marker{display:none}.v102-disclosure>summary div{display:grid;gap:2px}.v102-disclosure>summary small{color:var(--muted)}.v102-disclosure>summary>span{color:var(--blue);font-size:12px}.v102-disclosure-body{border-top:1px solid var(--line);padding:16px}.v102-provider-status{margin-top:14px;display:grid;gap:8px}.v102-provider-status>div{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.v102-provider-status form{display:inline-flex}.v102-checks{display:grid;gap:7px;align-content:center}.v102-list-card{border:1px solid var(--line);border-radius:15px;background:var(--panel);overflow:hidden;box-shadow:var(--shadow)}.v102-list-card>summary{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:16px;cursor:pointer;list-style:none}.v102-list-card>summary::-webkit-details-marker{display:none}.v102-list-card>summary h3{margin:3px 0 1px}.v102-list-card>summary p{margin:0;color:var(--muted);font-size:12px}.v102-list-card[open]>summary{border-bottom:1px solid var(--line)}.v102-list-body{padding:16px;display:grid;gap:15px}.v102-source{font-size:10px;color:var(--blue);letter-spacing:.1em;font-weight:800}.v102-list-state{display:grid;justify-items:end;gap:2px;min-width:80px}.v102-list-state strong{font-size:22px}.v102-list-state small{color:var(--muted);font-size:10px}.v102-route-row{display:flex;gap:12px;flex-wrap:wrap}.v102-route-row>span{padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);font-size:12px}.v102-edit-form{padding-top:4px}.v102-actions form{display:inline-flex;margin:0}.v102-preview{padding-top:6px}.v102-json{white-space:pre-wrap;word-break:break-word;max-height:470px;overflow:auto;border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:14px;color:var(--text)}.v102-digest{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:16px!important}.v102-cleanup-actions{display:flex;gap:9px;flex-wrap:wrap}.v102-cleanup-actions form{margin:0}.v102-cleanup-actions .btn{height:100%}
 @media(max-width:900px){.v102-hero{align-items:flex-start;flex-direction:column}.v102-flow{justify-content:flex-start}.v102-list-card>summary{align-items:flex-start}.v102-route-row{display:grid}.v102-list-state{justify-items:start}}
+
+/* ArrNexus v10.3 — product-wide appearance contract -------------------------
+   Dark and Light are now complete token sets. Historical navy/blue component
+   surfaces no longer decide their own background/text colours. */
+:root,html[data-appearance="dark"]{
+  --surface-0:#030304;--surface-1:#0b0b0d;--surface-2:#111113;--surface-3:#171719;
+  --control:#09090b;--border:#29292d;--border-strong:#3a3a40;
+  --ink:#f7f7f8;--ink-soft:#c4c4ca;--ink-muted:#92929b;
+  --accent-purple:#9b5cff;--accent-cyan:#33d8ff;--accent-soft:rgba(155,92,255,.10);
+  --shadow-product:0 18px 52px rgba(0,0,0,.30);
+  --bg:var(--surface-0)!important;--bg2:var(--surface-2)!important;--panel:var(--surface-1)!important;--panel2:var(--surface-2)!important;
+  --line:var(--border)!important;--text:var(--ink)!important;--muted:var(--ink-muted)!important;--blue:var(--accent-purple)!important;--blue2:var(--accent-cyan)!important;
+  --shadow:var(--shadow-product)!important;color-scheme:dark;
+}
+html[data-appearance="light"]{
+  --surface-0:#fafafa;--surface-1:#ffffff;--surface-2:#f4f4f5;--surface-3:#ececef;
+  --control:#ffffff;--border:#dddddf;--border-strong:#c9c9ce;
+  --ink:#111113;--ink-soft:#333338;--ink-muted:#68686f;
+  --accent-purple:#7650d9;--accent-cyan:#087da0;--accent-soft:rgba(118,80,217,.08);
+  --shadow-product:0 12px 34px rgba(20,20,25,.08);
+  --bg:var(--surface-0)!important;--bg2:var(--surface-2)!important;--panel:var(--surface-1)!important;--panel2:var(--surface-2)!important;
+  --line:var(--border)!important;--text:var(--ink)!important;--muted:var(--ink-muted)!important;--blue:var(--accent-purple)!important;--blue2:var(--accent-cyan)!important;
+  --shadow:var(--shadow-product)!important;color-scheme:light;
+}
+html[data-appearance] body,
+html[data-appearance] .nx-body,
+html[data-appearance] .nx-workspace,
+html[data-appearance] .nx-main{background:var(--surface-0)!important;color:var(--ink)!important}
+html[data-appearance] body{background-image:none!important}
+html[data-appearance] .nx-sidebar,
+html[data-appearance] .nx-topbar{background:var(--surface-1)!important;border-color:var(--border)!important;color:var(--ink)!important;box-shadow:none!important}
+html[data-appearance] .nx-topbar{backdrop-filter:none!important}
+html[data-appearance] .nx-sidebar{box-shadow:8px 0 28px color-mix(in srgb,var(--ink) 6%,transparent)!important}
+
+/* Core surfaces: force every product page onto neutral tokens. */
+html[data-appearance] :where(
+ .panel,.stat,.hero,.dashboard-hero,.service-health,.card,.settings-card,.profile-card,.queue-card,.inbox-card,.maintenance-card,.problem-card,
+ .music-provider-hero,.provider-card,.media-card,.library-card,.lookup-card,.music-card,.v9-provider-card,.v102-card,.v102-list-card,.v102-collapsible,
+ .v10-service-accordion,.v10-accordion-body,.v10-install-grid details,.v92-doc-card,.v92-doc-details,.v94-help-index,.v94-help-topic,.v94-guide-block,
+ .v93-custom-media,.infini-now-card,.v103-rescue-card,.v103-split-card
+){background:var(--surface-1)!important;background-image:none!important;border-color:var(--border)!important;color:var(--ink)!important;box-shadow:var(--shadow-product)!important}
+html[data-appearance] :where(.panel.compact,.bulkbar,.routebox,.samples span,.mini-list>div,.quick-actions a,.library-mini,.bar-track,.hbar,.v102-codeblock,.v102-json,.v102-disclosure,.v102-route-row>span,.connector-verification,.verify-cell,.v10-note,.v92-command,.v92-table,.v103-mini-results a){background:var(--surface-2)!important;background-image:none!important;border-color:var(--border)!important;color:var(--ink)!important}
+html[data-appearance] :where(.v10-service-accordion summary:hover,.v10-service-accordion[open] summary,.nx-nav-links a:hover){background:var(--surface-2)!important;color:var(--ink)!important}
+html[data-appearance] .nx-nav-links a.active{background:linear-gradient(90deg,var(--accent-soft),var(--surface-2))!important;border-color:color-mix(in srgb,var(--accent-purple) 25%,var(--border))!important;color:var(--ink)!important;box-shadow:inset 2px 0 var(--accent-purple)!important}
+html[data-appearance] .nx-nav-links a{color:var(--ink-muted)!important}
+html[data-appearance] .nx-nav-icon{background:var(--surface-2)!important;border-color:var(--border)!important;color:var(--ink-soft)!important}
+
+/* Typography: historical releases hard-coded white/grey in dozens of components. */
+html[data-appearance] :where(h1,h2,h3,h4,h5,h6,.panel h2,.panel h3,.stat strong,.service strong,.route-bar-label strong,.libcount,.dashboard-ring strong,.v10-service-copy strong,.v92-doc-card h3,.v92-doc-details summary,.v94-help-topic-head h2,.v94-guide-block h3,.v93-custom-media strong,.v10-install-grid summary){color:var(--ink)!important}
+html[data-appearance] :where(p,small,.muted,.panel p,.hero p,.stat span,.stat small,.service span:last-child,.activity small,.activity time,.route-reason,.v91-dashboard-snapshot,.v10-service-copy small,.v92-doc-card p,.v92-doc-card li,.v92-doc-details>div,.v94-help-topic-head p,.v94-guide-block ul,.v94-guide-block ol,.v93-custom-media small,.v10-install-grid details>div){color:var(--ink-muted)!important}
+html[data-appearance] td{color:var(--ink-soft)!important;border-color:var(--border)!important}
+html[data-appearance] th{background:var(--surface-2)!important;color:var(--ink-muted)!important;border-color:var(--border)!important}
+html[data-appearance] .tablewrap,html[data-appearance] .v92-table-wrap{border-color:var(--border)!important;background:var(--surface-1)!important}
+
+/* Forms and buttons obey appearance instead of retaining dark controls in Light. */
+html[data-appearance] :where(input,select,textarea,.formgrid select,.formgrid input,.searchbar input,.searchbar select,.filters input,.filters select,.login-card input,.rule-form input,.rule-form select,.bulkbar select){background:var(--control)!important;color:var(--ink)!important;border-color:var(--border-strong)!important;box-shadow:none!important}
+html[data-appearance] input::placeholder,html[data-appearance] textarea::placeholder{color:var(--ink-muted)!important}
+html[data-appearance] .btn:not(.primary){background:var(--control)!important;color:var(--ink)!important;border-color:var(--border-strong)!important}
+html[data-appearance] .btn:not(.primary):hover{background:var(--surface-2)!important;border-color:color-mix(in srgb,var(--accent-purple) 45%,var(--border))!important}
+html[data-appearance] .btn.primary,html[data-appearance] button.primary{background:linear-gradient(105deg,var(--accent-purple),#7757ff 55%,var(--accent-cyan))!important;color:#fff!important;border-color:transparent!important}
+html[data-appearance] .btn.danger{border-color:color-mix(in srgb,var(--red) 60%,var(--border))!important;color:var(--red)!important}
+
+/* Dashboard: remove the old navy surfaces visible in v10.2 screenshots. */
+html[data-appearance] .dashboard-hero{background:linear-gradient(135deg,var(--surface-1),color-mix(in srgb,var(--accent-purple) 5%,var(--surface-1)))!important;border-color:var(--border)!important}
+html[data-appearance] .dashboard-ring:after{background:var(--surface-1)!important}
+html[data-appearance] .bar-track,html[data-appearance] .hbar{background:var(--surface-3)!important}
+html[data-appearance] .bar-fill{background:linear-gradient(180deg,var(--accent-purple),var(--accent-cyan))!important}
+html[data-appearance] .hbar i{background:linear-gradient(90deg,var(--accent-purple),var(--accent-cyan))!important}
+html[data-appearance] .v9-dashboard-readiness{background:linear-gradient(90deg,var(--accent-soft),var(--surface-1))!important;border-color:color-mix(in srgb,var(--accent-purple) 24%,var(--border))!important;color:var(--ink)!important}
+html[data-appearance] .namespace-strip{color:var(--ink)!important}
+
+/* Legacy blue InfiniDysk/help surfaces are neutral in both product appearances. */
+html[data-appearance] .infini-chart-wrap{background:var(--surface-2)!important;border-color:var(--border)!important}
+html[data-appearance] .tiny-progress{background:var(--surface-3)!important}
+html[data-appearance] .v94-help-page{background:var(--surface-0)!important;color:var(--ink)!important}
+html[data-appearance] .v94-help-search input{background:var(--control)!important;border-color:var(--border)!important;color:var(--ink)!important}
+html[data-appearance] .v94-help-topic-head,html[data-appearance] .v10-public-footer{border-color:var(--border)!important}
+html[data-appearance] code{color:color-mix(in srgb,var(--accent-purple) 70%,var(--ink))!important}
+
+/* v10.3 workflow surfaces */
+.v103-language-actions{display:flex;gap:7px;flex-wrap:wrap}.v103-bulkbar{gap:10px}.v103-bulkbar>select{margin-left:auto}
+.v103-trakt-connect,.v103-device-code{display:flex;align-items:center;justify-content:space-between;gap:18px;border:1px solid var(--border);border-radius:14px;padding:16px;background:var(--surface-2)}
+.v103-device-code>div:first-child{display:grid;gap:4px}.v103-device-code small{color:var(--ink-muted);font-weight:800;letter-spacing:.12em}.v103-device-code strong{font-size:30px;letter-spacing:.12em;color:var(--ink)}
+.v103-rescue-grid,.v103-split-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}.v103-rescue-card,.v103-split-card{border:1px solid var(--border);border-radius:15px;padding:16px;display:grid;gap:13px}.v103-rescue-card h3,.v103-split-card h3{margin:2px 0}.v103-rescue-actions{display:flex;justify-content:space-between;align-items:center;gap:8px}.v103-mini-results{display:grid;gap:7px}.v103-mini-results a{display:flex;justify-content:space-between;gap:12px;padding:9px;border:1px solid var(--border);border-radius:9px}.v103-mini-results small{color:var(--ink-muted)}
+.tag.language-recheck_required,.language-recheck_required{color:var(--amber)!important;border-color:color-mix(in srgb,var(--amber) 45%,var(--border))!important;background:color-mix(in srgb,var(--amber) 8%,var(--surface-1))!important}
+@media(max-width:900px){.v103-trakt-connect,.v103-device-code{align-items:flex-start;flex-direction:column}.v103-bulkbar>select{margin-left:0}.v103-language-actions{width:100%}}

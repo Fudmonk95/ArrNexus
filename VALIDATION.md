@@ -1,11 +1,15 @@
-# ArrNexus v10.2.0-beta Validation Report
+# ArrNexus v10.3.0-beta Validation Report
 
-Release target: **ArrNexus 10.2.0-beta**  
-Validation date: **2026-08-29**
+Release target: **ArrNexus 10.3.0-beta**  
+Validation date: **2026-08-30**
 
 ## Release gate
 
-The release is accepted only when the complete retained regression chain and the v10.2-specific layer pass against the source tree, then the exact distributable ZIP is extracted into a separate clean directory and the same validator is run again.
+v10.3 retains every historical regression layer from v7 through v10.2 and adds a v10.3-specific layer for Archive Rescue, Advanced TV Recovery, typed DMM routing, Language Guard cleanup, Trakt Device OAuth and the product-wide Dark/Light appearance contract.
+
+Historical validators are executed as separate release-gate commands because several legacy FastAPI/TestClient suites can leave background workers alive when chained from one long-lived Python parent after their final PASS assertion. The assertions themselves are unchanged.
+
+`python3 validate.py` is intentionally the **install-safe current-release validator** used by the native updater. It runs the complete v10.3-specific compile/template/HTTP/feature checks deterministically. The packaging gate additionally runs every retained historical validator (`validate_v7.py` through `validate_v102.py`) separately before the ZIP is accepted.
 
 ## Retained regression layers
 
@@ -21,47 +25,52 @@ PASS layers:
 - v10
 - v10.1
 - v10.2
+- v10.3
 
-The retained v9.1 visual assertion was made compatibility-safe: it still requires the v9.1 unified-black marker, but accepts the deliberate v10.2 base black `#030304` instead of demanding obsolete `#050506`.
+## v10.3-specific checks
 
-## v10.2-specific checks
+- Archive-style TV names such as `Season 6 episode 1`, `Series 7 Episode 06` and `Season 1 S01 Complete` are parsed as TV/season media.
+- Manual DMM destination values are typed (`movie:*` / `tv:*`), so `TV · BBC`, `TV · Default` and `TV · Kids` cannot be validated as movie destinations.
+- Combined-season sources are identified and routed to Advanced TV Recovery rather than blindly imported as a movie.
+- Advanced TV Recovery prefers exact chapter boundaries, supports lower-confidence runtime estimates only with explicit confirmation, writes partial outputs safely, validates outputs with ffprobe and retains the original provider source.
+- DMM Inbox exposes Check selected languages, Check all unchecked, Force re-check all and safe direct/bulk rejected-source cleanup.
+- Stale Language Guard results become Re-check required and are never used as destructive evidence.
+- Rejected Real-Debrid deletion rechecks current policy/fingerprint state, surviving managed-library dependencies and exact provider identity at apply time.
+- Item Review inspection failures render a controlled ArrNexus diagnostic view rather than a bare HTTP 500.
+- Trakt Device OAuth start/poll state is implemented; application Client ID/Secret are isolated under Advanced setup and rotating token replacement remains atomic.
+- Archive Rescue scans monitored Sonarr gaps, searches the configured Prowlarr Internet Archive source, parses the actual `.torrent` manifest, supports selective file choice and hands selected files to Real-Debrid using fail-closed matching.
+- Dark and Light are the only product appearances. The application shell, dashboard, panels, controls, tables and typography use shared neutral appearance tokens; legacy navy/blue surfaces are neutralised and purple/cyan remain accents.
+- JavaScript syntax, Python compilation and all Jinja templates pass.
+- Help Centre, generated User Guide, Documentation Audit, README, CHANGELOG and v10.3 release notes cover the new workflows.
+- Updater ordering recognises `10.3.0-beta` as newer than `10.2.0-beta`.
 
-- Fresh SQLite migration creates `media_lists` and `media_list_runs`.
-- Lists & Watchlists adapters are present for Trakt Watchlist/lists, IMDb, TMDb, Plex Watchlist, Simkl, RSS/Atom and Custom JSON.
-- List preview distinguishes existing/requested/new/unmatched state before add.
-- List sync reuses normal ArrNexus discovery/routing/acquisition and preserves the list monitor setting.
-- Trakt access/refresh token replacement is committed atomically.
-- Language Guard defaults to English audio required and English subtitles optional.
-- Confirmed non-English audio can be a policy rejection; unknown/probe-failed language state is Manual review and is never destructive.
-- Provider Duplicate Cleanup uses stale-preview digest protection and surviving-link dependency checks before exact Real-Debrid deletion.
-- AIOMetadata masks secret-bearing fields and exposes bounded health/configuration/AIOStreams relationship visibility.
-- Providers and Libraries use collapsed summary-first `<details>` layouts.
-- Historical multi-theme CSS selectors are removed; Dark and Light are the only product appearances.
-- Top-right appearance toggle persists browser preference.
-- Service-worker cache marker is `arrnexus-static-v10.2`.
-- Python compilation, JavaScript syntax and all Jinja templates pass.
-- Help Centre catalogue, generated User Guide and generated route documentation include v10.2 workflows.
+## Source-tree process smoke
 
-## Process smoke test
+A real Uvicorn process started against a fresh temporary SQLite database and returned:
 
-A real Uvicorn process started from the release source and returned:
-
-- `GET /api/health` → **200**, version `10.2.0-beta`
+- `GET /api/health` → **200**, version `10.3.0-beta`
 - `GET /setup` → **200**
 - `GET /` → **200**
 
-The new authenticated routes also render successfully in TestClient on a fresh database:
+## Package hygiene
 
-- `/lists`
-- `/aiometadata`
-- `/maintenance/provider-cleanup`
-- `/providers`
-- `/libraries`
+The release package excludes:
+
+- `.env`
+- SQLite databases
+- `/data` runtime state
+- runtime staging/backups
+- virtual environments
+- `__pycache__`
+- `.pyc`
+- live API keys/tokens/credentials
+
+A high-confidence secret-pattern scan is run before packaging and again against the extracted release.
 
 ## Docker
 
-Docker is not available in the packaging environment, so `docker compose config` / image build cannot be executed here. The release retains the validated v10.1 Dockerfile/Compose baseline and does not introduce a new container-level dependency.
+Docker is not available in the packaging environment, so `docker compose config` and `docker compose build` cannot be claimed here. Node.js is available and `node --check app/static/app.js` passes.
 
 ## Exact ZIP certification
 
-The release workflow extracts the finished `arrnexus-v10.2.0-beta.zip` into a clean directory and reruns `python3 validate.py` plus the real Uvicorn smoke test against that extracted copy. The external `.sha256` file is created only after that exact ZIP passes.
+The finished `arrnexus-v10.3.0-beta.zip` is extracted into a separate clean directory. The v10.3 validator, every retained regression layer, package hygiene checks and a real Uvicorn health/setup/landing smoke are rerun against that extracted copy before the external SHA-256 file is created.

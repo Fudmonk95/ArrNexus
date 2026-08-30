@@ -2,8 +2,8 @@
 
 This file is generated from `app/main.py` routes and the same `app/help_catalog.py` mapping used by the contextual Help button.
 
-- Application routes/actions audited: **139**
-- Help topics: **45**
+- Application routes/actions audited: **149**
+- Help topics: **47**
 - Primary private pages receive a contextual Help link from the application shell.
 - Public/auth/bootstrap pages are documented in the Help Centre and user guide even when they do not use the private shell.
 
@@ -30,6 +30,8 @@ This file is generated from `app/main.py` routes and the same `app/help_catalog.
 | GET | `/item` | `item_detail` | `item-review` |
 | POST | `/item/language-check` | `item_language_check` | `item-review` |
 | POST | `/item/state` | `item_state` | `item-review` |
+| POST | `/inbox/language-scan` | `inbox_language_scan` | `dmm-inbox` |
+| POST | `/inbox/language-delete` | `inbox_language_delete` | `dmm-inbox` |
 | POST | `/bulk-import` | `bulk_import` | `dmm-inbox` |
 | POST | `/import` | `single_import` | `dmm-inbox` |
 | GET | `/jobs` | `jobs_page` | `jobs` |
@@ -133,8 +135,16 @@ This file is generated from `app/main.py` routes and the same `app/help_catalog.
 | GET | `/aiostreams/search` | `aiostreams_search_page` | `aiostreams` |
 | GET | `/api/aiostreams/status` | `aiostreams_status_api` | `aiostreams` |
 | GET | `/api/aiostreams/search` | `aiostreams_search_api` | `aiostreams` |
+| GET | `/tv-recovery/analyse` | `tv_recovery_analyse` | `tv-recovery` |
+| POST | `/tv-recovery/staging` | `tv_recovery_staging` | `tv-recovery` |
+| POST | `/tv-recovery/split` | `tv_recovery_split` | `tv-recovery` |
+| GET | `/archive-rescue` | `archive_rescue_page` | `archive-rescue` |
+| GET | `/archive-rescue/release/{token}` | `archive_rescue_release` | `archive-rescue` |
+| POST | `/archive-rescue/send-rd` | `archive_rescue_send_rd` | `archive-rescue` |
 | GET | `/lists` | `lists_page` | `lists` |
 | POST | `/lists/providers` | `lists_provider_save` | `lists` |
+| POST | `/lists/trakt/device/start` | `lists_trakt_device_start` | `lists` |
+| POST | `/lists/trakt/device/poll` | `lists_trakt_device_poll` | `lists` |
 | GET | `/lists/trakt/connect` | `lists_trakt_connect` | `lists` |
 | GET | `/lists/trakt/callback` | `lists_trakt_callback` | `lists` |
 | POST | `/lists/trakt/disconnect` | `lists_trakt_disconnect` | `lists` |

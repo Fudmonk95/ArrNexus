@@ -111,4 +111,11 @@ def main() -> int:
     return 0
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # v9.2's FastAPI TestClient can leave a background worker alive after all
+    # assertions have completed. Flush the final PASS/failure output and exit
+    # the validator process explicitly so newer retained release gates do not
+    # hang during interpreter shutdown. This does not change any assertions.
+    code = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(int(code or 0))

@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import os
-from .scanner import video_files, episode_season, EPISODE_RE
+from .scanner import video_files, episode_season, episode_identity
 from .namespace import view_path, logical_from_view
 from .config import settings
 from .paths import movie_roots, tv_roots, lidarr_root, source_root
@@ -75,8 +75,8 @@ def import_tv_source(source: str, series_path: str, canonical_title: str = "") -
         season = episode_season(f.name)
         if season is None:
             raise ImportErrorSafe(f"Cannot determine season from: {f.name}")
-        m = EPISODE_RE.search(f.name)
-        token = m.group(0).upper().replace("X", "x") if m else f"S{season:02d}E{idx:02d}"
+        ident = episode_identity(f.name)
+        token = f"S{ident[0]:02d}E{ident[1]:02d}" if ident else f"S{season:02d}E{idx:02d}"
         clean = f"{show} - {token}{f.suffix.lower()}"
         if clean.lower() in used:
             clean = f"{show} - {token} - {idx:02d}{f.suffix.lower()}"

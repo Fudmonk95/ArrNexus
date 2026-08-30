@@ -150,6 +150,12 @@ async def add_torrent_file(payload: bytes) -> dict:
 async def select_all(torrent_id: str):
     return await request("POST", f"torrents/selectFiles/{torrent_id}", data={"files": "all"})
 
+async def select_files(torrent_id: str, file_ids: list[str] | list[int]):
+    ids = [str(x).strip() for x in (file_ids or []) if str(x).strip().isdigit()]
+    if not ids:
+        raise RealDebridError("No valid Real-Debrid file IDs were selected")
+    return await request("POST", f"torrents/selectFiles/{torrent_id}", data={"files": ",".join(ids)})
+
 async def torrent_info(torrent_id: str) -> dict:
     return await request("GET", f"torrents/info/{torrent_id}")
 

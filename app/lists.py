@@ -192,6 +192,10 @@ def provider_state() -> dict[str, Any]:
         "trakt_client_configured": bool(setting_get("lists.trakt.client_id") and setting_get("lists.trakt.client_secret")),
         "trakt_connected": bool(setting_get("lists.trakt.access_token")),
         "trakt_user": setting_get("lists.trakt.username"),
+        "trakt_pending": bool(setting_get("lists.trakt.pending_device_code")),
+        "trakt_user_code": setting_get("lists.trakt.pending_user_code"),
+        "trakt_verification_url": setting_get("lists.trakt.pending_verification_url", "https://trakt.tv/activate"),
+        "trakt_pending_expires_at": setting_get("lists.trakt.pending_expires_at"),
         "tmdb_configured": bool(setting_get("lists.tmdb.api_key")),
         "simkl_client_id": setting_get("lists.simkl.client_id"),
         "simkl_configured": bool(setting_get("lists.simkl.client_id") and setting_get("lists.simkl.access_token")),
@@ -214,6 +218,112 @@ def _atomic_settings(values: dict[str, tuple[str, bool]]) -> None:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value,secret=excluded.secret,updated_at=excluded.updated_at",
                 (key, value or "", int(bool(secret)), now),
             )
+
+
+def _clear_trakt_pending() -> None:
+    for key in (
+        "lists.trakt.pending_device_code", "lists.trakt.pending_user_code",
+        "lists.trakt.pending_verification_url", "lists.trakt.pending_expires_at",
+        "lists.trakt.pending_interval", "lists.trakt.pending_next_poll",
+    ):
+        setting_delete(key)
+
+
+async def trakt_device_begin() -> dict[str, Any]:
+    """Start Trakt Device OAuth for self-hosted ArrNexus installations."""
+    client_id = setting_get("lists.trakt.client_id")
+    client_secret = setting_get("lists.trakt.client_secret")
+    if not client_id or not client_secret:
+        raise RuntimeError(
+            "ArrNexus needs Trakt application credentials before Device OAuth can start. "
+            "Trakt currently restricts creation of new API applications on some accounts; "
+            "open Advanced Trakt application setup for details."
+        )
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        r = await client.post(f"{TRAKT_AUTH}/oauth/device/code", json={"client_id": client_id})
+    if r.status_code >= 400:
+        raise RuntimeError(f"Trakt Device OAuth could not start: {r.status_code} {r.text[:400]}")
+    data = r.json() if r.content else {}
+    device_code = str(data.get("device_code") or "")
+    user_code = str(data.get("user_code") or "")
+    if not device_code or not user_code:
+        raise RuntimeError("Trakt Device OAuth response did not contain a device code and user code")
+    expires_in = max(60, int(data.get("expires_in") or 600))
+    interval = max(2, int(data.get("interval") or 5))
+    verification = str(data.get("verification_url") or "https://trakt.tv/activate")
+    _atomic_settings({
+        "lists.trakt.pending_device_code": (device_code, True),
+        "lists.trakt.pending_user_code": (user_code, True),
+        "lists.trakt.pending_verification_url": (verification, False),
+        "lists.trakt.pending_expires_at": (str(time.time() + expires_in), False),
+        "lists.trakt.pending_interval": (str(interval), False),
+        "lists.trakt.pending_next_poll": ("0", False),
+    })
+    return {"status": "pending", "user_code": user_code, "verification_url": verification, "expires_in": expires_in, "interval": interval}
+
+
+async def _load_trakt_username() -> None:
+    """Best-effort account identity load after a successful Device OAuth token exchange."""
+    try:
+        who = await _trakt_get("/users/settings")
+        username = str(((who.get("user") or {}).get("username") or "")) if isinstance(who, dict) else ""
+        if username:
+            setting_set("lists.trakt.username", username)
+    except Exception:
+        # Token success is authoritative; username decoration must never make a
+        # successful account link fail.
+        pass
+
+
+async def trakt_device_poll() -> dict[str, Any]:
+    device_code = setting_get("lists.trakt.pending_device_code")
+    if not device_code:
+        return {"status": "none", "message": "No Trakt device authorization is pending"}
+    try:
+        expires = float(setting_get("lists.trakt.pending_expires_at", "0") or 0)
+    except Exception:
+        expires = 0
+    if expires and time.time() >= expires:
+        _clear_trakt_pending()
+        return {"status": "expired", "message": "The Trakt device code expired. Start a new connection."}
+    try:
+        next_poll = float(setting_get("lists.trakt.pending_next_poll", "0") or 0)
+    except Exception:
+        next_poll = 0
+    if next_poll and time.time() < next_poll:
+        return {"status": "waiting", "message": "Trakt asked ArrNexus to wait before checking again"}
+
+    payload = {
+        "code": device_code,
+        "client_id": setting_get("lists.trakt.client_id"),
+        "client_secret": setting_get("lists.trakt.client_secret"),
+    }
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        r = await client.post(f"{TRAKT_AUTH}/oauth/device/token", json=payload)
+
+    interval = max(2, int(setting_get("lists.trakt.pending_interval", "5") or 5))
+    setting_set("lists.trakt.pending_next_poll", str(time.time() + interval))
+    if r.status_code == 200:
+        await _save_trakt_token_response(r.json())
+        _clear_trakt_pending()
+        await _load_trakt_username()
+        return {"status": "connected"}
+    if r.status_code == 400:
+        return {"status": "waiting", "message": "Authorization is still pending in Trakt"}
+    if r.status_code == 429:
+        setting_set("lists.trakt.pending_interval", str(interval + 5))
+        setting_set("lists.trakt.pending_next_poll", str(time.time() + interval + 5))
+        return {"status": "waiting", "message": "Trakt requested slower polling; wait a few seconds and try again"}
+    if r.status_code == 418:
+        _clear_trakt_pending()
+        return {"status": "denied", "message": "Trakt authorization was denied"}
+    if r.status_code == 410:
+        _clear_trakt_pending()
+        return {"status": "expired", "message": "The Trakt device code expired"}
+    if r.status_code in {404, 409}:
+        _clear_trakt_pending()
+        return {"status": "invalid", "message": "The Trakt device code is invalid or has already been used"}
+    raise RuntimeError(f"Trakt Device OAuth failed: {r.status_code} {r.text[:400]}")
 
 
 def trakt_authorize_url(redirect_uri: str, state: str) -> str:
@@ -286,6 +396,7 @@ async def _trakt_access_token() -> str:
 def trakt_disconnect() -> None:
     for key in ("lists.trakt.access_token", "lists.trakt.refresh_token", "lists.trakt.expires_at", "lists.trakt.username"):
         setting_delete(key)
+    _clear_trakt_pending()
 
 
 async def _trakt_get(path: str) -> Any:

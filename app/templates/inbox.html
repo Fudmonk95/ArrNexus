@@ -25,13 +25,20 @@
 </div>
 
 <form method="post" action="/bulk-import" id="bulkForm">
-<div class="bulkbar">
+<div class="bulkbar v103-bulkbar">
   <label><input type="checkbox" onclick="toggleAll(this,'source_path')"> Select all</label>
   <span><strong data-selected-count>0</strong> selected</span>
-  <select name="destination_key" title="Choose one route for everything selected, or leave Auto route">
+  <div class="v103-language-actions">
+    <button class="btn small" type="submit" formaction="/inbox/language-scan" name="scope" value="selected" title="Run Language Guard on the selected DMM sources">Check selected languages</button>
+    <button class="btn small" type="submit" formaction="/inbox/language-scan" name="scope" value="unchecked" title="Check only sources without a current-policy result">Check all unchecked</button>
+    <button class="btn small ghost" type="submit" formaction="/inbox/language-scan" name="scope" value="all" onclick="this.form.querySelector('[name=force]').value='1'">Force re-check all</button>
+    <input type="hidden" name="force" value="">
+    {% if status=='language' %}<button class="btn small danger" type="submit" formaction="/inbox/language-delete" onclick="return confirm('Delete only selected sources that have a current destructive-safe Language rejected result, no surviving library dependencies, and one exact Real-Debrid match?')">Delete selected rejected sources</button>{% endif %}
+  </div>
+  <select name="destination_key" title="Choose one explicit route for everything selected, or leave Auto route">
     <option value="auto">Auto route each item</option>
-    <optgroup label="Movies"><option value="default">Movies · Default</option><option value="kids">Movies · Kids</option><option value="christmas">Movies · Christmas</option><option value="halloween">Movies · Halloween</option><option value="easter">Movies · Easter</option></optgroup>
-    <optgroup label="TV"><option value="netflix">TV · Netflix</option><option value="disney">TV · Disney+</option><option value="amazon">TV · Amazon</option><option value="apple">TV · Apple TV+</option><option value="bbc">TV · BBC</option></optgroup>
+    <optgroup label="Movies"><option value="movie:default">Movies · Default</option><option value="movie:kids">Movies · Kids</option><option value="movie:christmas">Movies · Christmas</option><option value="movie:halloween">Movies · Halloween</option><option value="movie:easter">Movies · Easter</option></optgroup>
+    <optgroup label="TV"><option value="tv:default">TV · Default</option><option value="tv:kids">TV · Kids</option><option value="tv:netflix">TV · Netflix</option><option value="tv:disney">TV · Disney+</option><option value="tv:amazon">TV · Amazon</option><option value="tv:apple">TV · Apple TV+</option><option value="tv:bbc">TV · BBC</option></optgroup>
   </select>
   <button class="btn primary" type="submit">Import selected</button>
 </div>
@@ -47,7 +54,7 @@
 <td>{{ i.quality ~ 'p' if i.quality else '?' }}{% if row.existing_resolution %} / library {{ row.existing_resolution }}p{% endif %}</td>
 <td><span class="tag language-{{ row.language_badge_key }}">{{ row.language_badge_label }}</span>{% if row.language_guard and row.language_guard.summary %}<small class="block muted">{{ row.language_guard.summary }}</small>{% endif %}</td>
 <td>{% if row.existing %}<span class="tag green">In Arr</span>{% endif %}{% if row.linked_paths %}<span class="tag blue">Symlinked</span>{% endif %}{% if row.jellyfin.configured %}<span class="tag {{ 'green' if row.jellyfin.found else 'mutedtag' }}">Jellyfin {{ '✓' if row.jellyfin.found else '…' }}</span>{% endif %}</td>
-<td><a class="btn small" href="/item?path={{ i.path|urlencode }}">Review</a></td>
+<td><div class="card-actions"><a class="btn small" href="/item?path={{ i.path|urlencode }}">Review</a>{% if row.rejected_sources %}<button class="btn small danger" type="submit" formaction="/inbox/language-delete" name="single_source_path" value="{{ row.rejected_sources[0] }}" onclick="return confirm('Delete this exact rejected Real-Debrid source?')">Delete rejected RD</button>{% endif %}</div></td>
 </tr>{% else %}<tr><td colspan="9" class="empty">No items match this filter.</td></tr>{% endfor %}</tbody></table></div></div>
 {% else %}
 <div class="poster-grid">
@@ -64,7 +71,8 @@
     <div class="tags"><span class="tag">{{ row.decision.key }}</span><span class="tag">{{ row.decision.confidence }}%</span>{% if i.quality %}<span class="tag">{{ i.quality }}p</span>{% endif %}{% for g in row.genres[:2] %}<span class="tag genre">{{ g }}</span>{% endfor %}{% if row.duplicate_count > 1 %}<span class="tag amber">{{ row.duplicate_count }} RD copies</span>{% endif %}<span class="tag language-{{ row.language_badge_key }}">{{ row.language_badge_label }}</span></div>
     <small class="route-reason">{{ row.decision.reason }}</small>
     <div class="tags">{% if row.existing %}<span class="tag green">Already in Arr</span>{% endif %}{% if row.linked_paths %}<span class="tag blue">Already imported</span>{% endif %}{% if row.upgrade %}<span class="tag amber">Upgrade available</span>{% endif %}{% if row.changed %}<span class="tag blue">New files</span>{% endif %}</div>
-    <div class="card-actions"><a class="btn small" href="/item?path={{ i.path|urlencode }}">Review</a></div>
+    {% if row.language_group_counts and row.duplicate_count > 1 %}<small class="route-reason">Language copies: {% for key,count in row.language_group_counts.items() %}{{ key|replace('_',' ') }} {{ count }}{% if not loop.last %} · {% endif %}{% endfor %}</small>{% endif %}
+    <div class="card-actions"><a class="btn small" href="/item?path={{ i.path|urlencode }}">Review</a>{% if row.language_badge_key=='recheck_required' %}<button class="btn small" type="submit" formaction="/inbox/language-scan" name="scope" value="selected">Re-check language</button>{% endif %}{% if row.rejected_sources %}<button class="btn small danger" type="submit" formaction="/inbox/language-delete" name="single_source_path" value="{{ row.rejected_sources[0] }}" onclick="return confirm('Delete this exact rejected Real-Debrid source? ArrNexus will re-check language, dependencies and provider identity before deletion.')">Delete rejected RD source</button>{% endif %}</div>
   </div>
 </article>
 {% else %}<div class="panel empty">No DMM items match this filter.</div>{% endfor %}

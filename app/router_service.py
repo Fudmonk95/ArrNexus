@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 from pathlib import Path
+from dataclasses import replace
 from typing import Any
 
 from .arr import RadarrClient, SonarrClient, LidarrClient, poster_url, ArrError
@@ -129,8 +130,15 @@ async def route_item(item: ScanItem) -> dict:
     }
 
 
-async def import_one(source_path: str, destination_key: str | None = None, candidate_index: int = -1) -> dict:
-    item = inspect_item(source_path)
+async def import_one(source_path: str, destination_key: str | None = None, candidate_index: int = -1, media_type_override: str | None = None) -> dict:
+    detected_item = inspect_item(source_path)
+    override = str(media_type_override or "").strip().lower()
+    if override not in {"movie", "tv"}:
+        override = ""
+    item = replace(detected_item, media_type=override) if override and override != detected_item.media_type else detected_item
+    if item.media_type == "tv" and bool(getattr(item, "combined_season", False)):
+        seasons = ", ".join(str(x) for x in (getattr(item, "combined_season_numbers", None) or item.season_numbers or [])) or "unknown"
+        raise ImportErrorSafe(f"Combined-season video detected (season {seasons}). Use Advanced TV Recovery to analyse/split it before Sonarr import.")
     routed = await route_item(item)
     recommended: RouteDecision = routed["decision"]
     chosen = destination_key or recommended.key
@@ -256,6 +264,8 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
         "ok": True,
         "import_id": import_id,
         "item": item.dict(),
+        "detected_media_type": detected_item.media_type,
+        "media_type_override": override,
         "destination_key": actual_destination_key,
         "destination_path": dest_dir,
         "created": created,

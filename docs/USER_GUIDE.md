@@ -259,9 +259,9 @@ The Debrid/DMM area connects ArrNexus to supported Debrid workflows and the DMM-
 
 `dmm-inbox`, `providers`, `dumb-namespace`
 
-## DMM Inbox & bulk imports
+## DMM Inbox, language checks & bulk imports
 
-DMM Inbox reviews existing Debrid/DMM content, matches it to the correct movie/show, groups duplicates, evaluates policy/language and creates managed library links through explicit jobs.
+DMM Inbox reviews existing Debrid/DMM content, matches it to the correct movie/show, groups duplicate sources, evaluates Language Guard and creates managed library links through explicit jobs.
 
 ### Before you start
 
@@ -270,29 +270,34 @@ DMM Inbox reviews existing Debrid/DMM content, matches it to the correct movie/s
 ### Setup
 
 1. Confirm the DUMB/source root and logical library paths under Settings.
-2. Verify Radarr/Sonarr and optional media server connections.
+2. Verify Radarr/Sonarr and optional media-server connections.
 
 ### How to use it
 
-- Open an item for detailed identity, route and Language Guard review.
-- Select multiple reviewed items for a bulk import job when the destination is clear.
+- Use Check selected languages, Check all unchecked or Force re-check all without starting an import.
+- A stale result created under an older Language Guard policy displays Re-check required rather than pretending the source was never checked.
+- Manual bulk destinations are typed explicitly (for example TV · BBC and Movies · Kids), so a chosen TV route overrides a bad scanner guess.
+- Combined-season videos are redirected to Advanced TV Recovery instead of being imported as a fake single episode.
 
 ### What working looks like
 
-- Imports create/record the expected managed-library link and activity trail while the source remains intact.
+- Imports create and record the expected managed-library link and activity trail while the source remains intact.
+- Language jobs reach a clear pass/reject/manual-review result and refresh Inbox state.
 
 ### If it does not work
 
 - If Inbox is slow, inspect performance/slow_request logs and source visibility rather than repeatedly rescanning.
 - If an item cannot be matched, use Item Review and the owning Arr search.
+- Archive-style names such as Season 6 episode 1 and Season 1 Complete are recognised as TV in v10.3.
 
 ### Safety / privacy
 
-- Do not bulk import ambiguous matches. The source and managed-library link are intentionally treated as different objects.
+- Do not bulk import ambiguous matches.
+- Delete rejected source is enabled only for a current destructive-safe rejection with no surviving managed-link dependency and an exact provider identity.
 
 ### Related guides
 
-`item-review`, `language-guard`, `jobs`, `libraries`
+`item-review`, `language-guard`, `jobs`, `libraries`, `tv-recovery`
 
 ## DMM Item Review & Language Guard
 
@@ -394,41 +399,42 @@ ArrNexus distinguishes source content, virtual/cache layers and managed Arr/medi
 
 `dumb-namespace`, `routing`
 
-## Lists & Watchlists
+## Lists, Watchlists & Trakt Device OAuth
 
-v10.2 treats external lists as ArrNexus request sources: titles are identified, previewed, routed to the chosen specialist Radarr/Sonarr library and optionally acquired using the normal Usenet/Debrid planner.
+External lists are first-class ArrNexus request sources: titles are identified, previewed, routed to specialist Radarr/Sonarr destinations and optionally acquired through the normal acquisition planner.
 
 ### Before you start
 
 - Configure the Radarr/Sonarr destinations that may receive list items.
-- For private Trakt data, configure a Trakt application and authorize the user account.
+- Private Trakt data requires an underlying Trakt API application. Trakt may currently restrict creation of new API apps; normal account linking in ArrNexus uses Device OAuth.
 
 ### Setup
 
 1. Open Lists & Watchlists as an administrator.
-2. Configure only the list providers you use: Trakt OAuth, TMDb, Plex Watchlist, Simkl, IMDb public lists, RSS/Atom or Custom JSON.
-3. Create a list definition, choose movie/TV/mixed, destinations, acquisition strategy and sync interval.
-4. Preview before enabling scheduled sync.
+2. For Trakt, place the application Client ID/Secret under Advanced Trakt application setup, then use Connect Trakt for the normal device-code authorization flow.
+3. Configure only the other list providers you use: TMDb, Plex Watchlist, Simkl, IMDb public lists, RSS/Atom or Custom JSON.
+4. Create a list definition, choose movie/TV/mixed destinations, acquisition strategy and sync interval, then Preview before scheduled sync.
 
 ### How to use it
 
+- Device OAuth shows a user code and authorization link; ArrNexus polls until Trakt approves, denies or expires the request.
 - Preview separates existing, already requested, would-add and unmatched titles.
-- Sync now adds only new matched titles; scheduled sync repeats the same bounded flow.
 - Existing titles are not moved between specialist libraries merely because another list contains them.
 
 ### What working looks like
 
-- New movies/shows appear in the configured Radarr/Sonarr destination and the list run history records totals/adds/errors.
+- Trakt shows Connected with the account identity when available, refresh tokens rotate safely, and list runs record totals/adds/errors.
 
 ### If it does not work
 
-- If Trakt OAuth fails, verify the exact callback URL shown by ArrNexus is registered in the Trakt application.
-- If matching fails, confirm the list exposes IMDb/TMDb/TVDb IDs or a clean title/year.
+- Authorization pending is normal until the code is approved.
+- If Trakt refuses a new connection, review Trakt Settings → Connected Apps because the account may have reached its community-app limit.
+- If matching fails, confirm the list exposes external IDs or a clean title/year.
 
 ### Safety / privacy
 
 - List sync never deletes existing library media.
-- Provider credentials remain in persistent settings and are masked in the UI.
+- Application credentials and per-user OAuth tokens remain masked/private; token replacement is stored atomically.
 
 ### Related guides
 
@@ -1175,9 +1181,9 @@ Settings manages application branding/public URL, SMTP, users, paths, music appl
 
 `notifications`, `backups`, `updates`, `language-guard`, `music-api-settings`
 
-## Language Guard
+## Language Guard & rejected-source cleanup
 
-Language Guard uses ffprobe against the actual media stream metadata before a DMM source is linked into the managed library.
+Language Guard uses ffprobe against actual stream metadata before a DMM source is linked. v10.3 also makes language inspection a first-class bulk Inbox workflow.
 
 ### Before you start
 
@@ -1186,27 +1192,108 @@ Language Guard uses ffprobe against the actual media stream metadata before a DM
 ### Setup
 
 1. English audio is required by default; English subtitles are optional by default.
-2. Choose whether confirmed rejected Real-Debrid sources should be removed after an exact provider match.
 
 ### How to use it
 
-- Run the check from Item Review or allow the import workflow to consult the cached result.
-- A rejection is recorded separately from a true import failure and the DMM Inbox cache is invalidated immediately.
+- Use Item Review for one source or DMM Inbox actions to Check selected languages, Check all unchecked or Force re-check all.
+- A cached result from an older policy is labelled Re-check required.
+- Confirmed rejected RD sources can be removed individually or in a selected cleanup job.
 
 ### What working looks like
 
-- Audio/subtitle streams are reported explicitly and policy passes/fails with a reason.
-- Confirmed non-English policy failures display as Language rejected. Probe failures or unknown stream language metadata become Manual review and never authorize destructive provider cleanup.
+- Confirmed non-English failures display Language rejected.
+- Probe failures/unknown metadata become Manual review and never authorize deletion.
+- After a successful exact RD deletion ArrNexus invalidates DMM/Inbox state so the removed source disappears cleanly.
 
 ### If it does not work
 
 - Filename language tags are not enough; if ffprobe cannot access the actual path, fix namespace/mount visibility.
-- Unknown metadata can block import for review, but it is not treated as proof that a provider source is safe to delete.
-- If rejected-source cleanup is skipped, inspect the job result: ArrNexus will state whether RD was disconnected, no exact torrent matched, or the match was ambiguous.
+- If cleanup is blocked, inspect the job result for a surviving symlink dependency, stale policy result, disconnected RD account or ambiguous provider identity.
 
 ### Safety / privacy
 
-- Rejected-source cleanup never uses fuzzy title matching. It requires one exact Real-Debrid torrent identity; ambiguous matches remain untouched.
+- Rejected-source cleanup never uses fuzzy title matching.
+- Every destructive action rechecks the current policy result, source fingerprint, surviving managed links and exact provider identity at apply time.
+
+# Library & automation
+
+## Archive Rescue & Internet Archive
+
+Archive Rescue finds monitored Sonarr gaps, searches the configured Prowlarr Internet Archive indexer, inspects the real .torrent manifest and can hand selected files to Real-Debrid.
+
+### Before you start
+
+- A working Prowlarr connection with the Internet Archive Cardigann indexer.
+- For Real-Debrid hand-off, a connected RD account.
+
+### Setup
+
+1. In Prowlarr enable Internet Archive, keep Search only in title enabled, enable Download using .torrent only / No Magnets for manifest inspection, and prefer downloads descending for established archive results.
+
+### How to use it
+
+- Open Archive Rescue and scan Sonarr missing shows, or search Internet Archive manually.
+- Review a result before sending it to RD; choose only the torrent files you actually want.
+- After RD receives the source it can flow through Decypharr/DMM, Language Guard and normal TV recovery/import.
+
+### What working looks like
+
+- Missing Sonarr shows produce reviewable Internet Archive candidates and selected torrent files are accepted by RD without downloading unrelated files.
+
+### If it does not work
+
+- If a result only provides a magnet, enable Prowlarr's .torrent-only option so ArrNexus can inspect its file manifest.
+- Internet Archive seed counts exposed by the Cardigann definition are not reliable live swarm telemetry.
+
+### Safety / privacy
+
+- Archive Rescue never blindly grabs every result or deletes the original source.
+- If selected torrent paths cannot be matched exactly to the new RD torrent, ArrNexus removes the just-added RD entry and fails closed.
+
+### Related guides
+
+`self-healing`, `dmm-inbox`, `tv-recovery`, `acquisition`
+
+## Advanced TV Recovery & combined-season splitting
+
+Advanced TV Recovery handles archive-style TV names and combined-season videos that cannot be represented by ordinary episode symlinks.
+
+### Before you start
+
+- ffmpeg/ffprobe are available.
+- The combined source is visible to ArrNexus.
+- Use a writable staging root with enough real storage for split output.
+
+### Setup
+
+1. Configure the Season Split Staging Root on the TV Recovery page.
+
+### How to use it
+
+- Analyse a combined-season source.
+- If chapter count exactly matches Sonarr's expected episode count, review the high-confidence chapter plan.
+- Runtime-estimated equal boundaries are lower-confidence and require explicit confirmation; uncertain sources remain manual.
+- Split outputs use FFmpeg stream copy where possible and are ffprobe-verified before being reported complete.
+
+### What working looks like
+
+- Generated files have Sonarr-style SxxExx names, valid duration and a retained original source.
+
+### If it does not work
+
+- If one long source has no chapters, review runtime estimates carefully; intros, adverts or unequal episode lengths can make equal cuts inaccurate.
+- A symlink cannot point to a segment of a file, so split episodes consume real staging storage.
+
+### Safety / privacy
+
+- The original combined provider source is never deleted automatically.
+- Stale analysis plans are refused if the source fingerprint changes.
+
+### Related guides
+
+`archive-rescue`, `dmm-inbox`, `libraries`
+
+# Administration
 
 ## Notifications: ntfy, Gotify, Discord & email
 

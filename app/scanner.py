@@ -12,7 +12,10 @@ from .namespace import view_path, logical_from_view
 
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".m2ts", ".webm"}
 AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".alac"}
-EPISODE_RE = re.compile(r"(?i)(?:\bS(?P<s>\d{1,2})E\d{1,3}\b|\b(?P<s2>\d{1,2})x\d{1,3}\b)")
+EPISODE_RE = re.compile(r"(?i)(?:\bS(?P<s>\d{1,2})E(?P<e>\d{1,3})\b|\b(?P<s2>\d{1,2})x(?P<e2>\d{1,3})\b)")
+ARCHIVE_EPISODE_RE = re.compile(r"(?i)\b(?:season|series|s)\s*0*(?P<s>\d{1,2})\s*(?:episode|ep|e)\s*0*(?P<e>\d{1,3})\b")
+SEASON_ONLY_RE = re.compile(r"(?i)\b(?:season|series)\s*0*(?P<s>\d{1,2})\b|\bS0*(?P<s2>\d{1,2})(?=\s*(?:complete|pack|season|series|$|[-_.]))")
+SEASON_RANGE_RE = re.compile(r"(?i)\bS0*(?P<a>\d{1,2})\s*[-–—]\s*S?0*(?P<b>\d{1,2})\b")
 YEAR_RE = re.compile(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)")
 RELEASE_NOISE = re.compile(
     r"(?i)\b(4320p|2160p|1080p|720p|576p|480p|bluray|blu[- ]?ray|web[- .]?dl|webrip|hdtv|hdr10\+?|hdr|dv|dolby[ .]?vision|x264|x265|h264|h265|hevc|av1|remux|aac|dts|truehd|atmos|ddp?5?\.?1|proper|repack)\b.*$"
@@ -40,6 +43,8 @@ class ScanItem:
     size_bytes: int
     quality: int
     fingerprint: str
+    combined_season: bool = False
+    combined_season_numbers: list[int] | None = None
 
     def dict(self):
         return asdict(self)
@@ -99,6 +104,8 @@ def parse_title_year(name: str) -> tuple[str, int | None]:
     title = re.sub(r"[\[\](){}]+", " ", title)
     # Strip residual release metadata after a clear separator.
     title = re.split(r"\s[-–—]\s(?=(?:1080|720|2160|bluray|web|hdtv|x26|h26))", title, maxsplit=1, flags=re.I)[0]
+    title = re.sub(r"(?i)\s+(?:complete\s+)?(?:season|series)\s*\d{1,2}(?:\s+complete)?\b.*$", "", title)
+    title = re.sub(r"(?i)\s+S\d{1,2}(?:\s+complete|\s+pack)?\b.*$", "", title)
     title = re.sub(r"\s+", " ", title).strip(" -._,")
     return title or raw or name, year
 
@@ -132,27 +139,65 @@ def fingerprint_files(files: list[Path]) -> str:
     return h.hexdigest()
 
 
+def episode_identity(filename: str) -> tuple[int, int] | None:
+    """Return (season, episode) for standard and archive-style TV names."""
+    m = EPISODE_RE.search(filename)
+    if m:
+        season = int(m.group("s") or m.group("s2"))
+        episode = int(m.group("e") or m.group("e2"))
+        return season, episode
+    m = ARCHIVE_EPISODE_RE.search(filename)
+    if m:
+        return int(m.group("s")), int(m.group("e"))
+    return None
+
+
+def season_hints(value: str) -> list[int]:
+    found: set[int] = set()
+    for m in SEASON_RANGE_RE.finditer(value or ""):
+        a, b = int(m.group("a")), int(m.group("b"))
+        if 0 < a <= b <= 99 and b - a <= 30:
+            found.update(range(a, b + 1))
+    for m in SEASON_ONLY_RE.finditer(value or ""):
+        raw = m.group("s") or m.group("s2")
+        if raw is not None:
+            found.add(int(raw))
+    return sorted(found)
+
+
 def inspect_item(path: Path | str) -> ScanItem:
     logical = Path(path)
     files = video_files(logical)
-    seasons = set()
+    seasons: set[int] = set(season_hints(logical.name))
     has_episode = False
+    combined_seasons: set[int] = set()
     max_quality = quality_from_name(logical.name)
     size = 0
     for f in files:
-        m = EPISODE_RE.search(f.name)
-        if m:
+        ident = episode_identity(f.name)
+        if ident:
             has_episode = True
-            s = m.group("s") or m.group("s2")
-            if s is not None:
-                seasons.add(int(s))
+            seasons.add(ident[0])
+        else:
+            hints = season_hints(f.name)
+            if hints:
+                seasons.update(hints)
+                combined_seasons.update(hints)
         max_quality = max(max_quality, quality_from_name(f.name))
         size += _safe_stat_size(f)
+
+    # A release/folder explicitly labelled Season/Series/Sxx Complete is TV
+    # even when it contains one concatenated video rather than episode files.
+    folder_season_hints = season_hints(logical.name)
+    if folder_season_hints and not has_episode:
+        combined_seasons.update(folder_season_hints)
+    is_tv = bool(has_episode or seasons or combined_seasons)
+
     title, year = parse_title_year(logical.name)
     return ScanItem(
         name=logical.name,
         path=str(logical),
-        media_type="tv" if has_episode else "movie",
+        media_type="tv" if is_tv else "movie",
         title_guess=title,
         year_guess=year,
         video_count=len(files),
@@ -160,6 +205,8 @@ def inspect_item(path: Path | str) -> ScanItem:
         size_bytes=size,
         quality=max_quality,
         fingerprint=fingerprint_files(files),
+        combined_season=bool(combined_seasons),
+        combined_season_numbers=sorted(combined_seasons),
     )
 
 
@@ -222,10 +269,11 @@ def normalize_title(value: str) -> str:
 
 
 def episode_season(filename: str) -> int | None:
-    m = EPISODE_RE.search(filename)
-    if not m:
-        return None
-    return int(m.group("s") or m.group("s2"))
+    ident = episode_identity(filename)
+    if ident:
+        return ident[0]
+    hints = season_hints(filename)
+    return hints[0] if len(hints) == 1 else None
 
 
 def human_size(value: int) -> str:
