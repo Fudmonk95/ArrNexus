@@ -1,5 +1,20 @@
 # Changelog
 
+## 7.0.0 — Personal Music, Language Guard & Live Operations
+
+- Added per-user Spotify OAuth with saved tracks, saved albums, playlists, top tracks/artists and recently played music.
+- Kept ListenBrainz global trends explicitly separated from Spotify personal/catalogue data.
+- Added English Language Guard using ffprobe: English audio + English subtitles policy, Inbox badges/filtering, manual review and non-destructive Arr replacement search.
+- Added ffmpeg/ffprobe to the container image.
+- Switched InfiniDysk telemetry to its authenticated native Overview API with live windows/throughput/provider data.
+- Added Prowlarr indexer control for enable state, priority, RSS and search modes.
+- Corrected Sonarr TV interactive search to query actual seasons rather than treating `seriesId` alone as a series-wide release search.
+- Hardened DUMB/InfiniDysk/Decypharr connection verification.
+- Added short-lived DMM source, library inventory and symlink-index caches plus startup pre-warming.
+- Added actual service/provider artwork where a reliable upstream logo is available, including InfiniDysk and Decypharr.
+- Added persistent version/update-channel display for Stable/Beta/Development.
+- Retained v6 acquisition strategies, Unified Logs, TV pack planning, Self-Healing, Quality Lab and DMM routing.
+
 ## 6.1.0 — Interface & Performance Hotfix
 
 ### New application shell

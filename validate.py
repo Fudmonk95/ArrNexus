@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline ArrNexus v6.1.1 package validator.
+"""Offline ArrNexus v7.0.0 package validator.
 
 Run inside the project folder after dependencies are installed:
     python validate.py
@@ -25,7 +25,7 @@ def main() -> int:
     root = Path(__file__).resolve().parent
     require(compileall.compile_dir(root / "app", quiet=1), "Python compilation failed")
 
-    with tempfile.TemporaryDirectory(prefix="arrnexus-v6-validate-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="arrnexus-v7-validate-") as tmp:
         os.environ["DB_PATH"] = str(Path(tmp) / "router.db")
         os.environ["DB_DIR"] = tmp
         os.environ["SESSION_SECRET"] = "validation-only-session-secret"
@@ -67,7 +67,7 @@ def main() -> int:
                 "/", "/settings", "/profile", "/logs", "/jobs", "/rules",
                 "/libraries", "/arrs", "/queue", "/scraping", "/maintenance",
                 "/problems", "/timeline?title=Validation", "/discover", "/music",
-                "/debrid", "/ecosystem", "/infinidysk", "/quality-lab", "/self-healing", "/static/manifest.webmanifest", "/static/sw.js",
+                "/debrid", "/ecosystem", "/infinidysk", "/indexers", "/quality-lab", "/self-healing", "/static/manifest.webmanifest", "/static/sw.js",
             ):
                 r = client.get(url, follow_redirects=False)
                 require(r.status_code < 500, f"{url}: HTTP {r.status_code}")
@@ -150,6 +150,54 @@ def main() -> int:
                 main_app.provider_search = old_provider_search
                 main_app.LidarrClient = old_lidarr
 
+            # v7 Spotify personal-library plumbing. Client credentials alone
+            # provide catalogue access; a separate per-user OAuth grant is what
+            # unlocks saved music/top/recent endpoints. Keep this fully offline.
+            from app.db import setting_set as _setting_set
+            from app.music import spotify_authorize_url as _spotify_authorize_url, _spotify_track_card as _spotify_track_card
+            import app.music as _music
+            _setting_set("music.spotify.client_id", "validation-client-id")
+            _setting_set("music.spotify.client_secret", "validation-client-secret", True)
+            _setting_set("music.spotify.redirect_uri", "https://example.invalid/music/spotify/callback")
+            auth_url = _spotify_authorize_url(1, "validation-state", "https://example.invalid/music/spotify/callback")
+            require("accounts.spotify.com/authorize" in auth_url, "Spotify authorization URL")
+            require("validation-state" in auth_url and "user-library-read" in auth_url and "user-top-read" in auth_url and "user-read-recently-played" in auth_url, "Spotify personal scopes")
+            card = _spotify_track_card({
+                "id":"track1", "name":"Validation Track",
+                "artists":[{"name":"Validation Artist"}],
+                "album":{"name":"Validation Album","release_date":"2026-01-01","images":[{"url":"https://example.invalid/art.jpg"}]},
+                "external_urls":{"spotify":"https://open.spotify.com/track/track1"},
+            }, section="saved")
+            require(card.get("source") == "Spotify" and card.get("title") == "Validation Track" and card.get("section") == "saved", "Spotify personal result normalization")
+
+            # A real linked account must populate all personal hub sections.
+            # Mock the Spotify Web API only; the aggregator/normalizers remain real.
+            _setting_set("music.spotify.user.1.refresh_token", "validation-refresh-token", True)
+            _old_spotify_get = _music._spotify_user_get
+            async def _fake_spotify_get(_uid, path, params=None):
+                artist={"id":"artist1","name":"Validation Artist","genres":["rock"],"images":[{"url":"https://example.invalid/artist.jpg"}],"external_urls":{"spotify":"https://open.spotify.com/artist/artist1"}}
+                album={"id":"album1","name":"Validation Album","release_date":"2026-01-01","artists":[{"name":"Validation Artist"}],"images":[{"url":"https://example.invalid/album.jpg"}],"external_urls":{"spotify":"https://open.spotify.com/album/album1"}}
+                track={"id":"track1","name":"Validation Track","artists":[{"name":"Validation Artist"}],"album":album,"external_urls":{"spotify":"https://open.spotify.com/track/track1"}}
+                if path == "/me": return {"id":"spotify-validator","display_name":"Spotify Validator"}
+                if path == "/me/tracks": return {"items":[{"track":track}]}
+                if path == "/me/albums": return {"items":[{"album":album}]}
+                if path == "/me/playlists": return {"items":[{"id":"playlist1","name":"Validation Playlist","owner":{"display_name":"Spotify Validator"},"images":[{"url":"https://example.invalid/playlist.jpg"}],"external_urls":{"spotify":"https://open.spotify.com/playlist/playlist1"}}]}
+                if path == "/me/top/tracks": return {"items":[track]}
+                if path == "/me/top/artists": return {"items":[artist]}
+                if path == "/me/player/recently-played": return {"items":[{"track":track}]}
+                return {}
+            _music._spotify_user_get = _fake_spotify_get
+            try:
+                import asyncio as _spotify_asyncio
+                hub = _spotify_asyncio.run(_music.spotify_user_hub(1))
+                require(hub.get("linked") is True and (hub.get("profile") or {}).get("display_name") == "Spotify Validator", "Spotify personal profile")
+                for section in ("saved_tracks", "saved_albums", "playlists", "top_tracks", "top_artists", "recent"):
+                    require(len(hub.get(section) or []) == 1, f"Spotify personal hub section: {section}")
+            finally:
+                _music._spotify_user_get = _old_spotify_get
+            # Return to the normal app-configured/unlinked state for later UI smoke tests.
+            _music.spotify_disconnect_user(1)
+
             # Debrid TV-pack UI with coverage visualizer, cache badge and smart
             # complete/missing-season actions. No live RD calls are made.
             old_rd_connected = main_app.rd.connected
@@ -198,6 +246,25 @@ def main() -> int:
                 main_app.rd.torrents = old_rd_torrents
                 main_app._search_debrid_releases = old_release_search
                 main_app._tv_library_coverage = old_tv_coverage
+
+        # v7 Language Guard is pure-testable without ffprobe/media files.
+        from app.language_guard import LanguagePolicy, evaluate_probe_payload
+        strict_language = LanguagePolicy(
+            enabled=True, require_english_audio=True, require_english_subtitles=True,
+            require_default_english_audio=False, unknown_is_failure=True, auto_upgrade_search=True,
+        )
+        english_probe={"streams":[
+            {"codec_type":"audio","tags":{"language":"eng"},"disposition":{"default":1}},
+            {"codec_type":"subtitle","tags":{"language":"en"},"disposition":{"default":0}},
+        ]}
+        foreign_probe={"streams":[
+            {"codec_type":"audio","tags":{"language":"ita"},"disposition":{"default":1}},
+            {"codec_type":"subtitle","tags":{"language":"ita"},"disposition":{"default":0}},
+        ]}
+        eng_result=evaluate_probe_payload(english_probe, strict_language)
+        foreign_result=evaluate_probe_payload(foreign_probe, strict_language)
+        require(eng_result.get("compliant") is True and eng_result.get("english_audio") and eng_result.get("english_subtitles"), "Language Guard English pass")
+        require(foreign_result.get("compliant") is False and "English audio" in (foreign_result.get("missing") or []) and "English subtitles" in (foreign_result.get("missing") or []), "Language Guard foreign-media reject")
 
         # v5 connector/plugin architecture: install a data-only connector and
         # confirm it appears in the Ecosystem page without executing code.
@@ -302,12 +369,16 @@ def main() -> int:
         from urllib.parse import urlparse as _urlparse, parse_qs as _parse_qs
         class _ProbeHandler(_Handler):
             def log_message(self,*_a): pass
-            def _send(self,code,body=b'{}'):
-                self.send_response(code); self.send_header('Content-Type','application/json'); self.end_headers(); self.wfile.write(body)
+            def _send(self,code,body=b'{}',content_type='application/json'):
+                self.send_response(code); self.send_header('Content-Type',content_type); self.end_headers(); self.wfile.write(body)
             def do_GET(self):
                 parsed=_urlparse(self.path)
                 if parsed.path == '/version': return self._send(200,b'{"version":"2.5-test"}')
                 if parsed.path == '/healthz': return self._send(200,b'{"status":"healthy","version":"1.2-test"}')
+                if parsed.path == '/health': return self._send(200,b'{"status":"healthy","version":"validation"}')
+                if parsed.path == '/frontend-health': return self._send(200,b'<!DOCTYPE html><html><body>DUMB frontend</body></html>', 'text/html')
+                if parsed.path == '/api/get-overview-stats':
+                    return self._send(200,b'{"window":"24h","tiles":{"activeReads":7,"articlesPerMinute":120,"bytesServedPerMinute":64000000},"throughput":[{"bucket":1,"articles":100,"bytesServed":32000000}],"providers":[{"provider":"validation.example","articles":100}],"heatmap":{"cells":[]}}') if self.headers.get('X-Api-Key') == 'correct-infinidysk' else self._send(401,b'{"error":"bad key"}')
                 if parsed.path == '/api/torrents':
                     return self._send(200,b'[]') if self.headers.get('Authorization') == 'Bearer correct-decypharr' else self._send(401,b'{"error":"unauthorized"}')
                 if parsed.path == '/api':
@@ -325,33 +396,68 @@ def main() -> int:
             bad2=_asyncio.run(_probe_connector('infinidysk')); require(not bad2.get('ok') and bad2.get('auth_ok') is False, 'InfiniDysk random key must fail')
             _save_connector('infinidysk',f'http://127.0.0.1:{port}','correct-infinidysk',True)
             good2=_asyncio.run(_probe_connector('infinidysk')); require(good2.get('ok') and good2.get('auth_ok') is True, 'InfiniDysk valid key')
+            from app.infinidysk import InfiniDyskClient as _InfiniDyskClient
+            overview=_asyncio.run(_InfiniDyskClient().overview('24h','all'))
+            require((overview.get('tiles') or {}).get('activeReads') == 7 and overview.get('throughput'), 'InfiniDysk native Overview API')
+            _save_connector('dumb',f'http://127.0.0.1:{port}','',True)
+            dumb_good=_asyncio.run(_probe_connector('dumb')); require(dumb_good.get('ok') and dumb_good.get('api_ok') is True, 'DUMB API health verification')
         finally:
             srv.shutdown(); srv.server_close()
 
         # UI smoke: new navigation, acquisition selector, settings policy and logs.
         with TestClient(main_app.app) as client3:
             login=client3.post('/login',data={'username':'validator','password':'validation-password-123'},follow_redirects=False)
-            require(login.status_code==303,'v6 validator login')
+            require(login.status_code==303,'v7 validator login')
             disc=client3.get('/discover?q=test&media_type=movie')
             require(disc.status_code==200 and 'coordinate Usenet + Debrid acquisition' in disc.text, 'Discover acquisition UI')
             sett=client3.get('/settings')
-            require(sett.status_code==200 and 'Acquisition strategy' in sett.text, 'Acquisition settings UI')
+            require(sett.status_code==200 and 'Acquisition strategy' in sett.text and 'Language Guard' in sett.text, 'Acquisition / Language Guard settings UI')
             logs=client3.get('/logs')
             require(logs.status_code==200 and 'Unified Logs' in logs.text, 'Unified Logs UI')
-            require('nx-command-trigger' in logs.text and 'nx-nav-section' in logs.text, 'v6.1 isolated sidebar shell')
+            require('nx-command-trigger' in logs.text and 'nx-nav-section' in logs.text, 'v7 isolated sidebar shell')
             eco=client3.get('/ecosystem')
             require(eco.status_code==200 and 'Trust the connection status' in eco.text and 'Save & verify' in eco.text, 'Connector verification UI')
             dec=client3.get('/decypharr')
             require(dec.status_code==200, 'Decypharr control page')
+            idx=client3.get('/indexers')
+            require(idx.status_code==200 and 'Indexer control' in idx.text, 'Prowlarr indexer control page')
+            spotify=client3.get('/music?source=spotify')
+            require(spotify.status_code==200 and 'Connect Spotify' in spotify.text and 'Trending now' in spotify.text, 'Spotify personal/trending UI')
+            inf=client3.get('/infinidysk')
+            require(inf.status_code==200 and 'LIVE OVERVIEW' in inf.text, 'InfiniDysk live Overview UI')
 
         js=(root/'app'/'static'/'app.js').read_text(encoding='utf-8')
         css=(root/'app'/'static'/'app.css').read_text(encoding='utf-8')
         inst=(root/'app'/'instances.py').read_text(encoding='utf-8')
-        require('X-ArrNexus-Navigation' in js and 'pageCache=new Map()' in js, 'v6.1 soft navigation/prefetch')
-        require('.nx-shell' in css and '.nx-nav-links' in css and 'grid-template-columns:repeat(3,minmax(280px,1fr))' in css, 'v6.1 responsive shell and connection grids')
-        require('_INSTANCE_CACHE_TTL = 4.0' in inst, 'v6.1 namespace discovery cache')
+        require('X-ArrNexus-Navigation' in js and 'pageCache=new Map()' in js, 'v7 soft navigation/prefetch')
+        require('.nx-shell' in css and '.nx-nav-links' in css and 'grid-template-columns:repeat(3,minmax(280px,1fr))' in css, 'v7 responsive shell and connection grids')
+        require('_INSTANCE_CACHE_TTL = 4.0' in inst, 'v7 namespace discovery cache')
+        music_tpl=(root/'app'/'templates'/'music.html').read_text(encoding='utf-8')
+        indexer_tpl=(root/'app'/'templates'/'indexers.html').read_text(encoding='utf-8')
+        arr_source=(root/'app'/'arr.py').read_text(encoding='utf-8')
+        inf_source=(root/'app'/'infinidysk.py').read_text(encoding='utf-8')
+        base_tpl=(root/'app'/'templates'/'base.html').read_text(encoding='utf-8')
+        eco_source=(root/'app'/'ecosystem.py').read_text(encoding='utf-8')
+        require('Saved tracks' in music_tpl and 'Your Spotify highlights' in music_tpl and 'GLOBAL TREND PULSE · LISTENBRAINZ' in music_tpl, 'v7 Spotify personal hub sections')
+        require('releases_for_series' in arr_source and 'releases_for_season' in arr_source, 'v7 Sonarr season-search fix')
+        require('/api/get-overview-stats' in inf_source, 'v7 native InfiniDysk Overview client')
+        require('Save to Prowlarr' in indexer_tpl, 'v7 Prowlarr indexer management')
+        require('nx-version-badge' in base_tpl and 'nx-version-badge' in css, 'v7 version/channel badge')
+        require('DUMB /health did not return JSON' in eco_source, 'v7 DUMB frontend false-positive guard')
+        dockerfile=(root/'Dockerfile').read_text(encoding='utf-8')
+        scanner_source=(root/'app'/'scanner.py').read_text(encoding='utf-8')
+        library_source=(root/'app'/'library.py').read_text(encoding='utf-8')
+        inbox_tpl=(root/'app'/'templates'/'inbox.html').read_text(encoding='utf-8')
+        item_tpl=(root/'app'/'templates'/'item.html').read_text(encoding='utf-8')
+        settings_tpl=(root/'app'/'templates'/'settings.html').read_text(encoding='utf-8')
+        require('ffmpeg' in dockerfile, 'v7 Docker image includes ffprobe/ffmpeg')
+        require('_SCAN_CACHE_TTL = 30.0' in scanner_source, 'v7 DMM scanner cache')
+        require('_INVENTORY_TTL = 45.0' in library_source and '_LINK_TTL = 30.0' in library_source, 'v7 library/index cache')
+        require('Language <b>{{ counts.language }}</b>' in inbox_tpl and 'language_badge_label' in inbox_tpl, 'v7 Language Guard Inbox UI')
+        require('Check language now' in item_tpl and 'Non-destructive replacement path' in item_tpl, 'v7 Language Guard item review UI')
+        require('action="/settings/language-guard"' in settings_tpl and 'Require English audio' in settings_tpl and 'Require English subtitles' in settings_tpl, 'v7 Language Guard settings UI')
 
-    print("PASS: v6.1 UX shell, fast navigation/cache, acquisition fallback, verified connectors, Unified Logs diagnostics and v6 regressions")
+    print("PASS: ArrNexus v7.0 Spotify personal library, native InfiniDysk telemetry, English Language Guard, Prowlarr indexer control, Sonarr TV search, strict connectors and performance caches")
     return 0
 
 

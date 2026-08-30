@@ -27,7 +27,7 @@ class InfiniDyskClient:
 
     async def health(self) -> dict[str, Any]:
         self._require()
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers={"User-Agent":"ArrNexus/6.1"}) as client:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers={"User-Agent":"ArrNexus/7.0"}) as client:
             r = await client.get(self.url + "/healthz")
         if r.status_code >= 400:
             raise InfiniDyskError(f"Health check failed: HTTP {r.status_code}")
@@ -44,7 +44,7 @@ class InfiniDyskClient:
         query = {"mode": mode, "output": "json", **params}
         if self.api_key:
             query["apikey"] = self.api_key
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers={"User-Agent":"ArrNexus/6.1"}) as client:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers={"User-Agent":"ArrNexus/7.0"}) as client:
             r = await client.get(self.url + "/api", params=query)
         if r.status_code >= 400:
             raise InfiniDyskError(f"SAB API failed: HTTP {r.status_code} {r.text[:300]}")
@@ -68,9 +68,31 @@ class InfiniDyskClient:
     async def resume(self) -> dict[str, Any]:
         return await self.sab("resume")
 
+    async def overview(self, window: str = "24h", sections: str = "all") -> dict[str, Any]:
+        """Native InfiniDysk dashboard data. This is preferred over scraping
+        Prometheus because it is the same structured API used by InfiniDysk's own
+        Overview screen."""
+        self._require()
+        if not self.api_key:
+            raise InfiniDyskError("InfiniDysk API key is not configured")
+        if window not in {"1h", "24h", "7d", "30d", "all"}:
+            window = "24h"
+        headers = {"User-Agent": "ArrNexus/7.0", "X-Api-Key": self.api_key}
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, headers=headers) as client:
+            r = await client.get(self.url + "/api/get-overview-stats", params={"window": window, "sections": sections})
+        if r.status_code in {401, 403}:
+            raise InfiniDyskError(f"InfiniDysk overview authentication failed (HTTP {r.status_code})")
+        if r.status_code >= 400:
+            raise InfiniDyskError(f"InfiniDysk overview failed: HTTP {r.status_code} {r.text[:300]}")
+        try:
+            data = r.json()
+        except Exception as exc:
+            raise InfiniDyskError("InfiniDysk returned a non-JSON Overview response") from exc
+        return data if isinstance(data, dict) else {}
+
     async def metrics(self) -> list[dict[str, Any]]:
         self._require()
-        headers = {"User-Agent":"ArrNexus/6.1"}
+        headers = {"User-Agent":"ArrNexus/7.0"}
         if self.api_key:
             headers["X-Api-Key"] = self.api_key
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=True, headers=headers) as client:

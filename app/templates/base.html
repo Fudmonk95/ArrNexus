@@ -8,8 +8,8 @@
   <meta name="theme-color" content="#07111f">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/app.css?v=6.1">
-  <script defer src="/static/app.js?v=6.1"></script>
+  <link rel="stylesheet" href="/static/app.css?v=7.0">
+  <script defer src="/static/app.js?v=7.0"></script>
 </head>
 <body class="nx-body">
 <div class="nx-progress" id="nxProgress" aria-hidden="true"></div>
@@ -44,6 +44,7 @@
           <a class="{{ 'active' if request.url.path.startswith('/debrid') }}" href="/debrid" data-nav><span class="nx-nav-icon">◇</span><span>Debrid / DMM</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/infinidysk') }}" href="/infinidysk" data-nav><span class="nx-nav-icon">☁</span><span>InfiniDysk</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/decypharr') }}" href="/decypharr" data-nav><span class="nx-nav-icon">D</span><span>Decypharr</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/indexers') }}" href="/indexers" data-nav><span class="nx-nav-icon">☷</span><span>Indexers</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/queue') }}" href="/queue" data-nav><span class="nx-nav-icon">⇣</span><span>Download Queue</span></a>
         </div>
       </details>
@@ -97,6 +98,7 @@
         <h1>{% block heading %}Dashboard{% endblock %}</h1>
       </div>
       <div class="nx-top-actions">
+        <a class="nx-version-badge" href="/settings" data-nav data-update-check="{{ '1' if app_setting('update.repo','') else '0' }}" title="ArrNexus version and update channel"><strong>v{{ app_version() }}</strong><small>{{ release_channel()|upper }}</small><em data-version-update hidden>UPDATE</em></a>
         <button class="nx-top-button" type="button" data-command-open title="Jump anywhere">⌕</button>
         <a class="nx-top-button" href="/problems" data-nav title="Problem Centre">!</a>
         <a class="nx-top-button" href="/logs" data-nav title="Logs">≡</a>

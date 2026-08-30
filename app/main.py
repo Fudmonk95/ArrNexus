@@ -27,14 +27,14 @@ from .db import (
     add_scrape, update_scrape, list_scrapes, ui_pref_get, ui_pref_set,
     update_user_access, requests_today, title_timeline, all_settings, replace_nonsecret_settings, request_rows, update_request_progress,
 )
-from .scanner import scan_source, inspect_item, normalize_title, human_size
+from .scanner import scan_source, inspect_item, normalize_title, human_size, invalidate_scan_cache
 from .routing import decide_movie, decide_tv
 from .arr import RadarrClient, SonarrClient, LidarrClient, ProwlarrClient, ArrError, poster_url
 from .router_service import import_one, route_item, discover_lookup, discover_add, client_for_instance
 from .importer import ImportErrorSafe, unlink_created, scan_broken_symlinks, repair_broken_symlink
 from .namespace import view_path, is_within_logical, namespace_status, NamespaceError
 from .instances import discover_instances, invalidate_instance_cache
-from .library import inventory_roots, build_source_link_index
+from .library import inventory_roots, build_source_link_index, invalidate_library_cache
 from .jellyfin import search_jellyfin, jellyfin_status
 from .music import (
     search_musicbrainz, trending_artists, trending_releases, itunes_search,
@@ -42,6 +42,8 @@ from .music import (
     provider_catalog, enrich_artist_art, enrich_release_art, representative_artwork,
     internet_archive_search, jamendo_search, soundcloud_search, lastfm_search,
     lastfm_top, provider_featured, provider_search,
+    spotify_app_configured, spotify_user_linked, spotify_authorize_url, spotify_exchange_code,
+    spotify_user_hub, spotify_disconnect_user,
 )
 from .connections import get_connection, save_connection
 from .paths import movie_roots, tv_roots, lidarr_root, source_root, all_library_roots, dumb_root
@@ -66,6 +68,10 @@ from .acquisition import load_acquisition_settings, save_acquisition_settings, p
 from .logbridge import external_log_rows
 from .log_diagnostics import attach_explanations
 from .decypharr import DecypharrClient
+from .language_guard import (
+    cached_language_result, inspect_source_languages, load_language_policy,
+    save_language_policy, result_badge as language_result_badge,
+)
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title="ArrNexus")
@@ -74,8 +80,36 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "7.0.0"
+templates.env.globals["release_channel"] = lambda: setting_get("update.channel", "stable") or "stable"
 
-APP_VERSION = "6.1.0"
+APP_VERSION = "7.0.0"
+
+BRAND_ICONS = {
+    "radarr": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/radarr.png",
+    "sonarr": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/sonarr.png",
+    "lidarr": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/lidarr.png",
+    "prowlarr": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/prowlarr.png",
+    "jellyfin": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/jellyfin.png",
+    "seerr": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/seerr.png",
+    "infinidysk": "https://raw.githubusercontent.com/infinidysk/infinidysk/main/frontend/public/logo-square.png",
+    "decypharr": "https://raw.githubusercontent.com/sirrobot01/decypharr/main/docs/public/favicon.png",
+    "spotify": "https://cdn.simpleicons.org/spotify/1ED760",
+    "soundcloud": "https://cdn.simpleicons.org/soundcloud/FF5500",
+    "apple": "https://cdn.simpleicons.org/applemusic/FA243C",
+    "audius": "https://cdn.simpleicons.org/audius/7E1BCC",
+    "deezer": "https://cdn.simpleicons.org/deezer/A238FF",
+    "lastfm": "https://cdn.simpleicons.org/lastdotfm/D51007",
+    "bandcamp": "https://cdn.simpleicons.org/bandcamp/408294",
+    "amazon": "https://cdn.simpleicons.org/amazonmusic/46C3D0",
+    "discogs": "https://cdn.simpleicons.org/discogs/FFFFFF",
+    "musicbrainz": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/musicbrainz.png",
+}
+
+def brand_icon(key: str) -> str:
+    return BRAND_ICONS.get(str(key or "").lower(), "")
+
+templates.env.globals["brand_icon"] = brand_icon
 RUNNING_TASKS: set[asyncio.Task] = set()
 
 
@@ -101,6 +135,26 @@ async def startup():
     except Exception as exc:
         try: log_event("warning", "selfheal", "scheduler_start_failed", str(exc))
         except Exception: pass
+
+    # Pre-warm expensive namespace inventories off the request path.  This is
+    # especially important after Maintenance: Dashboard can reuse the same
+    # short-lived snapshots instead of walking every virtual file again.
+    async def _prewarm_namespace_snapshots():
+        try:
+            await asyncio.gather(
+                asyncio.to_thread(scan_source),
+                asyncio.to_thread(build_source_link_index),
+                asyncio.to_thread(inventory_roots),
+                return_exceptions=True,
+            )
+        except Exception:
+            pass
+    try:
+        warm = asyncio.create_task(_prewarm_namespace_snapshots())
+        RUNNING_TASKS.add(warm)
+        warm.add_done_callback(RUNNING_TASKS.discard)
+    except Exception:
+        pass
 
 
 def logged_in(request: Request):
@@ -268,10 +322,12 @@ async def logout(request: Request):
     return RedirectResponse("/login", status_code=303)
 
 
-async def arr_status(client):
+async def arr_status(client, timeout: float = 4.0):
     try:
-        s = await client.status()
+        s = await asyncio.wait_for(client.status(), timeout=timeout)
         return {"ok": True, "version": s.get("version"), "appName": s.get("appName") or client.name}
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": f"Timed out after {timeout:.0f}s"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -384,6 +440,8 @@ async def enrich_items(items):
         # names. Using an external ID for only some copies caused duplicate cards
         # when one release matched metadata and another did not.
         canonical_key = f"{item.media_type}:{normalize_title(display_title)}:{display_year or 0}"
+        language_guard = cached_language_result(item.path, item.fingerprint)
+        language_badge_key, language_badge_label = language_result_badge(language_guard)
         return {
             "item": item,
             "metadata": metadata or {},
@@ -403,6 +461,9 @@ async def enrich_items(items):
             "upgrade": bool(item.quality and existing_res and item.quality > existing_res),
             "changed": changed,
             "jellyfin": jf,
+            "language_guard": language_guard,
+            "language_badge_key": language_badge_key,
+            "language_badge_label": language_badge_label,
         }
 
     return await asyncio.gather(*(one(x) for x in items))
@@ -422,9 +483,10 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
     out = []
     state_rank = {"imported": 4, "linked": 3, "waiting": 2, "ignored": 1}
     for group in groups.values():
+        language_rank = {"pass": 4, "unchecked": 2, "unknown": 1, "disabled": 2, "fail": 0}
         group = sorted(
             group,
-            key=lambda r: (r["item"].quality or 0, r["item"].size_bytes or 0, state_rank.get(r.get("state"), 0)),
+            key=lambda r: (language_rank.get(r.get("language_badge_key"), 2), r["item"].quality or 0, r["item"].size_bytes or 0, state_rank.get(r.get("state"), 0)),
             reverse=True,
         )
         primary = group[0]
@@ -466,7 +528,7 @@ async def dashboard(request: Request):
     waiting = max(0, len(items) - imported - ignored)
     async def _jf_status():
         try:
-            js = await jellyfin_status()
+            js = await asyncio.wait_for(jellyfin_status(), timeout=4.0)
             return {"ok": True, "version": js.get("Version") or js.get("version") or "Connected"}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -484,10 +546,8 @@ async def dashboard(request: Request):
     async def _load_dashboard_instance(inst):
         try:
             c=client_for_instance(inst)
-            if inst.service=="radarr": rows=await c.movies()
-            elif inst.service=="sonarr": rows=await c.series()
-            else: rows=await c.artists()
-            q=await c.queue(200)
+            media_coro = c.movies() if inst.service=="radarr" else c.series() if inst.service=="sonarr" else c.artists()
+            rows, q = await asyncio.wait_for(asyncio.gather(media_coro, c.queue(200)), timeout=5.0)
             rec=q.get("records",[]) if isinstance(q,dict) else (q or [])
             return inst, rows or [], rec
         except Exception:
@@ -505,7 +565,7 @@ async def dashboard(request: Request):
             key=f"{row['arr_name'] or row['media_type']}:{row['destination_key']}"; dest_counts[key]=dest_counts.get(key,0)+1
     rd_user=None
     if rd.connected():
-        try: rd_user=await rd.user()
+        try: rd_user=await asyncio.wait_for(rd.user(), timeout=4.0)
         except Exception: rd_user={"error":"Connected, but account status could not be loaded"}
     activity_days=activity_by_day(7); dest_top=sorted(dest_counts.items(),key=lambda x:x[1],reverse=True)[:10]
     inv=inventory_roots(); scrape_rows=list_scrapes(200,"all"); scraping_count=sum(1 for x in scrape_rows if (x.get("status") or "") in {"searching","queued","running"})
@@ -538,6 +598,7 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
         "ignored": sum(1 for x in enriched if x["state"] == "ignored"),
         "duplicate": sum(1 for x in enriched if x.get("duplicate_count", 1) > 1),
         "upgrade": sum(1 for x in enriched if x.get("upgrade")),
+        "language": sum(1 for x in enriched if x.get("language_badge_key") == "fail" or x.get("state") == "language_issue"),
     }
     if status != "all":
         if status == "upgrade":
@@ -546,6 +607,8 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
             enriched = [x for x in enriched if x.get("duplicate_count", 1) > 1]
         elif status == "imported":
             enriched = [x for x in enriched if x["state"] in {"imported", "linked"}]
+        elif status == "language":
+            enriched = [x for x in enriched if x.get("language_badge_key") == "fail" or x.get("state") == "language_issue"]
         else:
             enriched = [x for x in enriched if x["state"] == status]
     return templates.TemplateResponse("inbox.html", {
@@ -590,7 +653,21 @@ async def item_detail(request: Request, path: str):
         "existing_resolution": routed["existing_resolution"],
         "jellyfin": jf,
         "history": latest_success_for_source(item.path),
+        "language_guard": cached_language_result(item.path, item.fingerprint),
+        "language_policy": load_language_policy(),
     })
+
+
+@app.post("/item/language-check")
+async def item_language_check(request: Request, source_path: str = Form(...)):
+    require_auth(request)
+    if not is_within_logical(source_path, source_root()):
+        raise HTTPException(400, "Invalid source path")
+    item = inspect_item(source_path)
+    result = await asyncio.to_thread(inspect_source_languages, source_path, item.fingerprint, True)
+    level = "info" if result.get("status") == "pass" else "warning"
+    log_event(level, "language_guard", "source_checked", result.get("summary") or "Language check complete", {"source": source_path, "status": result.get("status")})
+    return RedirectResponse("/item?path=" + quote(source_path), status_code=303)
 
 
 @app.post("/item/state")
@@ -760,6 +837,7 @@ async def undo_import(request: Request, import_id: int):
     except Exception:
         paths = []
     removed, errors = unlink_created(paths)
+    invalidate_library_cache()
     note = f"Removed {removed} router-created symlink(s)" + (f"; errors: {'; '.join(errors)}" if errors else "")
     mark_import_undone(import_id, note)
     add_activity("undo", row.get("source_name") or "Import", note, row.get("source_path") or "")
@@ -992,6 +1070,8 @@ async def settings_page(request: Request, notice: str = ""):
         "jamendo_client_id":setting_get("music.jamendo.client_id",""),
         "lastfm_configured":bool(setting_get("music.lastfm.api_key")),
         "spotify_configured":bool(setting_get("music.spotify.client_id") and setting_get("music.spotify.client_secret")),
+        "spotify_redirect_uri":setting_get("music.spotify.redirect_uri", ""),
+        "update_channel":setting_get("update.channel", "stable") or "stable",
         "seerr":get_connection("seerr"),
         "policy": load_policy(),
         "notifications": {
@@ -1004,6 +1084,7 @@ async def settings_page(request: Request, notice: str = ""):
         "backups": list_backups(10), "backup_auto": setting_get("backup.auto_enabled","true"), "backup_retention": setting_get("backup.retention","10"),
         "update_repo": setting_get("update.repo",""), "version": APP_VERSION, "catalog_plugins": load_catalog_plugins(),
         "acquisition": load_acquisition_settings(), "acquisition_strategies": STRATEGIES,
+        "language_policy": load_language_policy(),
     })
 
 
@@ -1042,7 +1123,7 @@ async def settings_mount_delete(request: Request, mount_id: int):
 
 
 @app.post("/settings/music-providers")
-async def settings_music_providers(request: Request, soundcloud_client_id: str = Form(''), soundcloud_client_secret: str = Form(''), jamendo_client_id: str = Form(''), lastfm_api_key: str = Form(''), spotify_client_id: str = Form(''), spotify_client_secret: str = Form('')):
+async def settings_music_providers(request: Request, soundcloud_client_id: str = Form(''), soundcloud_client_secret: str = Form(''), jamendo_client_id: str = Form(''), lastfm_api_key: str = Form(''), spotify_client_id: str = Form(''), spotify_client_secret: str = Form(''), spotify_redirect_uri: str = Form('')):
     require_admin(request)
     if soundcloud_client_id.strip(): setting_set('music.soundcloud.client_id',soundcloud_client_id.strip(),True)
     if soundcloud_client_secret.strip() and soundcloud_client_secret != '********': setting_set('music.soundcloud.client_secret',soundcloud_client_secret.strip(),True)
@@ -1050,6 +1131,7 @@ async def settings_music_providers(request: Request, soundcloud_client_id: str =
     if lastfm_api_key.strip() and lastfm_api_key != '********': setting_set('music.lastfm.api_key',lastfm_api_key.strip(),True)
     if spotify_client_id.strip(): setting_set('music.spotify.client_id',spotify_client_id.strip(),True)
     if spotify_client_secret.strip() and spotify_client_secret != '********': setting_set('music.spotify.client_secret',spotify_client_secret.strip(),True)
+    setting_set('music.spotify.redirect_uri', spotify_redirect_uri.strip())
     log_event('info','settings','music_provider_settings','Music provider application credentials updated')
     return RedirectResponse('/settings?notice='+quote('Music provider settings saved'),status_code=303)
 
@@ -1085,6 +1167,26 @@ async def settings_user_delete(request: Request, user_id: int):
     except Exception as exc:
         return RedirectResponse(f"/settings?notice={quote(str(exc))}", status_code=303)
 
+
+
+@app.post("/settings/language-guard")
+async def settings_language_guard(
+    request: Request, enabled: str = Form("false"), require_english_audio: str = Form("false"),
+    require_english_subtitles: str = Form("false"), require_default_english_audio: str = Form("false"),
+    unknown_is_failure: str = Form("false"), auto_upgrade_search: str = Form("false"),
+    max_files: int = Form(300), probe_timeout_seconds: int = Form(20),
+):
+    require_admin(request)
+    truth = lambda value: str(value).lower() in {"1", "true", "yes", "on"}
+    save_language_policy(
+        enabled=truth(enabled), require_english_audio=truth(require_english_audio),
+        require_english_subtitles=truth(require_english_subtitles),
+        require_default_english_audio=truth(require_default_english_audio),
+        unknown_is_failure=truth(unknown_is_failure), auto_upgrade_search=truth(auto_upgrade_search),
+        max_files=max_files, probe_timeout_seconds=probe_timeout_seconds,
+    )
+    log_event("info", "language_guard", "settings_updated", "English-language media policy updated")
+    return RedirectResponse("/settings?notice=" + quote("Language Guard settings saved"), status_code=303)
 
 
 @app.post("/settings/policy")
@@ -1213,27 +1315,43 @@ async def diagnostics_download(request: Request):
 
 async def _check_update() -> dict:
     repo = setting_get('update.repo','').strip()
+    channel = (setting_get('update.channel','stable') or 'stable').lower()
+    if channel not in {'stable','beta','development'}:
+        channel='stable'
     if not repo:
-        return {"configured":False,"current":APP_VERSION}
+        return {"configured":False,"current":APP_VERSION,"channel":channel}
     match = re.search(r'(?:github\.com/)?([^/]+)/([^/]+?)(?:\.git)?$', repo.rstrip('/'))
     if not match:
-        return {"configured":True,"current":APP_VERSION,"error":"Use owner/repo or a GitHub repository URL"}
+        return {"configured":True,"current":APP_VERSION,"channel":channel,"error":"Use owner/repo or a GitHub repository URL"}
     owner, name = match.group(1), match.group(2)
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers={'Accept':'application/vnd.github+json','User-Agent':'ArrNexus-update-checker'}) as client:
-            r = await client.get(f'https://api.github.com/repos/{owner}/{name}/releases/latest')
-        r.raise_for_status(); data=r.json(); latest=str(data.get('tag_name') or data.get('name') or '')
-        current=APP_VERSION.split('-')[0].lstrip('v'); latest_norm=latest.lstrip('v')
-        return {"configured":True,"current":APP_VERSION,"latest":latest,"update_available": bool(latest and latest_norm != current),"url":data.get('html_url') or ''}
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers={'Accept':'application/vnd.github+json','User-Agent':'ArrNexus-update-checker/7.0'}) as client:
+            if channel == 'stable':
+                r = await client.get(f'https://api.github.com/repos/{owner}/{name}/releases/latest')
+                r.raise_for_status(); data=r.json()
+            else:
+                r = await client.get(f'https://api.github.com/repos/{owner}/{name}/releases', params={'per_page':20})
+                r.raise_for_status(); rows=r.json() if isinstance(r.json(),list) else []
+                rows=[x for x in rows if not x.get('draft')]
+                if channel == 'beta':
+                    data=next((x for x in rows if x.get('prerelease')), rows[0] if rows else {})
+                else:
+                    data=rows[0] if rows else {}
+        latest=str(data.get('tag_name') or data.get('name') or '')
+        current=APP_VERSION.lstrip('v')
+        latest_norm=latest.lstrip('v')
+        return {"configured":True,"current":APP_VERSION,"channel":channel,"latest":latest,"update_available": bool(latest and latest_norm != current),"url":data.get('html_url') or ''}
     except Exception as exc:
-        return {"configured":True,"current":APP_VERSION,"error":str(exc)}
+        return {"configured":True,"current":APP_VERSION,"channel":channel,"error":str(exc)}
 
 
 @app.post("/settings/update-repo")
-async def settings_update_repo(request: Request, update_repo: str = Form("")):
+async def settings_update_repo(request: Request, update_repo: str = Form(""), update_channel: str = Form("stable")):
     require_admin(request)
+    channel=update_channel if update_channel in {'stable','beta','development'} else 'stable'
     setting_set('update.repo',update_repo.strip())
-    return RedirectResponse('/settings?notice='+quote('Update source saved'),status_code=303)
+    setting_set('update.channel',channel)
+    return RedirectResponse('/settings?notice='+quote('Update source and channel saved'),status_code=303)
 
 
 @app.get("/api/update-check")
@@ -1321,37 +1439,85 @@ async def api_ecosystem(request: Request):
     return {"connectors": rows, "namespace": namespace_status()}
 
 
+def _infini_history_matches(row: dict, history_filter: str) -> bool:
+    if history_filter == "all":
+        return True
+    cat = str(row.get("category") or row.get("cat") or "").lower()
+    if history_filter == "movies":
+        return "movie" in cat or "radarr" in cat
+    if history_filter == "tv":
+        return "tv" in cat or "sonarr" in cat
+    return True
+
+
+def _infini_graph_points(overview: dict) -> str:
+    rows = list((overview or {}).get("throughput") or [])
+    if not rows:
+        return ""
+    values = [max(0, int(x.get("bytesFetched") or x.get("bytesServed") or 0)) for x in rows]
+    peak = max(values) if values else 0
+    if peak <= 0:
+        return ""
+    count = len(values)
+    points = []
+    for idx, value in enumerate(values):
+        x = 0 if count <= 1 else (idx / (count - 1)) * 100
+        y = 96 - (value / peak) * 88
+        points.append(f"{x:.2f},{y:.2f}")
+    return " ".join(points)
+
+
 @app.get("/infinidysk", response_class=HTMLResponse)
-async def infinidysk_page(request: Request, notice: str = ""):
+async def infinidysk_page(request: Request, notice: str = "", window: str = "24h", history_filter: str = "all"):
     require_auth(request)
+    if window not in {"1h", "24h", "7d", "30d", "all"}:
+        window = "24h"
+    if history_filter not in {"all", "movies", "tv"}:
+        history_filter = "all"
     cfg = connector_config("infinidysk")
-    health = {}; queue = {}; history = {}; metrics = []; error = ""
+    health = {}; queue = {}; history = {}; overview = {}; metrics = []; errors = []
     if cfg.get("enabled") and cfg.get("url"):
         client = InfiniDyskClient()
-        try:
-            health = await client.health()
-        except Exception as exc:
-            error = str(exc)
-        try:
-            queue = await client.queue()
-        except Exception as exc:
-            if not error: error = str(exc)
-        try:
-            history = await client.history()
-        except Exception:
-            history = {}
-        try:
-            metrics = await client.metrics()
-        except Exception:
-            metrics = []
+        values = await asyncio.gather(
+            client.health(), client.queue(), client.history(), client.overview(window, "all"),
+            return_exceptions=True,
+        )
+        health_v, queue_v, history_v, overview_v = values
+        if isinstance(health_v, Exception): errors.append(str(health_v))
+        else: health = health_v or {}
+        if isinstance(queue_v, Exception): errors.append(str(queue_v))
+        else: queue = queue_v or {}
+        if isinstance(history_v, Exception): errors.append(str(history_v))
+        else: history = history_v or {}
+        if isinstance(overview_v, Exception):
+            errors.append(str(overview_v))
+            try: metrics = await client.metrics()
+            except Exception: metrics = []
+        else:
+            overview = overview_v or {}
     q = queue.get("queue", {}) if isinstance(queue, dict) else {}
     h = history.get("history", {}) if isinstance(history, dict) else {}
+    history_slots = h.get("slots", []) if isinstance(h, dict) else []
+    history_slots = [x for x in history_slots if _infini_history_matches(x, history_filter)]
     return templates.TemplateResponse("infinidysk.html", {
         "request": request, "notice": notice, "config": cfg, "health": health, "queue": q,
-        "queue_slots": q.get("slots", []) if isinstance(q, dict) else [],
-        "history_slots": h.get("slots", []) if isinstance(h, dict) else [],
-        "metrics": metrics, "error": error,
+        "queue_slots": q.get("slots", []) if isinstance(q, dict) else [], "history_slots": history_slots,
+        "overview": overview, "graph_points": _infini_graph_points(overview), "metrics": metrics,
+        "error": " · ".join(dict.fromkeys(x for x in errors if x)), "window": window, "history_filter": history_filter,
     })
+
+
+@app.get("/api/infinidysk/live")
+async def infinidysk_live(request: Request, window: str = "24h"):
+    require_auth(request)
+    if window not in {"1h", "24h", "7d", "30d", "all"}:
+        window = "24h"
+    client = InfiniDyskClient()
+    overview_v, queue_v = await asyncio.gather(client.overview(window, "window,detail"), client.queue(), return_exceptions=True)
+    if isinstance(overview_v, Exception):
+        return JSONResponse({"ok": False, "error": str(overview_v)}, status_code=502)
+    queue_data = {} if isinstance(queue_v, Exception) else (queue_v or {}).get("queue", {})
+    return {"ok": True, "overview": overview_v or {}, "queue": queue_data}
 
 
 @app.post("/infinidysk/action")
@@ -1396,6 +1562,56 @@ async def decypharr_page(request: Request):
     else:
         error="Enable and verify the Decypharr connector in Ecosystem first"
     return templates.TemplateResponse("decypharr.html",{"request":request,"config":cfg,"version":version,"torrents":torrents,"torrent_count":len(torrents),"repair":repair,"arrs":arrs,"arr_count":len(arrs),"broken":broken,"error":error})
+
+
+@app.get("/indexers", response_class=HTMLResponse)
+async def indexers_page(request: Request, notice: str = ""):
+    require_auth(request)
+    rows = []; tags = []; error = ""
+    try:
+        client = ProwlarrClient()
+        rows_v, tags_v = await asyncio.gather(client.indexers(), client.tags(), return_exceptions=True)
+        if isinstance(rows_v, Exception):
+            raise rows_v
+        rows = rows_v or []
+        tags = [] if isinstance(tags_v, Exception) else (tags_v or [])
+    except Exception as exc:
+        error = str(exc)
+    tag_names = {int(t.get("id") or 0): str(t.get("label") or t.get("name") or t.get("id") or "") for t in tags if t.get("id") is not None}
+    view = []
+    for row in rows:
+        item = dict(row)
+        item["tag_names"] = [tag_names.get(int(t), str(t)) for t in (row.get("tags") or [])]
+        caps = row.get("capabilities") or {}
+        categories = []
+        for cat in caps.get("categories") or []:
+            if isinstance(cat, dict):
+                categories.append(str(cat.get("name") or cat.get("id") or ""))
+        item["category_names"] = [x for x in categories if x][:8]
+        item["routing_critical"] = any(str(x).lower() in {"nzbdav", "decypharr", "infinidysk"} for x in item["tag_names"])
+        view.append(item)
+    view.sort(key=lambda x: (str(x.get("protocol") or ""), int(x.get("priority") or 50), str(x.get("name") or "").lower()))
+    return templates.TemplateResponse("indexers.html", {"request":request,"indexers":view,"tags":tags,"error":error,"notice":notice})
+
+
+@app.post("/indexers/{indexer_id}")
+async def indexer_update(request: Request, indexer_id: int, enable: str = Form("false"), priority: int = Form(25), enable_rss: str = Form("false"), enable_automatic: str = Form("false"), enable_interactive: str = Form("false")):
+    require_admin(request)
+    changes = {
+        "enable": enable.lower() in {"1","true","yes","on"},
+        "priority": max(1, min(50, int(priority))),
+        "enableRss": enable_rss.lower() in {"1","true","yes","on"},
+        "enableAutomaticSearch": enable_automatic.lower() in {"1","true","yes","on"},
+        "enableInteractiveSearch": enable_interactive.lower() in {"1","true","yes","on"},
+    }
+    try:
+        updated = await ProwlarrClient().update_indexer(indexer_id, changes)
+        name = str((updated or {}).get("name") or f"Indexer {indexer_id}") if isinstance(updated, dict) else f"Indexer {indexer_id}"
+        log_event("info", "prowlarr", "indexer_updated", f"{name} updated from ArrNexus", changes)
+        return RedirectResponse("/indexers?notice=" + quote(f"{name} saved to Prowlarr"), status_code=303)
+    except Exception as exc:
+        log_event("warning", "prowlarr", "indexer_update_failed", str(exc), {"indexer_id": indexer_id})
+        return RedirectResponse("/indexers?notice=" + quote(f"Indexer update failed: {exc}"), status_code=303)
 
 
 @app.get("/quality-lab", response_class=HTMLResponse)
@@ -2078,52 +2294,174 @@ async def ensure_lidarr_artist(artist_name: str):
     return artist, True
 
 
+def _spotify_redirect_uri(request: Request) -> str:
+    configured = setting_get("music.spotify.redirect_uri", "").strip()
+    return configured or str(request.url_for("spotify_callback"))
+
+
+def _spotify_redirect_is_acceptable(uri: str) -> bool:
+    value = (uri or "").strip().lower()
+    return value.startswith("https://") or value.startswith("http://127.0.0.1") or value.startswith("http://[::1]")
+
+
 @app.get("/music", response_class=HTMLResponse)
-async def music_page(request: Request, q: str = "", kind: str = "artist", source: str = "unified", genre: str = ""):
-    require_auth(request)
-    providers=provider_catalog(); results=[]; source_featured=[]; error=None; external_url=""; source_note=""; lidarr_error=None
-    available_keys={p.get("key") for p in providers}
+async def music_page(request: Request, q: str = "", kind: str = "artist", source: str = "unified", genre: str = "", notice: str = "", error: str = ""):
+    user = current_user(request)
+    providers = provider_catalog()
+    available_keys = {p.get("key") for p in providers}
     if source not in available_keys:
-        source="unified"
-    term=q.strip() or genre.strip()
+        source = "unified"
+    term = q.strip() or genre.strip()
+    results: list[dict] = []
+    source_featured: list[dict] = []
+    source_note = ""
+    external_url = ""
+    provider_error = error
+    lidarr_error = ""
+    spotify_hub = {"linked": False, "profile": {}, "saved_tracks": [], "saved_albums": [], "playlists": [], "top_tracks": [], "top_artists": [], "recent": [], "errors": []}
+    spotify_trending: list[dict] = []
+    spotify_trending_artists: list[dict] = []
 
-    # Provider discovery and Lidarr health are deliberately isolated. A broken
-    # Lidarr connection must not make Apple/Audius/MusicBrainz/etc disappear.
-    try:
-        source_featured,source_note=await provider_featured(source,genre,24)
+    async def _feature():
+        return await provider_featured(source, genre, 24)
+
+    async def _search():
         if term:
-            results, external_url = await provider_search(source,term,kind,30)
-        elif source in {"amazon","beatport","bandcamp","discogs"}:
-            external_url=external_music_links(genre or "").get(source,"") if genre else ""
-    except Exception as exc:
-        error=str(exc)
-        log_event("warning","music","provider_failed",str(exc),{"source":source,"query":q,"genre":genre})
+            return await provider_search(source, term, kind, 30)
+        if source in {"amazon", "beatport", "bandcamp", "discogs"} and genre:
+            return [], external_music_links(genre).get(source, "")
+        return [], ""
 
-    if source=="unified":
+    async def _lidarr():
         try:
-            trends,releases,audius=await asyncio.gather(trending_artists(18,"this_week"),trending_releases(18,"this_week"),audius_trending(18,genre))
-            trends,releases=await asyncio.gather(enrich_artist_art(trends,10),enrich_release_art(releases,10))
+            return await LidarrClient().artists(), ""
         except Exception as exc:
-            trends=[]; releases=[]; audius=[]
-            log_event("warning","music","unified_trends_failed",str(exc))
+            return [], str(exc)
+
+    tasks = [_feature(), _search(), _lidarr()]
+    task_names = ["featured", "search", "lidarr"]
+    if source == "spotify" and spotify_user_linked(int(user["id"])):
+        tasks.extend([
+            spotify_user_hub(int(user["id"])),
+            trending_releases(18, "this_week"),
+            trending_artists(18, "this_week"),
+        ])
+        task_names.extend(["spotify_hub", "spotify_trending", "spotify_trending_artists"])
+    elif source == "spotify":
+        tasks.extend([trending_releases(18, "this_week"), trending_artists(18, "this_week")])
+        task_names.extend(["spotify_trending", "spotify_trending_artists"])
+    elif source == "unified":
+        tasks.extend([
+            trending_artists(18, "this_week"),
+            trending_releases(18, "this_week"),
+            audius_trending(18, genre),
+        ])
+        task_names.extend(["trends", "releases", "audius"])
+
+    values = await asyncio.gather(*tasks, return_exceptions=True)
+    loaded = dict(zip(task_names, values))
+
+    featured_value = loaded.get("featured")
+    if isinstance(featured_value, Exception):
+        provider_error = provider_error or str(featured_value)
+        log_event("warning", "music", "provider_failed", str(featured_value), {"source": source, "query": q, "genre": genre})
     else:
-        trends=releases=audius=[]
+        source_featured, source_note = featured_value or ([], "")
 
-    try:
-        lidarr_artists=await LidarrClient().artists()
-    except Exception as exc:
-        lidarr_artists=[]; lidarr_error=str(exc)
-        log_event("warning","music","lidarr_library_failed",str(exc))
+    search_value = loaded.get("search")
+    if isinstance(search_value, Exception):
+        provider_error = provider_error or str(search_value)
+    else:
+        results, external_url = search_value or ([], "")
 
-    selected_provider=next((p for p in providers if p.get("key")==source),{"name":"For You","description":""})
-    return templates.TemplateResponse("music.html",{
-        "request":request,"q":q,"kind":kind,"source":source,"genre":genre,"results":results,"source_featured":source_featured,
-        "source_note":source_note,"selected_provider":selected_provider,"trends":trends,"releases":releases,"audius":audius,
-        "lidarr_artists":lidarr_artists,"lidarr_error":lidarr_error,"genres":GENRES,"error":error,"providers":providers,"external_url":external_url,
-        "soundcloud_configured":bool(setting_get("music.soundcloud.client_id") and setting_get("music.soundcloud.client_secret")),
-        "jamendo_configured":bool(setting_get("music.jamendo.client_id")),"lastfm_configured":bool(setting_get("music.lastfm.api_key")),
-        "spotify_configured":bool(setting_get("music.spotify.client_id") and setting_get("music.spotify.client_secret")),
+    lidarr_value = loaded.get("lidarr")
+    if isinstance(lidarr_value, Exception):
+        lidarr_artists, lidarr_error = [], str(lidarr_value)
+    else:
+        lidarr_artists, lidarr_error = lidarr_value or ([], "")
+
+    trends = releases = audius = []
+    if source == "unified":
+        trends = [] if isinstance(loaded.get("trends"), Exception) else (loaded.get("trends") or [])
+        releases = [] if isinstance(loaded.get("releases"), Exception) else (loaded.get("releases") or [])
+        audius = [] if isinstance(loaded.get("audius"), Exception) else (loaded.get("audius") or [])
+        try:
+            trends, releases = await asyncio.gather(enrich_artist_art(trends, 10), enrich_release_art(releases, 10))
+        except Exception as exc:
+            log_event("warning", "music", "unified_artwork_failed", str(exc))
+    elif source == "spotify":
+        hub_value = loaded.get("spotify_hub")
+        if hub_value is not None and not isinstance(hub_value, Exception):
+            spotify_hub = hub_value
+        elif isinstance(hub_value, Exception):
+            spotify_hub["linked"] = True
+            spotify_hub["errors"] = [str(hub_value)]
+        raw_trending = [] if isinstance(loaded.get("spotify_trending"), Exception) else (loaded.get("spotify_trending") or [])
+        spotify_trending_artists = [] if isinstance(loaded.get("spotify_trending_artists"), Exception) else (loaded.get("spotify_trending_artists") or [])
+        try:
+            spotify_trending = await enrich_release_art(raw_trending, min(10, len(raw_trending)))
+            spotify_trending_artists = await enrich_artist_art(spotify_trending_artists, min(8, len(spotify_trending_artists)))
+        except Exception:
+            spotify_trending = raw_trending
+
+    selected_provider = next((p for p in providers if p.get("key") == source), {"name": "For You", "description": ""})
+    redirect_uri = _spotify_redirect_uri(request)
+    return templates.TemplateResponse("music.html", {
+        "request": request, "q": q, "kind": kind, "source": source, "genre": genre, "results": results,
+        "source_featured": source_featured, "source_note": source_note, "selected_provider": selected_provider,
+        "trends": trends, "releases": releases, "audius": audius, "lidarr_artists": lidarr_artists,
+        "lidarr_error": lidarr_error, "genres": GENRES, "error": provider_error, "notice": notice,
+        "providers": providers, "external_url": external_url,
+        "soundcloud_configured": bool(setting_get("music.soundcloud.client_id") and setting_get("music.soundcloud.client_secret")),
+        "jamendo_configured": bool(setting_get("music.jamendo.client_id")), "lastfm_configured": bool(setting_get("music.lastfm.api_key")),
+        "spotify_configured": spotify_app_configured(), "spotify_linked": spotify_user_linked(int(user["id"])),
+        "spotify_hub": spotify_hub, "spotify_trending": spotify_trending, "spotify_trending_artists": spotify_trending_artists,
+        "spotify_redirect_uri": redirect_uri, "spotify_redirect_ready": _spotify_redirect_is_acceptable(redirect_uri),
     })
+
+
+@app.get("/music/spotify/connect")
+async def spotify_connect(request: Request):
+    user = current_user(request)
+    if not spotify_app_configured():
+        return RedirectResponse("/music?source=spotify&error=" + quote("Configure the Spotify Client ID and Client Secret in Settings first."), status_code=303)
+    redirect_uri = _spotify_redirect_uri(request)
+    if not _spotify_redirect_is_acceptable(redirect_uri):
+        message = "Spotify user linking needs an HTTPS redirect URI (or 127.0.0.1 for local development). Add the exact callback URL in Settings and in your Spotify app."
+        return RedirectResponse("/music?source=spotify&error=" + quote(message), status_code=303)
+    state = secrets.token_urlsafe(32)
+    request.session["spotify_oauth_state"] = state
+    request.session["spotify_oauth_user"] = int(user["id"])
+    return RedirectResponse(spotify_authorize_url(int(user["id"]), state, redirect_uri), status_code=303)
+
+
+@app.get("/music/spotify/callback", name="spotify_callback")
+async def spotify_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    user = current_user(request)
+    expected = str(request.session.pop("spotify_oauth_state", "") or "")
+    expected_user = int(request.session.pop("spotify_oauth_user", 0) or 0)
+    if error:
+        return RedirectResponse("/music?source=spotify&error=" + quote("Spotify authorization was not completed: " + error), status_code=303)
+    if not code or not state or not expected or not secrets.compare_digest(state, expected) or expected_user != int(user["id"]):
+        log_event("warning", "spotify", "oauth_state_mismatch", "Spotify OAuth callback state did not validate")
+        return RedirectResponse("/music?source=spotify&error=" + quote("Spotify authorization could not be validated. Please try Connect Spotify again."), status_code=303)
+    try:
+        await spotify_exchange_code(int(user["id"]), code, _spotify_redirect_uri(request))
+        hub = await spotify_user_hub(int(user["id"]))
+        who = (hub.get("profile") or {}).get("display_name") or (hub.get("profile") or {}).get("id") or "Spotify"
+        log_event("info", "spotify", "account_linked", f"Spotify account linked for {who}", {"user_id": int(user["id"])})
+        return RedirectResponse("/music?source=spotify&notice=" + quote(f"Spotify linked as {who}"), status_code=303)
+    except Exception as exc:
+        log_event("warning", "spotify", "oauth_failed", str(exc), {"user_id": int(user["id"])})
+        return RedirectResponse("/music?source=spotify&error=" + quote(str(exc)), status_code=303)
+
+
+@app.post("/music/spotify/disconnect")
+async def spotify_disconnect(request: Request):
+    user = current_user(request)
+    spotify_disconnect_user(int(user["id"]))
+    log_event("info", "spotify", "account_disconnected", "Spotify account disconnected", {"user_id": int(user["id"])})
+    return RedirectResponse("/music?source=spotify&notice=" + quote("Spotify account disconnected"), status_code=303)
 
 
 @app.get("/music/artist", response_class=HTMLResponse)

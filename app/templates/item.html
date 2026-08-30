@@ -19,6 +19,25 @@
   <div class="panel"><h2>Jellyfin</h2>{% if not jellyfin.configured %}<p>Optional Jellyfin API key is not configured. Importing still works.</p>{% elif jellyfin.found %}<div class="alert success">Detected in Jellyfin.</div>{% for x in jellyfin.items %}<div class="mini-list"><div><span>{{ x.Name }}</span><span>{{ x.Type }}</span></div></div>{% endfor %}{% else %}<p>Not currently detected in Jellyfin.</p>{% endif %}</div>
 </div>
 
+<div class="panel language-guard-panel">
+  <div class="panelhead"><div><h2>Language Guard</h2><p>Checks the actual media streams with ffprobe before ArrNexus creates library symlinks.</p></div>
+  {% if language_guard %}<span class="tag language-{{ language_guard.status }}">{{ 'English verified' if language_guard.status=='pass' else 'Needs replacement' if language_guard.status=='fail' else language_guard.status|capitalize }}</span>{% else %}<span class="tag language-unchecked">Not checked</span>{% endif %}</div>
+  {% if not language_policy.enabled %}<div class="alert warning">Language Guard is disabled in Settings.</div>
+  {% elif language_guard %}
+    <div class="language-summary-grid">
+      <div><span>English audio</span><strong>{{ '✓' if language_guard.files and language_guard.files|selectattr('english_audio')|list|length == language_guard.checked_count else '✕' }}</strong></div>
+      <div><span>English subtitles</span><strong>{{ '✓' if language_guard.files and language_guard.files|selectattr('english_subtitles')|list|length == language_guard.checked_count else '✕' }}</strong></div>
+      <div><span>Checked</span><strong>{{ language_guard.checked_count or 0 }}/{{ language_guard.file_count or 0 }}</strong></div>
+      <div><span>Policy</span><strong>{{ language_guard.status|upper }}</strong></div>
+    </div>
+    <p>{{ language_guard.summary }}</p>
+    {% if language_guard.missing %}<div class="tags">{% for missing in language_guard.missing %}<span class="tag red">{{ missing }}</span>{% endfor %}</div>{% endif %}
+    {% if language_guard.files %}<details><summary>Stream details</summary><div class="tablewrap"><table><thead><tr><th>File</th><th>Audio</th><th>Subtitles</th><th>Status</th></tr></thead><tbody>{% for f in language_guard.files[:30] %}<tr><td>{{ f.name }}</td><td>{{ f.audio_languages|join(', ') or 'unknown' }}</td><td>{{ f.subtitle_languages|join(', ') or ('English sidecar' if f.external_english_subtitles else 'none/unknown') }}</td><td><span class="tag language-{{ f.status }}">{{ f.status }}</span></td></tr>{% endfor %}</tbody></table></div></details>{% endif %}
+  {% else %}<p class="muted">This source has not been checked yet.</p>{% endif %}
+  <form method="post" action="/item/language-check" class="inline-actions"><input type="hidden" name="source_path" value="{{ item.path }}"><button class="btn">Check language now</button></form>
+  <div class="alert info"><strong>Non-destructive replacement path:</strong> if English audio/subtitles are required and this source fails, ArrNexus keeps the Real-Debrid/DMM source untouched, blocks the library symlink, and can ask Radarr/Sonarr to search for an English replacement.</div>
+</div>
+
 <div class="panel"><div class="panelhead"><div><h2>Import</h2><p>Source remains untouched in Decypharr. The Router only creates symlinks and rescans the selected Arr.</p></div></div>
 <form class="formgrid" method="post" action="/import">
   <input type="hidden" name="source_path" value="{{ item.path }}">

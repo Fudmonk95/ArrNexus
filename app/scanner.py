@@ -4,6 +4,8 @@ from pathlib import Path
 import hashlib
 import os
 import re
+import threading
+import time
 from .config import settings
 from .paths import source_root
 from .namespace import view_path, logical_from_view
@@ -161,7 +163,22 @@ def inspect_item(path: Path | str) -> ScanItem:
     )
 
 
-def scan_source() -> list[ScanItem]:
+_SCAN_CACHE_LOCK = threading.RLock()
+_SCAN_CACHE_AT = 0.0
+_SCAN_CACHE_ITEMS: list[ScanItem] = []
+_SCAN_CACHE_ROOT = ""
+_SCAN_CACHE_TTL = 30.0
+
+
+def invalidate_scan_cache() -> None:
+    global _SCAN_CACHE_AT, _SCAN_CACHE_ITEMS, _SCAN_CACHE_ROOT
+    with _SCAN_CACHE_LOCK:
+        _SCAN_CACHE_AT = 0.0
+        _SCAN_CACHE_ITEMS = []
+        _SCAN_CACHE_ROOT = ""
+
+
+def _scan_source_uncached() -> list[ScanItem]:
     logical_root = Path(source_root())
     actual_root = view_path(logical_root)
     if not actual_root.exists():
@@ -176,6 +193,27 @@ def scan_source() -> list[ScanItem]:
         item = inspect_item(logical)
         if item.video_count:
             items.append(item)
+    return items
+
+
+def scan_source(force: bool = False) -> list[ScanItem]:
+    """Return the DMM source inventory with a short stale-safe cache.
+
+    DMM folders can contain hundreds of virtual files and calculating every
+    fingerprint on every menu click was one of the largest v6 latency sources.
+    The source can be changed externally, so the cache is intentionally short.
+    """
+    global _SCAN_CACHE_AT, _SCAN_CACHE_ITEMS, _SCAN_CACHE_ROOT
+    now = time.monotonic()
+    root = source_root()
+    with _SCAN_CACHE_LOCK:
+        if (not force and _SCAN_CACHE_ROOT == root and _SCAN_CACHE_ITEMS and now - _SCAN_CACHE_AT < _SCAN_CACHE_TTL):
+            return list(_SCAN_CACHE_ITEMS)
+    items = _scan_source_uncached()
+    with _SCAN_CACHE_LOCK:
+        _SCAN_CACHE_AT = time.monotonic()
+        _SCAN_CACHE_ITEMS = list(items)
+        _SCAN_CACHE_ROOT = root
     return items
 
 

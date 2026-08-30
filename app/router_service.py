@@ -10,7 +10,9 @@ from .instances import discover_instances, get_instance, ArrInstance
 from .scanner import ScanItem, inspect_item, normalize_title
 from .routing import decide_movie, decide_tv, RouteDecision
 from .importer import import_movie_source, import_tv_source, ImportErrorSafe
-from .db import log_import, add_activity, learn_exact_route, track_request, request_map
+from .language_guard import inspect_source_languages, load_language_policy
+from .library import invalidate_library_cache
+from .db import log_import, add_activity, learn_exact_route, track_request, request_map, set_item_state
 
 
 def _client_for_instance(inst: ArrInstance):
@@ -143,12 +145,45 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
 
     if service == "radarr":
         dest_dir = arr_item.get("path") or f"{root}/{arr_item['title']} ({arr_item.get('year', '')})"
+    else:
+        dest_dir = arr_item.get("path") or f"{root}/{arr_item['title']}"
+
+    # v7 Language Guard: inspect the *actual* DMM/Decypharr media before a
+    # library symlink is created.  A rejected source remains untouched in RD.
+    # The title is already monitored by the target Arr, so an optional native
+    # search can immediately start the English replacement/upgrade path.
+    language = await asyncio.to_thread(inspect_source_languages, source_path, item.fingerprint, False)
+    policy = load_language_policy()
+    if policy.enabled and not bool(language.get("compliant")):
+        reason = str(language.get("summary") or "Language policy not met")
+        replacement_started = False
+        if policy.auto_upgrade_search:
+            try:
+                await client.search(int(arr_item["id"]))
+                replacement_started = True
+            except Exception as exc:
+                reason += f"; replacement search failed: {exc}"
+        if replacement_started:
+            reason += "; English replacement search queued in Arr"
+        set_item_state(source_path, "language_issue", reason)
+        import_id = log_import(
+            source_path=source_path, source_name=item.name, media_type=item.media_type,
+            destination_key=actual_destination_key, destination_path=dest_dir, arr_name=service,
+            arr_instance=(existing_inst.instance if existing_inst else (target_inst.instance if target_inst else "configured-main")),
+            arr_id=arr_item.get("id"), status="language_rejected", note=reason, created_paths=[],
+            source_fingerprint=item.fingerprint, source_quality=item.quality,
+        )
+        add_activity("language_guard", item.title_guess, reason, source_path)
+        raise ImportErrorSafe(f"Language Guard blocked import: {reason}")
+
+    if service == "radarr":
         created = import_movie_source(source_path, dest_dir, arr_item.get("title", item.title_guess), arr_item.get("year") or item.year_guess)
         await client.rescan(int(arr_item["id"]))
     else:
-        dest_dir = arr_item.get("path") or f"{root}/{arr_item['title']}"
         created = import_tv_source(source_path, dest_dir, arr_item.get("title", item.title_guess))
         await client.rescan(int(arr_item["id"]))
+
+    invalidate_library_cache()
 
     # User overrides teach the router an exact-title preference.
     if destination_key and destination_key != recommended.key:

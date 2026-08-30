@@ -13,7 +13,7 @@ class DecypharrClient:
         if not self.url: raise DecypharrError('Decypharr URL is not configured')
         if not self.token: raise DecypharrError('Decypharr API token is not configured')
     @property
-    def headers(self): return {'Authorization':f'Bearer {self.token}','User-Agent':'ArrNexus/6.1'}
+    def headers(self): return {'Authorization':f'Bearer {self.token}','User-Agent':'ArrNexus/7.0'}
     async def get(self,path:str):
         self._require()
         async with httpx.AsyncClient(timeout=15.0,follow_redirects=True,headers=self.headers) as c: r=await c.get(self.url+path)
@@ -24,7 +24,7 @@ class DecypharrClient:
     async def version(self):
         # version is intentionally public, but the page also calls protected APIs.
         if not self.url: raise DecypharrError('Decypharr URL is not configured')
-        async with httpx.AsyncClient(timeout=8.0,follow_redirects=True,headers={'User-Agent':'ArrNexus/6.1'}) as c: r=await c.get(self.url+'/version')
+        async with httpx.AsyncClient(timeout=8.0,follow_redirects=True,headers={'User-Agent':'ArrNexus/7.0'}) as c: r=await c.get(self.url+'/version')
         if r.status_code>=400: raise DecypharrError(f'Version HTTP {r.status_code}')
         try: return r.json()
         except Exception: return {'version':r.text.strip()}

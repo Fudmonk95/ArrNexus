@@ -245,6 +245,29 @@ async def _probe_altmount(config: dict, client: httpx.AsyncClient) -> dict[str, 
     return {"reachable":True,"auth_ok":True,"api_ok":True,"latency_ms":api_ms,"version":version,"detail":detail or "JWT login verified"}
 
 
+async def _probe_dumb(config: dict, client: httpx.AsyncClient) -> dict[str, Any]:
+    """DUMB has a separate API (normally :8000) and frontend (:3005).
+    Do not accept a pretty HTML frontend page as proof that the API works."""
+    url=config["url"]
+    try:
+        r,ms=await _request(client,"GET",url+"/health")
+    except Exception as exc:
+        return {"reachable":False,"auth_ok":False,"api_ok":False,"error":str(exc)}
+    if r.status_code>=400:
+        return {"reachable":True,"auth_ok":None,"api_ok":False,"error":f"DUMB API health HTTP {r.status_code}","latency_ms":ms}
+    ctype=(r.headers.get("content-type") or "").lower()
+    try:
+        data=r.json()
+    except Exception:
+        data=None
+    if not isinstance(data,dict):
+        hint=" The DUMB frontend appears to be configured; use the DUMB API URL (normally port 8000), not frontend port 3005." if "html" in ctype or "<!doctype" in r.text[:200].lower() else ""
+        return {"reachable":True,"auth_ok":None,"api_ok":False,"error":"DUMB /health did not return JSON."+hint,"latency_ms":ms}
+    status=str(data.get("status") or "").lower()
+    ok=status in {"healthy","ok"} or data.get("ok") is True
+    return {"reachable":True,"auth_ok":None,"api_ok":bool(ok),"latency_ms":ms,"version":str(data.get("version") or ""),"detail":"DUMB API health verified" if ok else str(data.get("details") or data)}
+
+
 async def _probe_generic(config: dict, definition: ConnectorDefinition, client: httpx.AsyncClient) -> dict[str, Any]:
     last_error="No health endpoint responded"; headers=_generic_headers(config)
     for path in definition.health_paths:
@@ -266,10 +289,11 @@ async def probe_connector(key: str, timeout: float = 5.0) -> dict[str, Any]:
     url=str(config.get("url") or "").rstrip("/")
     if not url: return {**config,"ok":False,"state":"unconfigured","reachable":False,"auth_ok":False,"api_ok":False,"error":"URL is not configured"}
     if not url.startswith(("http://","https://")): return {**config,"ok":False,"state":"invalid","reachable":False,"auth_ok":False,"api_ok":False,"error":"URL must start with http:// or https://"}
-    headers={"User-Agent":"ArrNexus/6.1"}
+    headers={"User-Agent":"ArrNexus/7.0"}
     async with httpx.AsyncClient(timeout=timeout,follow_redirects=True,headers=headers) as client:
         try:
             if key=="infinidysk": result=await _probe_infinidysk(config,client)
+            elif key=="dumb": result=await _probe_dumb(config,client)
             elif key=="decypharr": result=await _probe_decypharr(config,client)
             elif key=="altmount": result=await _probe_altmount(config,client)
             else: result=await _probe_generic(config,definition,client)

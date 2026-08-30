@@ -1,17 +1,101 @@
-{% extends 'base.html' %}{% block heading %}Music Hub{% endblock %}{% block content %}
-<section class="music-landing panel"><div><span class="eyebrow">DISCOVER MUSIC · SEND TO LIDARR</span><h2>Different source. Different catalogue.</h2><p>Every tab now uses its own provider data. Personal streaming accounts are never linked; Lidarr + Prowlarr + Usenet still do the downloading.</p></div><div class="music-orb">♫</div></section>
-<nav class="provider-tabs">{% for p in providers %}<a class="provider-tab {{ 'active' if source==p.key }}" href="/music?source={{ p.key }}"><strong>{{ p.name }}</strong><small>{{ p.mode }}</small></a>{% endfor %}</nav>
-<section class="panel"><div class="provider-description"><strong>{{ selected_provider.name }}</strong><span>{{ selected_provider.description }}</span></div><form class="searchbar" method="get"><input type="hidden" name="source" value="{{ source }}"><select name="kind"><option value="artist" {{ 'selected' if kind=='artist' }}>Artists</option><option value="album" {{ 'selected' if kind=='album' }}>Albums</option></select><input name="q" value="{{ q }}" placeholder="Search this catalogue"><button class="btn primary">Search</button></form>{% if source_note %}<div class="provider-note">{{ source_note }}</div>{% endif %}{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-{% if source=='soundcloud' and not soundcloud_configured %}<div class="alert">SoundCloud needs optional application credentials, not a personal listener login. Add them in Settings → Music providers.</div>{% endif %}{% if source=='jamendo' and not jamendo_configured %}<div class="alert">Jamendo needs an optional developer client ID.</div>{% endif %}{% if source=='lastfm' and not lastfm_configured %}<div class="alert">Last.fm needs an optional application API key for charts/search.</div>{% endif %}{% if source=='spotify' and not spotify_configured %}<div class="alert">Spotify catalogue search can use optional application Client ID/Secret credentials. This does not link a personal Spotify library or profile.</div>{% endif %}
-{% if external_url %}<div class="external-provider-callout"><div><strong>{{ selected_provider.name }} catalogue</strong><p>This source is being treated as an external catalogue rather than showing fake ListenBrainz recommendations under its name.</p></div><a class="btn primary" href="{{ external_url }}" target="_blank" rel="noopener">Open catalogue search ↗</a></div>{% endif %}</section>
+{% extends 'base.html' %}
+{% block heading %}Music Hub{% endblock %}
+{% macro music_card(x, add_button=true, compact=false) -%}
+<article class="music-card {{ 'compact-card' if compact else 'result-card' }}">
+  <a href="/music/artist?name={{ (x.artist or x.title)|urlencode }}" class="music-art">
+    {% if x.artwork %}<img src="{{ x.artwork }}" loading="lazy" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><div class="album-fallback" hidden>{{ (x.artist or x.title or '??')[:2]|upper }}</div>{% else %}<div class="album-fallback">{{ (x.artist or x.title or '??')[:2]|upper }}</div>{% endif %}
+    <span class="source-badge">{{ x.source }}</span>
+  </a>
+  <div class="music-card-copy">
+    <strong>{{ x.title }}</strong><span>{{ x.artist }}</span>
+    <small>{{ x.album or x.genre or x.date or (x.listen_count|string + ' listens' if x.listen_count else '') }}</small>
+    {% if not compact %}<div class="music-actions">
+      {% if add_button and x.kind != 'playlist' %}<form method="post" action="/music/add-result"><input type="hidden" name="artist_name" value="{{ x.artist }}"><input type="hidden" name="title" value="{{ x.title }}"><input type="hidden" name="kind" value="{{ x.kind }}"><input type="hidden" name="source" value="{{ x.source }}"><button class="btn primary small">{{ 'Add album + search' if x.kind in ['album','release'] else 'Add artist + search' }}</button></form>{% endif %}
+      {% if x.external %}<a class="btn small" href="{{ x.external }}" target="_blank" rel="noopener">Open {{ x.source }} ↗</a>{% endif %}
+    </div>{% endif %}
+  </div>
+</article>
+{%- endmacro %}
+{% block content %}
+{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
+<section class="music-landing panel">
+  <div><span class="eyebrow">DISCOVER MUSIC · PERSONALISE · SEND TO LIDARR</span><h2>Discovery from open catalogues and your own music services.</h2><p>Spotify can be linked per ArrNexus user for Your Music, personal highlights and recently played tracks. Lidarr + Prowlarr still handle acquisition.</p></div>
+  <div class="music-orb">♫</div>
+</section>
 
-{% if results %}<section class="panel"><div class="panelhead"><div><h2>{{ selected_provider.name }} search results</h2><p>Results originate from the selected provider. Add resolves independently into Lidarr.</p></div></div><div class="music-grid rich">{% for x in results %}<article class="music-card result-card"><a href="/music/artist?name={{ (x.artist or x.title)|urlencode }}" class="music-art">{% if x.artwork %}<img src="{{ x.artwork }}" loading="lazy" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><div class="album-fallback" hidden>{{ (x.artist or x.title or '??')[:2]|upper }}</div>{% else %}<div class="album-fallback">{{ (x.artist or x.title or '??')[:2]|upper }}</div>{% endif %}<span class="source-badge">{{ x.source }}</span></a><div class="music-card-copy"><strong>{{ x.title }}</strong><span>{{ x.artist }}</span><small>{{ x.genre or x.date or x.country or '' }}</small><div class="music-actions"><form method="post" action="/music/add-result"><input type="hidden" name="artist_name" value="{{ x.artist }}"><input type="hidden" name="title" value="{{ x.title }}"><input type="hidden" name="kind" value="{{ x.kind }}"><input type="hidden" name="source" value="{{ x.source }}"><button class="btn primary small">{{ 'Add album + search' if x.kind in ['album','release'] else 'Add artist + search' }}</button></form>{% if x.external %}<a class="btn small" href="{{ x.external }}" target="_blank" rel="noopener">Source ↗</a>{% endif %}</div></div></article>{% endfor %}</div></section>{% endif %}
+<nav class="provider-tabs">{% for p in providers %}<a class="provider-tab {{ 'active' if source==p.key }}" href="/music?source={{ p.key }}">{% if brand_icon(p.key) %}<img class="provider-icon" src="{{ brand_icon(p.key) }}" alt="" loading="lazy">{% endif %}<span><strong>{{ p.name }}</strong><small>{{ p.mode }}</small></span></a>{% endfor %}</nav>
 
-<section class="panel"><div class="panelhead"><div><h2>{{ selected_provider.name }} highlights</h2><p>{{ source_note or 'Provider-specific discovery' }}</p></div></div>{% if source_featured %}<div class="music-grid compact-grid">{% for x in source_featured[:24] %}<a class="music-card" href="/music/artist?name={{ (x.artist or x.title)|urlencode }}"><div class="music-art">{% if x.artwork %}<img src="{{ x.artwork }}" loading="lazy" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><div class="album-fallback" hidden>{{ (x.artist or x.title or '??')[:2]|upper }}</div>{% else %}<div class="album-fallback">{{ (x.artist or x.title or '??')[:2]|upper }}</div>{% endif %}<span class="source-badge">{{ x.source or selected_provider.name }}</span></div><div class="music-card-copy"><strong>{{ x.title }}</strong><span>{{ x.artist }}</span><small>{% if x.rank %}#{{ x.rank }} · {% endif %}{{ x.genre or x.date or (x.listen_count|string + ' listens' if x.listen_count else '') }}</small></div></a>{% endfor %}</div>{% else %}<div class="empty"><p>{{ source_note or 'No provider-specific browse feed is available.' }}</p>{% if selected_provider.mode=='external' %}<p>Use search above to launch this catalogue. ArrNexus deliberately does not substitute another provider's results.</p>{% endif %}</div>{% endif %}</section>
+<section class="panel">
+  <div class="provider-description"><strong>{{ selected_provider.name }}</strong><span>{{ selected_provider.description }}</span></div>
+  <form class="searchbar" method="get"><input type="hidden" name="source" value="{{ source }}"><select name="kind"><option value="artist" {{ 'selected' if kind=='artist' }}>Artists</option><option value="album" {{ 'selected' if kind=='album' }}>Albums</option></select><input name="q" value="{{ q }}" placeholder="Search this catalogue"><button class="btn primary">Search</button></form>
+  {% if source_note %}<div class="provider-note">{{ source_note }}</div>{% endif %}
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+  {% if source=='soundcloud' and not soundcloud_configured %}<div class="alert">SoundCloud needs optional application credentials. Add them in Settings → Music providers.</div>{% endif %}
+  {% if source=='jamendo' and not jamendo_configured %}<div class="alert">Jamendo needs an optional developer client ID.</div>{% endif %}
+  {% if source=='lastfm' and not lastfm_configured %}<div class="alert">Last.fm needs an optional application API key for charts/search.</div>{% endif %}
+  {% if source=='spotify' %}
+    <div class="spotify-account-row">
+      <div class="spotify-account-copy">
+        <span class="brand-logo spotify-logo">{% if brand_icon('spotify') %}<img src="{{ brand_icon('spotify') }}" alt="Spotify">{% else %}S{% endif %}</span>
+        <div>
+          {% if spotify_linked %}<strong>Spotify linked{% if spotify_hub.profile %} · {{ spotify_hub.profile.display_name or spotify_hub.profile.id }}{% endif %}</strong><small>Your saved music and listening highlights are available below.</small>
+          {% elif spotify_configured %}<strong>Spotify app ready — account not linked</strong><small>Connect your Spotify account to show Your Music, playlists, top tracks/artists and recent listening.</small>
+          {% else %}<strong>Spotify application not configured</strong><small>Add the Spotify Client ID, Client Secret and callback URI in Settings first.</small>{% endif %}
+        </div>
+      </div>
+      <div class="inline-actions">
+        {% if spotify_linked %}<form method="post" action="/music/spotify/disconnect"><button class="btn ghost">Disconnect Spotify</button></form>
+        {% elif spotify_configured and spotify_redirect_ready %}<a class="btn primary" href="/music/spotify/connect" data-no-soft-nav>Connect Spotify</a>
+        {% elif spotify_configured %}<a class="btn" href="/settings">Set OAuth callback</a>{% endif %}
+      </div>
+    </div>
+    {% if spotify_configured and not spotify_redirect_ready %}<div class="alert warning"><strong>Spotify user linking is not ready.</strong> Your callback is <code>{{ spotify_redirect_uri }}</code>. Spotify requires HTTPS except for explicit 127.0.0.1/[::1] loopback development. Set an HTTPS callback in Settings and register exactly the same URI in the Spotify Developer Dashboard.</div>{% endif %}
+    {% if spotify_hub.errors %}<div class="alert warning"><strong>Some Spotify sections could not load.</strong><ul>{% for e in spotify_hub.errors %}<li>{{ e }}</li>{% endfor %}</ul></div>{% endif %}
+  {% endif %}
+  {% if external_url %}<div class="external-provider-callout"><div><strong>{{ selected_provider.name }} catalogue</strong><p>This source is an external catalogue rather than another provider relabelled as it.</p></div><a class="btn primary" href="{{ external_url }}" target="_blank" rel="noopener">Open catalogue search ↗</a></div>{% endif %}
+</section>
+
+{% if results %}<section class="panel"><div class="panelhead"><div><h2>{{ selected_provider.name }} search results</h2><p>Results originate from the selected provider. Add resolves independently into Lidarr.</p></div></div><div class="music-grid rich">{% for x in results %}{{ music_card(x, true, false) }}{% endfor %}</div></section>{% endif %}
+
+{% if source=='spotify' %}
+  {% if spotify_linked %}
+  <section class="panel spotify-hero-panel">
+    <div class="panelhead"><div><span class="eyebrow">YOUR SPOTIFY</span><h2>My Music</h2><p>Saved content from the Spotify account linked to this ArrNexus profile.</p></div></div>
+    <div class="spotify-summary-grid">
+      <div class="stat"><span>Saved tracks shown</span><strong>{{ spotify_hub.saved_tracks|length }}</strong></div>
+      <div class="stat"><span>Saved albums shown</span><strong>{{ spotify_hub.saved_albums|length }}</strong></div>
+      <div class="stat"><span>Playlists shown</span><strong>{{ spotify_hub.playlists|length }}</strong></div>
+      <div class="stat"><span>Recent tracks shown</span><strong>{{ spotify_hub.recent|length }}</strong></div>
+    </div>
+  </section>
+
+  <section class="panel"><div class="panelhead"><div><h2>Saved tracks</h2><p>Your Spotify “Your Music” tracks.</p></div></div>{% if spotify_hub.saved_tracks %}<div class="music-grid rich">{% for x in spotify_hub.saved_tracks %}{{ music_card(x, true, false) }}{% endfor %}</div>{% else %}<div class="empty">No saved tracks were returned.</div>{% endif %}</section>
+
+  <section class="panel"><div class="panelhead"><div><h2>Saved albums</h2><p>Albums saved to your Spotify library.</p></div></div>{% if spotify_hub.saved_albums %}<div class="music-grid rich">{% for x in spotify_hub.saved_albums %}{{ music_card(x, true, false) }}{% endfor %}</div>{% else %}<div class="empty">No saved albums were returned.</div>{% endif %}</section>
+
+  <section class="panel"><div class="panelhead"><div><h2>Your playlists</h2><p>Private/collaborative playlists are available when Spotify grants the requested playlist scopes.</p></div></div>{% if spotify_hub.playlists %}<div class="music-grid rich">{% for x in spotify_hub.playlists %}{{ music_card(x, false, false) }}{% endfor %}</div>{% else %}<div class="empty">No playlists were returned.</div>{% endif %}</section>
+
+  <section class="panel"><div class="panelhead"><div><span class="eyebrow">PERSONALISED</span><h2>Your Spotify highlights</h2><p>Your top tracks and artists over Spotify's medium-term affinity window.</p></div></div>
+    <div class="music-section-grid">
+      <div><h3>Top tracks</h3>{% if spotify_hub.top_tracks %}<div class="music-grid compact-grid">{% for x in spotify_hub.top_tracks %}{{ music_card(x, true, true) }}{% endfor %}</div>{% else %}<div class="empty">No top tracks returned yet.</div>{% endif %}</div>
+      <div><h3>Top artists</h3>{% if spotify_hub.top_artists %}<div class="artist-strip">{% for x in spotify_hub.top_artists %}<a class="artist-bubble" href="/music/artist?name={{ x.artist|urlencode }}">{% if x.artwork %}<img src="{{ x.artwork }}" loading="lazy" alt="">{% else %}<span class="artist-fallback">{{ x.artist[:2]|upper }}</span>{% endif %}<strong>{{ x.artist }}</strong><small>{{ x.genre }}</small></a>{% endfor %}</div>{% else %}<div class="empty">No top artists returned yet.</div>{% endif %}</div>
+    </div>
+  </section>
+
+  <section class="panel"><div class="panelhead"><div><h2>Recently played</h2><p>Your latest Spotify listening history.</p></div></div>{% if spotify_hub.recent %}<div class="music-grid compact-grid">{% for x in spotify_hub.recent %}{{ music_card(x, true, true) }}{% endfor %}</div>{% else %}<div class="empty">No recently played tracks were returned.</div>{% endif %}</section>
+  {% endif %}
+
+  <section class="panel"><div class="panelhead"><div><span class="eyebrow">GLOBAL TREND PULSE · LISTENBRAINZ</span><h2>Trending now</h2><p>Spotify no longer exposes a general global trending/browse feed through the Web API, so ArrNexus keeps this section honest: these global trends come from ListenBrainz and are never relabelled as Spotify data.</p></div></div>
+    {% if spotify_trending %}<div class="music-grid compact-grid">{% for x in spotify_trending[:18] %}{{ music_card(x, true, true) }}{% endfor %}</div>{% else %}<div class="empty">Global trend data is temporarily unavailable.</div>{% endif %}
+    {% if spotify_trending_artists %}<div class="artist-strip spotify-trend-artists">{% for x in spotify_trending_artists[:14] %}<a class="artist-bubble" href="/music/artist?name={{ x.artist|urlencode }}">{% if x.artwork %}<img src="{{ x.artwork }}" loading="lazy" alt="">{% else %}<span class="artist-fallback">{{ x.artist[:2]|upper }}</span>{% endif %}<strong>{{ x.artist }}</strong><small>{{ x.listen_count }} listens</small></a>{% endfor %}</div>{% endif %}
+  </section>
+{% else %}
+  <section class="panel"><div class="panelhead"><div><h2>{{ selected_provider.name }} highlights</h2><p>{{ source_note or 'Provider-specific discovery' }}</p></div></div>{% if source_featured %}<div class="music-grid compact-grid">{% for x in source_featured[:24] %}{{ music_card(x, true, true) }}{% endfor %}</div>{% else %}<div class="empty"><p>{{ source_note or 'No provider-specific browse feed is available.' }}</p>{% if selected_provider.mode=='external' %}<p>Use search above to launch this catalogue. ArrNexus deliberately does not substitute another provider's results.</p>{% endif %}</div>{% endif %}</section>
+{% endif %}
 
 <section class="panel"><div class="panelhead"><div><h2>Browse genres</h2><p>Genre shortcuts stay within the selected provider where that provider supports genre discovery.</p></div></div><div class="chip-cloud">{% for g in genres %}<a class="tag {{ 'blue' if genre==g }}" href="/music?source={{ source }}&genre={{ g|urlencode }}&q={{ g|urlencode }}">{{ g }}</a>{% endfor %}</div></section>
 
-{% if source=='unified' %}<div class="music-section-grid"><section class="panel"><div class="panelhead"><div><h2>ListenBrainz trend pulse</h2><p>Shown only on For You, clearly labelled.</p></div></div><div class="music-grid compact-grid">{% for x in releases[:12] %}<a class="music-card" href="/music/artist?name={{ x.artist|urlencode }}"><div class="music-art">{% if x.artwork %}<img src="{{ x.artwork }}" loading="lazy" alt="">{% else %}<div class="album-fallback">{{ x.artist[:2]|upper }}</div>{% endif %}<span class="source-badge">ListenBrainz</span></div><div class="music-card-copy"><strong>{{ x.title }}</strong><span>{{ x.artist }}</span><small>{{ x.listen_count }} listens</small></div></a>{% endfor %}</div></section><section class="panel"><div class="panelhead"><div><h2>Audius trend pulse</h2><p>Open discovery data, separately labelled.</p></div></div><div class="music-grid compact-grid">{% for x in audius[:12] %}<a class="music-card" href="/music/artist?name={{ x.artist|urlencode }}"><div class="music-art">{% if x.artwork %}<img src="{{ x.artwork }}" loading="lazy" alt="">{% else %}<div class="album-fallback">{{ x.artist[:2]|upper }}</div>{% endif %}<span class="source-badge">Audius</span></div><div class="music-card-copy"><strong>{{ x.title }}</strong><span>{{ x.artist }}</span><small>{{ x.genre }}</small></div></a>{% endfor %}</div></section></div>
+{% if source=='unified' %}<div class="music-section-grid"><section class="panel"><div class="panelhead"><div><h2>ListenBrainz trend pulse</h2><p>Shown only on For You, clearly labelled.</p></div></div><div class="music-grid compact-grid">{% for x in releases[:12] %}{{ music_card(x, true, true) }}{% endfor %}</div></section><section class="panel"><div class="panelhead"><div><h2>Audius trend pulse</h2><p>Open discovery data, separately labelled.</p></div></div><div class="music-grid compact-grid">{% for x in audius[:12] %}{{ music_card(x, true, true) }}{% endfor %}</div></section></div>
 <section class="panel"><div class="panelhead"><div><h2>Trending artists</h2><p>ListenBrainz global artist trends, only in For You.</p></div></div><div class="artist-strip">{% for x in trends[:18] %}<a class="artist-bubble" href="/music/artist?name={{ x.artist|urlencode }}">{% if x.artwork %}<img src="{{ x.artwork }}" loading="lazy" alt="">{% else %}<span class="artist-fallback">{{ x.artist[:2]|upper }}</span>{% endif %}<strong>{{ x.artist }}</strong><small>{{ x.listen_count }} listens</small></a>{% endfor %}</div></section>{% endif %}
 
 <section class="panel"><div class="panelhead"><div><h2>Your Lidarr library</h2><p>{{ lidarr_artists|length }} managed artists.</p></div></div>{% if lidarr_error %}<div class="alert error"><strong>Lidarr unavailable</strong><br>{{ lidarr_error }}<br><small>The selected music catalogue above remains usable; fix Lidarr in Connections before requesting music.</small></div>{% endif %}<div class="chip-cloud">{% for a in lidarr_artists[:200] %}<a class="tag green" href="/music/artist?name={{ (a.artistName or a.name)|urlencode }}">{{ a.artistName or a.name }}</a>{% else %}<span class="muted">No artists loaded. Check Lidarr in Connections.</span>{% endfor %}</div></section>

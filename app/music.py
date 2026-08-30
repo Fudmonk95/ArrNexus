@@ -1,10 +1,10 @@
 from __future__ import annotations
 import asyncio
 import time
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 import httpx
 from .config import settings
-from .db import cache_get, cache_set, setting_get, setting_set
+from .db import cache_get, cache_set, setting_get, setting_set, setting_delete
 from .plugins import load_catalog_plugins, plugin_search_url
 
 _mb_lock = asyncio.Lock()
@@ -314,7 +314,7 @@ def provider_catalog() -> list[dict]:
         {"key":"archive","name":"Internet Archive","mode":"native","description":"No-key public audio/archive discovery"},
         {"key":"jamendo","name":"Jamendo","mode":"optional","description":"Public music catalog; optional free developer client ID"},
         {"key":"soundcloud","name":"SoundCloud","mode":"optional","description":"Catalog search with optional app credentials; no listener account linking"},
-        {"key":"spotify","name":"Spotify","mode":"external","description":"Catalog launch/search without linking a personal Spotify account"},
+        {"key":"spotify","name":"Spotify","mode":"account","description":"Catalogue search plus per-user Spotify account linking"},
         {"key":"amazon","name":"Amazon Music","mode":"external","description":"Amazon Music catalog launcher"},
         {"key":"beatport","name":"Beatport","mode":"external","description":"Electronic music catalog launcher"},
         {"key":"bandcamp","name":"Bandcamp","mode":"external","description":"Independent music discovery launcher"},
@@ -456,39 +456,288 @@ async def deezer_search(term: str, kind: str = "album", count: int = 24) -> list
     return out
 
 
-async def spotify_search(term: str, kind: str = "album", count: int = 20) -> list[dict]:
-    """Optional app-only Spotify catalog access via client credentials.
+SPOTIFY_USER_SCOPES = (
+    "user-library-read",
+    "user-top-read",
+    "user-read-recently-played",
+    "playlist-read-private",
+    "playlist-read-collaborative",
+    "user-read-private",
+)
 
-    No personal Spotify account is linked to ArrNexus. Spotify app access is
-    optional because Development Mode eligibility/rules can change.
-    """
-    cid=setting_get("music.spotify.client_id", ""); secret=setting_get("music.spotify.client_secret", "")
-    if not cid or not secret or not term.strip(): return []
-    token_cache=cache_get("spotify:app_token") or {}
-    token=""
-    if isinstance(token_cache,dict) and token_cache.get("access_token") and float(token_cache.get("expires_at") or 0)>time.time()+90:
-        token=token_cache["access_token"]
+
+def spotify_app_configured() -> bool:
+    return bool(setting_get("music.spotify.client_id", "") and setting_get("music.spotify.client_secret", ""))
+
+
+def spotify_user_linked(user_id: int) -> bool:
+    return bool(setting_get(f"music.spotify.user.{int(user_id)}.refresh_token", ""))
+
+
+def spotify_authorize_url(user_id: int, state: str, redirect_uri: str) -> str:
+    """Build the user OAuth URL. The caller keeps state in the signed session."""
+    cid = setting_get("music.spotify.client_id", "")
+    if not cid:
+        raise RuntimeError("Spotify Client ID is not configured")
+    if not redirect_uri:
+        raise RuntimeError("Spotify redirect URI is not configured")
+    params = {
+        "client_id": cid,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "scope": " ".join(SPOTIFY_USER_SCOPES),
+        "show_dialog": "false",
+    }
+    return "https://accounts.spotify.com/authorize?" + urlencode(params)
+
+
+async def _spotify_app_token() -> str:
+    """Client-credentials token for catalogue search only."""
+    cid = setting_get("music.spotify.client_id", "")
+    secret = setting_get("music.spotify.client_secret", "")
+    if not cid or not secret:
+        return ""
+    token_cache = cache_get("spotify:app_token") or {}
+    if isinstance(token_cache, dict) and token_cache.get("access_token") and float(token_cache.get("expires_at") or 0) > time.time() + 90:
+        return str(token_cache["access_token"])
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            tr = await client.post(
+                "https://accounts.spotify.com/api/token",
+                auth=(cid, secret),
+                data={"grant_type": "client_credentials"},
+            )
+        tr.raise_for_status()
+        td = tr.json()
+        token = td.get("access_token") or ""
+        if token:
+            cache_set("spotify:app_token", {
+                "access_token": token,
+                "expires_at": time.time() + int(td.get("expires_in") or 3600),
+            })
+        return token
+    except Exception:
+        return ""
+
+
+async def spotify_exchange_code(user_id: int, code: str, redirect_uri: str) -> dict:
+    cid = setting_get("music.spotify.client_id", "")
+    secret = setting_get("music.spotify.client_secret", "")
+    if not cid or not secret:
+        raise RuntimeError("Spotify application credentials are not configured")
+    async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
+        r = await client.post(
+            "https://accounts.spotify.com/api/token",
+            auth=(cid, secret),
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+            },
+        )
+    if r.status_code >= 400:
+        try:
+            detail = (r.json().get("error_description") or r.json().get("error") or r.text)[:300]
+        except Exception:
+            detail = r.text[:300]
+        raise RuntimeError(f"Spotify authorization failed: {detail}")
+    data = r.json()
+    refresh = str(data.get("refresh_token") or "")
+    if refresh:
+        setting_set(f"music.spotify.user.{int(user_id)}.refresh_token", refresh, True)
+    setting_set(f"music.spotify.user.{int(user_id)}.scope", str(data.get("scope") or ""), False)
+    access = str(data.get("access_token") or "")
+    if access:
+        cache_set(f"spotify:user_token:{int(user_id)}", {
+            "access_token": access,
+            "expires_at": time.time() + int(data.get("expires_in") or 3600),
+        })
+    return data
+
+
+async def spotify_user_access_token(user_id: int, force_refresh: bool = False) -> str:
+    uid = int(user_id)
+    cached = cache_get(f"spotify:user_token:{uid}") or {}
+    if not force_refresh and isinstance(cached, dict) and cached.get("access_token") and float(cached.get("expires_at") or 0) > time.time() + 90:
+        return str(cached["access_token"])
+    refresh = setting_get(f"music.spotify.user.{uid}.refresh_token", "")
+    if not refresh:
+        return ""
+    cid = setting_get("music.spotify.client_id", "")
+    secret = setting_get("music.spotify.client_secret", "")
+    if not cid or not secret:
+        return ""
+    async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
+        r = await client.post(
+            "https://accounts.spotify.com/api/token",
+            auth=(cid, secret),
+            data={"grant_type": "refresh_token", "refresh_token": refresh},
+        )
+    if r.status_code >= 400:
+        raise RuntimeError(f"Spotify token refresh failed (HTTP {r.status_code})")
+    data = r.json()
+    if data.get("refresh_token"):
+        setting_set(f"music.spotify.user.{uid}.refresh_token", str(data["refresh_token"]), True)
+    access = str(data.get("access_token") or "")
+    if access:
+        cache_set(f"spotify:user_token:{uid}", {
+            "access_token": access,
+            "expires_at": time.time() + int(data.get("expires_in") or 3600),
+        })
+    return access
+
+
+def spotify_disconnect_user(user_id: int) -> None:
+    uid = int(user_id)
+    for suffix in ("refresh_token", "scope", "profile_id", "profile_name"):
+        setting_delete(f"music.spotify.user.{uid}.{suffix}")
+    cache_set(f"spotify:user_token:{uid}", {"access_token": "", "expires_at": 0})
+    cache_set(f"spotify:profile:{uid}", {})
+
+
+async def _spotify_user_get(user_id: int, path: str, params: dict | None = None) -> dict:
+    token = await spotify_user_access_token(user_id)
     if not token:
+        raise RuntimeError("Spotify account is not linked")
+    async with httpx.AsyncClient(timeout=22.0, follow_redirects=True) as client:
+        r = await client.get(
+            "https://api.spotify.com/v1" + path,
+            params=params or {},
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        )
+    if r.status_code == 401:
+        token = await spotify_user_access_token(user_id, force_refresh=True)
+        async with httpx.AsyncClient(timeout=22.0, follow_redirects=True) as client:
+            r = await client.get(
+                "https://api.spotify.com/v1" + path,
+                params=params or {},
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            )
+    if r.status_code == 429:
+        raise RuntimeError("Spotify rate limit reached; try again shortly")
+    if r.status_code >= 400:
+        raise RuntimeError(f"Spotify API {path} failed (HTTP {r.status_code})")
+    data = r.json()
+    return data if isinstance(data, dict) else {}
+
+
+def _spotify_images(row: dict) -> str:
+    images = row.get("images") or []
+    return str((images[0] or {}).get("url") or "") if images else ""
+
+
+def _spotify_track_card(track: dict, *, section: str = "") -> dict:
+    artists = track.get("artists") or []
+    album = track.get("album") or {}
+    artist = ", ".join(str(a.get("name") or "") for a in artists if a.get("name"))
+    return {
+        "source": "Spotify", "kind": "track", "id": track.get("id") or "",
+        "title": track.get("name") or "Unknown track", "artist": artist or "Unknown artist",
+        "genre": "", "date": album.get("release_date") or "",
+        "artwork": _spotify_images(album), "external": ((track.get("external_urls") or {}).get("spotify") or ""),
+        "section": section, "album": album.get("name") or "",
+    }
+
+
+def _spotify_album_card(album: dict, *, section: str = "") -> dict:
+    artists = album.get("artists") or []
+    artist = ", ".join(str(a.get("name") or "") for a in artists if a.get("name"))
+    return {
+        "source": "Spotify", "kind": "album", "id": album.get("id") or "",
+        "title": album.get("name") or "Unknown album", "artist": artist or "Unknown artist",
+        "genre": "", "date": album.get("release_date") or "",
+        "artwork": _spotify_images(album), "external": ((album.get("external_urls") or {}).get("spotify") or ""),
+        "section": section,
+    }
+
+
+def _spotify_artist_card(artist: dict, *, section: str = "") -> dict:
+    return {
+        "source": "Spotify", "kind": "artist", "id": artist.get("id") or "",
+        "title": artist.get("name") or "Unknown artist", "artist": artist.get("name") or "Unknown artist",
+        "genre": ", ".join((artist.get("genres") or [])[:3]), "date": "",
+        "artwork": _spotify_images(artist), "external": ((artist.get("external_urls") or {}).get("spotify") or ""),
+        "section": section,
+    }
+
+
+def _spotify_playlist_card(row: dict) -> dict:
+    owner = row.get("owner") or {}
+    return {
+        "source": "Spotify", "kind": "playlist", "id": row.get("id") or "",
+        "title": row.get("name") or "Untitled playlist", "artist": owner.get("display_name") or "Spotify playlist",
+        "genre": "Playlist", "date": "", "artwork": _spotify_images(row),
+        "external": ((row.get("external_urls") or {}).get("spotify") or ""), "section": "playlists",
+    }
+
+
+async def spotify_user_hub(user_id: int) -> dict:
+    """Personal Spotify view. Each optional endpoint is isolated so one 403/429
+    cannot blank the entire Music Hub."""
+    if not spotify_user_linked(user_id):
+        return {"linked": False, "profile": {}, "saved_tracks": [], "saved_albums": [], "playlists": [], "top_tracks": [], "top_artists": [], "recent": [], "errors": []}
+    tasks = {
+        "profile": _spotify_user_get(user_id, "/me"),
+        "saved_tracks": _spotify_user_get(user_id, "/me/tracks", {"limit": 24}),
+        "saved_albums": _spotify_user_get(user_id, "/me/albums", {"limit": 24}),
+        "playlists": _spotify_user_get(user_id, "/me/playlists", {"limit": 20}),
+        "top_tracks": _spotify_user_get(user_id, "/me/top/tracks", {"time_range": "medium_term", "limit": 20}),
+        "top_artists": _spotify_user_get(user_id, "/me/top/artists", {"time_range": "medium_term", "limit": 20}),
+        "recent": _spotify_user_get(user_id, "/me/player/recently-played", {"limit": 20}),
+    }
+    names = list(tasks)
+    results = await asyncio.gather(*(tasks[n] for n in names), return_exceptions=True)
+    raw = dict(zip(names, results))
+    errors = []
+    for name, value in list(raw.items()):
+        if isinstance(value, Exception):
+            errors.append(f"{name.replace('_',' ').title()}: {value}")
+            raw[name] = {}
+    profile = raw["profile"] or {}
+    if profile:
+        setting_set(f"music.spotify.user.{int(user_id)}.profile_id", str(profile.get("id") or ""), False)
+        setting_set(f"music.spotify.user.{int(user_id)}.profile_name", str(profile.get("display_name") or profile.get("id") or ""), False)
+    saved_tracks = [_spotify_track_card(x.get("track") or {}, section="saved") for x in (raw["saved_tracks"].get("items") or []) if (x.get("track") or {}).get("id")]
+    saved_albums = [_spotify_album_card(x.get("album") or {}, section="saved") for x in (raw["saved_albums"].get("items") or []) if (x.get("album") or {}).get("id")]
+    playlists = [_spotify_playlist_card(x) for x in (raw["playlists"].get("items") or []) if isinstance(x, dict) and x.get("id")]
+    top_tracks = [_spotify_track_card(x, section="top") for x in (raw["top_tracks"].get("items") or []) if isinstance(x, dict) and x.get("id")]
+    top_artists = [_spotify_artist_card(x, section="top") for x in (raw["top_artists"].get("items") or []) if isinstance(x, dict) and x.get("id")]
+    recent = [_spotify_track_card(x.get("track") or {}, section="recent") for x in (raw["recent"].get("items") or []) if (x.get("track") or {}).get("id")]
+    return {
+        "linked": True, "profile": profile, "saved_tracks": saved_tracks, "saved_albums": saved_albums,
+        "playlists": playlists, "top_tracks": top_tracks, "top_artists": top_artists, "recent": recent, "errors": errors,
+    }
+
+
+async def spotify_search(term: str, kind: str = "album", count: int = 20) -> list[dict]:
+    """Spotify catalogue search via app credentials. Personal endpoints use the
+    separate per-user OAuth flow above."""
+    if not term.strip():
+        return []
+    token = await _spotify_app_token()
+    if not token:
+        return []
+    typ = "artist" if kind == "artist" else "album"
+    out = []
+    offset = 0
+    while len(out) < min(count, 30):
         try:
-            async with httpx.AsyncClient(timeout=20.0,follow_redirects=True) as client:
-                tr=await client.post("https://accounts.spotify.com/api/token",auth=(cid,secret),data={"grant_type":"client_credentials"})
-            tr.raise_for_status(); td=tr.json(); token=td.get("access_token") or ""
-            if token: cache_set("spotify:app_token",{"access_token":token,"expires_at":time.time()+int(td.get("expires_in") or 3600)})
-        except Exception: return []
-    typ="artist" if kind=="artist" else "album"
-    out=[]; offset=0
-    while len(out)<min(count,30):
-        try:
-            async with httpx.AsyncClient(timeout=20.0,follow_redirects=True) as client:
-                r=await client.get("https://api.spotify.com/v1/search",params={"q":term,"type":typ,"market":(settings.public_music_country or "GB").upper(),"limit":min(10,count-len(out)),"offset":offset},headers={"Authorization":f"Bearer {token}"})
-            r.raise_for_status(); payload=r.json(); rows=((payload.get("artists") if typ=="artist" else payload.get("albums")) or {}).get("items") or []
-        except Exception: break
-        if not rows: break
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                r = await client.get(
+                    "https://api.spotify.com/v1/search",
+                    params={"q": term, "type": typ, "market": (settings.public_music_country or "GB").upper(), "limit": min(10, count-len(out)), "offset": offset},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            r.raise_for_status()
+            payload = r.json()
+            rows = ((payload.get("artists") if typ == "artist" else payload.get("albums")) or {}).get("items") or []
+        except Exception:
+            break
+        if not rows:
+            break
         for x in rows:
-            images=x.get("images") or []; art=images[0].get("url") if images else ""
-            artists=x.get("artists") or []
-            artist=x.get("name") if typ=="artist" else (artists[0].get("name") if artists else "")
-            out.append({"source":"Spotify","kind":typ,"id":x.get("id") or "","title":x.get("name") or "","artist":artist,"genre":", ".join((x.get("genres") or [])[:3]),"date":x.get("release_date") or "","artwork":art,"external":((x.get("external_urls") or {}).get("spotify") or "")})
+            out.append(_spotify_artist_card(x) if typ == "artist" else _spotify_album_card(x))
         offset += len(rows)
     return out[:count]
 
@@ -515,9 +764,9 @@ async def provider_featured(source: str, genre: str = "", count: int = 24) -> tu
     if source=="deezer":
         return await deezer_chart(count), "Deezer chart albums"
     if source=="spotify":
-        if setting_get("music.spotify.client_id","") and setting_get("music.spotify.client_secret",""):
-            return [], "Spotify app access is configured — search the Spotify catalogue above"
-        return [], "Optional Spotify application credentials enable catalog search without linking a listener account"
+        if spotify_app_configured():
+            return [], "Spotify catalogue access is ready. Link your Spotify account on this page for Your Music, personal highlights and recent listening."
+        return [], "Configure Spotify application credentials in Settings, then link your Spotify account from Music Hub."
     if source=="lastfm":
         return await lastfm_top(count), "Last.fm top tracks" if setting_get("music.lastfm.api_key","") else "Configure a Last.fm application API key to browse charts"
     if source=="unified":
@@ -570,7 +819,7 @@ def provider_catalog() -> list[dict]:
         {"key":"archive","name":"Internet Archive","mode":"native","description":"Public audio/archive discovery"},
         {"key":"jamendo","name":"Jamendo","mode":"optional","description":"Optional developer client ID; no listener account linking"},
         {"key":"soundcloud","name":"SoundCloud","mode":"optional","description":"Optional application credentials; no listener account linking"},
-        {"key":"spotify","name":"Spotify","mode":"optional","description":"Optional app client credentials for public catalog search; no user OAuth"},
+        {"key":"spotify","name":"Spotify","mode":"account","description":"Catalogue search plus optional per-user Spotify linking for saved music, playlists, top items and recent listening"},
         {"key":"amazon","name":"Amazon Music","mode":"external","description":"External catalogue launcher; no personal account connected"},
         {"key":"beatport","name":"Beatport","mode":"external","description":"Electronic music catalogue launcher"},
         {"key":"bandcamp","name":"Bandcamp","mode":"external","description":"Independent music discovery launcher"},

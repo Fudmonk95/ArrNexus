@@ -193,7 +193,8 @@ async def plan_and_grab(client: Any, media_type: str, arr_id: int, strategy: str
     if media_type == "movie":
         raw = await client.releases(int(arr_id))
     else:
-        raw = await client.releases(int(arr_id))
+        finder = getattr(client, "releases_for_series", None)
+        raw = await finder(int(arr_id)) if callable(finder) else await client.releases(int(arr_id))
     rows = list(raw or [])[: cfg.max_candidates]
     await annotate_debrid_cache(rows)
     ranked = rank_releases(rows, media_type, cfg.prefer_cached_debrid)

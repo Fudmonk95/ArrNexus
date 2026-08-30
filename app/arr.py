@@ -180,8 +180,59 @@ class SonarrClient(ArrClient):
     async def search(self, series_id: int):
         return await self.command({"name": "SeriesSearch", "seriesId": series_id})
 
+    async def releases_for_season(self, series_id: int, season_number: int):
+        return await self.request("GET", "/api/v3/release", params={"seriesId": int(series_id), "seasonNumber": int(season_number)})
+
+    async def releases_for_episode(self, episode_id: int):
+        return await self.request("GET", "/api/v3/release", params={"episodeId": int(episode_id)})
+
+    async def releases_for_series(self, series_id: int, max_seasons: int = 24):
+        """Perform real interactive Sonarr searches for a show's seasons.
+
+        Sonarr's release endpoint treats seriesId-only as RSS; adding
+        seasonNumber invokes SeasonSearch. Older ArrNexus builds accidentally
+        asked for RSS here, which could make TV acquisition appear random.
+        """
+        series = await self.series_by_id(int(series_id))
+        seasons = []
+        for row in (series.get("seasons") or []):
+            try:
+                number = int(row.get("seasonNumber"))
+            except Exception:
+                continue
+            if number <= 0:
+                continue
+            if row.get("monitored") is False:
+                continue
+            seasons.append(number)
+        seasons = sorted(set(seasons))[:max_seasons]
+        if not seasons:
+            # A newly-added series can briefly lack populated season metadata.
+            # Falling back to the native SeriesSearch command would download
+            # rather than return candidates, so keep this non-destructive.
+            return []
+        sem = __import__("asyncio").Semaphore(4)
+        async def one(number: int):
+            async with sem:
+                return await self.releases_for_season(int(series_id), number)
+        pages = await __import__("asyncio").gather(*(one(n) for n in seasons), return_exceptions=True)
+        out = []
+        seen = set()
+        for page in pages:
+            if isinstance(page, Exception):
+                continue
+            for row in page or []:
+                key = str(row.get("guid") or row.get("downloadUrl") or row.get("title") or "") + "|" + str(row.get("indexerId") or row.get("indexer") or "")
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                out.append(row)
+        return out
+
     async def releases(self, series_id: int):
-        return await self.request("GET", "/api/v3/release", params={"seriesId": int(series_id)})
+        # Kept for compatibility with plugins/older callers; use the interactive
+        # series implementation rather than Sonarr's seriesId-only RSS behavior.
+        return await self.releases_for_series(series_id)
 
 
 class LidarrClient(ArrClient):
@@ -255,6 +306,19 @@ class ProwlarrClient(ArrClient):
 
     async def indexers(self):
         return await self.request("GET", "/api/v1/indexer")
+
+    async def indexer(self, indexer_id: int):
+        return await self.request("GET", f"/api/v1/indexer/{int(indexer_id)}")
+
+    async def update_indexer(self, indexer_id: int, changes: dict):
+        current = await self.indexer(int(indexer_id))
+        if not isinstance(current, dict):
+            raise ArrError("Prowlarr returned an invalid indexer payload")
+        payload = copy.deepcopy(current)
+        for key in ("enable", "priority", "enableRss", "enableAutomaticSearch", "enableInteractiveSearch"):
+            if key in changes:
+                payload[key] = changes[key]
+        return await self.request("PUT", f"/api/v1/indexer/{int(indexer_id)}", json=payload)
 
     async def search(self, query: str, categories: list[int] | None = None, limit: int = 100):
         params = {"query": query, "type": "search", "limit": limit, "offset": 0}

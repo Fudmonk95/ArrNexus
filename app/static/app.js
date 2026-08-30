@@ -25,10 +25,13 @@
   });
   function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
   async function refreshExternalLogs(){const stream=document.getElementById('unifiedLogStream');if(!stream)return;const origin=stream.dataset.logOrigin;if(!['dumb','infinidysk'].includes(origin))return;const btn=document.querySelector('[data-live-logs]');if(btn?.dataset.paused==='1')return;try{const u=new URL('/api/logs/external',location.origin);u.searchParams.set('origin',origin);u.searchParams.set('process',stream.dataset.logProcess||'DUMB');u.searchParams.set('level',stream.dataset.logLevel||'all');u.searchParams.set('q',stream.dataset.logQuery||'');const r=await fetch(u,{headers:{Accept:'application/json'}});if(!r.ok)return;const d=await r.json();if(d.error)return;stream.innerHTML=(d.rows||[]).map(x=>{const diag=x.diagnostic?'<div class="log-diagnostic"><strong>'+esc(x.diagnostic.title)+'</strong><div>'+esc(x.diagnostic.explanation)+'</div><ul>'+((x.diagnostic.actions||[]).map(a=>'<li>'+esc(a)+'</li>').join(''))+'</ul></div>':'';return '<div class="log-line" data-level="'+esc(x.level)+'" data-log-line><span class="log-time">'+esc(x.created_at)+'</span><span class="log-level">'+esc(x.level)+'</span><span class="log-source">'+esc(x.source)+'</span><span class="log-message">'+esc(x.message)+'</span>'+diag+'</div>';}).join('')||'<div class="log-empty">No matching logs.</div>';}catch(e){}}
-  document.addEventListener('DOMContentLoaded',()=>{updateSelected();pollActive();setInterval(pollActive,5000);setInterval(refreshExternalLogs,3500);if('serviceWorker' in navigator)navigator.serviceWorker.register('/static/sw.js').catch(()=>{});});
+  document.addEventListener('DOMContentLoaded',()=>{updateSelected();pollActive();setInterval(pollActive,5000);setInterval(refreshExternalLogs,3500);if('serviceWorker' in navigator)navigator.serviceWorker.register('/static/sw.js').catch(()=>{});
+    const badge=document.querySelector('.nx-version-badge[data-update-check="1"]');
+    if(badge){try{const key='arrnexus:update-status';const cached=JSON.parse(localStorage.getItem(key)||'null');const fresh=cached&&Date.now()-(cached.at||0)<21600000;const apply=d=>{const em=badge.querySelector('[data-version-update]');if(em&&d?.update_available){em.hidden=false;em.textContent='UPDATE '+(d.latest||'');badge.classList.add('has-update');badge.title='ArrNexus update available: '+(d.latest||'new release');}};if(fresh)apply(cached.data);else fetch('/api/update-check',{headers:{Accept:'application/json'}}).then(r=>r.ok?r.json():null).then(d=>{if(d){localStorage.setItem(key,JSON.stringify({at:Date.now(),data:d}));apply(d);}}).catch(()=>{});}catch(_){}}
+  });
 })();
 
-/* ArrNexus 6.1: fast soft navigation + command palette. */
+/* ArrNexus 7: fast soft navigation + command palette. */
 (function(){
   const pageCache=new Map();
   const CACHE_MS=18000;
@@ -102,4 +105,15 @@
     if(!modal()?.hidden&&e.key==='Enter'){const a=results()?.querySelector('.nx-command-result.selected')||results()?.querySelector('.nx-command-result');if(a){e.preventDefault();closeCommand();navigate(a.href,true);}}
   });
   document.addEventListener('input',e=>{if(e.target?.id==='nxCommandInput')renderCommands(e.target.value)});
+})();
+
+/* ArrNexus 7.0: native InfiniDysk live overview + passive update badge. */
+(function(){
+  let infiniBusy=false;
+  function humanBytes(n){n=Number(n||0);const units=['B','KB','MB','GB','TB'];let i=0;while(n>=1024&&i<units.length-1){n/=1024;i++;}return (i===0?Math.round(n):n.toFixed(1))+' '+units[i];}
+  function graphPoints(rows){const vals=(rows||[]).map(x=>Math.max(0,Number(x.bytesFetched||x.bytesServed||0)));const peak=Math.max(0,...vals);if(!peak||!vals.length)return '';return vals.map((v,i)=>{const x=vals.length<=1?0:(i/(vals.length-1))*100;const y=96-(v/peak)*88;return x.toFixed(2)+','+y.toFixed(2)}).join(' ');}
+  async function refreshInfini(){const root=document.querySelector('[data-infinidysk-live]');if(!root||document.hidden||infiniBusy)return;infiniBusy=true;try{const w=root.dataset.window||'24h';const r=await fetch('/api/infinidysk/live?window='+encodeURIComponent(w),{headers:{Accept:'application/json'},credentials:'same-origin'});if(!r.ok)return;const d=await r.json();if(!d.ok)return;const t=d.overview?.tiles||{};root.querySelectorAll('[data-infini-stat]').forEach(el=>{const k=el.dataset.infiniStat,v=Number(t[k]||0);el.textContent=el.dataset.format==='bytes'?humanBytes(v):el.dataset.format==='rate'?humanBytes(v/60)+'/s':String(v);});const pts=graphPoints(d.overview?.throughput||[]);const line=root.querySelector('[data-infini-graph]'),area=root.querySelector('[data-infini-area]');if(line&&pts)line.setAttribute('points',pts);if(area&&pts)area.setAttribute('points','0,100 '+pts+' 100,100');const count=root.querySelector('[data-infini-queue-count]');const slots=d.queue?.slots||[];if(count)count.textContent=slots.length+' active queue item(s)';}catch(_e){}finally{infiniBusy=false;}}
+  async function checkVersionBadge(){const badge=document.querySelector('.nx-version-badge');if(!badge||badge.dataset.checked==='1')return;badge.dataset.checked='1';try{const r=await fetch('/api/update-check',{headers:{Accept:'application/json'},credentials:'same-origin'});if(!(r.headers.get('content-type')||'').includes('json'))return;const d=await r.json();if(d.update_available){badge.classList.add('update');const small=badge.querySelector('small');if(small){small.textContent='UPDATE';small.title='Latest: '+(d.latest||'new release')}}}catch(_e){}}
+  function activate(){refreshInfini();checkVersionBadge();}
+  document.addEventListener('DOMContentLoaded',activate);document.addEventListener('arrnexus:navigated',activate);setInterval(refreshInfini,4000);
 })();
