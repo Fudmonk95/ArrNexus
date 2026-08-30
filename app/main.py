@@ -52,6 +52,16 @@ from .tvpacks import classify_release, pack_matches, coverage_summary, choose_be
 from .notifications import send_notification
 from .admin_tools import create_database_backup, list_backups, sanitized_config, diagnostics_zip
 from .plugins import load_catalog_plugins, plugin_search_url
+from .ecosystem import (
+    connector_definitions, connector_config, save_connector as save_ecosystem_connector,
+    probe_connector, probe_enabled_connectors, install_connector_plugin,
+)
+from .infinidysk import InfiniDyskClient, InfiniDyskError
+from .qualitylab import evaluate_release, parse_release_name
+from .selfhealing import (
+    scan_self_healing, settings_state as selfheal_settings_state, save_settings as save_selfheal_settings,
+    trigger_search as selfheal_trigger_search, scheduler_loop as selfheal_scheduler_loop,
+)
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title="ArrNexus")
@@ -61,7 +71,7 @@ templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
 
-APP_VERSION = "4.0.0"
+APP_VERSION = "5.0.0"
 RUNNING_TASKS: set[asyncio.Task] = set()
 
 
@@ -77,6 +87,15 @@ async def startup():
                 create_database_backup("auto", int(setting_get("backup.retention", "10") or 10))
     except Exception as exc:
         try: log_event("warning", "backup", "auto_backup_failed", str(exc))
+        except Exception: pass
+    # Optional self-healing scheduler. It is disabled by default and only
+    # performs bounded Arr searches when explicitly enabled in the UI.
+    try:
+        task = asyncio.create_task(selfheal_scheduler_loop())
+        RUNNING_TASKS.add(task)
+        task.add_done_callback(RUNNING_TASKS.discard)
+    except Exception as exc:
+        try: log_event("warning", "selfheal", "scheduler_start_failed", str(exc))
         except Exception: pass
 
 
@@ -1177,6 +1196,181 @@ async def settings_provider_plugin(request: Request, provider_file: UploadFile =
         return RedirectResponse('/settings?notice='+quote(f'Catalog provider {key} installed'),status_code=303)
     except Exception as exc:
         return RedirectResponse('/settings?notice='+quote('Provider install failed: '+str(exc)),status_code=303)
+
+
+@app.get("/ecosystem", response_class=HTMLResponse)
+async def ecosystem_page(request: Request, notice: str = ""):
+    require_auth(request)
+    definitions = connector_definitions()
+    configs = {d.key: connector_config(d.key) for d in definitions}
+    probes = {x.get("key"): x for x in await probe_enabled_connectors()}
+    ns = namespace_status()
+    instances = discover_instances()
+    return templates.TemplateResponse("ecosystem.html", {
+        "request": request, "notice": notice, "definitions": definitions, "configs": configs,
+        "probes": probes, "namespace": ns, "arr_instances": instances,
+        "configured_count": sum(1 for c in configs.values() if c.get("enabled")),
+        "online_count": sum(1 for x in probes.values() if x.get("ok")),
+    })
+
+
+@app.post("/ecosystem/save")
+async def ecosystem_save(request: Request, key: str = Form(...), url: str = Form(""), api_key: str = Form(""), enabled: str = Form("false")):
+    require_admin(request)
+    try:
+        save_ecosystem_connector(key.strip(), url.strip(), api_key.strip(), enabled.lower() in {"1","true","yes","on"})
+        result = await probe_connector(key.strip())
+        detail = "connected" if result.get("ok") else result.get("error") or result.get("state") or "saved"
+        log_event("info" if result.get("ok") else "warning", "ecosystem", "connector_saved", f"{key}: {detail}")
+        return RedirectResponse("/ecosystem?notice=" + quote(f"{key} saved · {detail}"), status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/ecosystem?notice=" + quote(f"Could not save connector: {exc}"), status_code=303)
+
+
+@app.post("/ecosystem/plugin")
+async def ecosystem_plugin(request: Request, connector_file: UploadFile = File(...)):
+    require_admin(request)
+    try:
+        raw = await connector_file.read()
+        data = json.loads(raw.decode("utf-8"))
+        path = install_connector_plugin(data, connector_file.filename or "connector.json")
+        log_event("info", "ecosystem", "connector_plugin_installed", path.name)
+        return RedirectResponse("/ecosystem?notice=" + quote(f"Connector plugin installed: {path.name}"), status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/ecosystem?notice=" + quote(f"Connector plugin failed: {exc}"), status_code=303)
+
+
+@app.get("/api/ecosystem")
+async def api_ecosystem(request: Request):
+    require_auth(request)
+    rows = []
+    for definition in connector_definitions():
+        cfg = connector_config(definition.key)
+        rows.append({
+            "key": definition.key, "name": definition.name, "category": definition.category,
+            "enabled": bool(cfg.get("enabled")), "configured": bool(cfg.get("url")),
+            "capabilities": list(definition.capabilities),
+        })
+    return {"connectors": rows, "namespace": namespace_status()}
+
+
+@app.get("/infinidysk", response_class=HTMLResponse)
+async def infinidysk_page(request: Request, notice: str = ""):
+    require_auth(request)
+    cfg = connector_config("infinidysk")
+    health = {}; queue = {}; history = {}; metrics = []; error = ""
+    if cfg.get("enabled") and cfg.get("url"):
+        client = InfiniDyskClient()
+        try:
+            health = await client.health()
+        except Exception as exc:
+            error = str(exc)
+        try:
+            queue = await client.queue()
+        except Exception as exc:
+            if not error: error = str(exc)
+        try:
+            history = await client.history()
+        except Exception:
+            history = {}
+        try:
+            metrics = await client.metrics()
+        except Exception:
+            metrics = []
+    q = queue.get("queue", {}) if isinstance(queue, dict) else {}
+    h = history.get("history", {}) if isinstance(history, dict) else {}
+    return templates.TemplateResponse("infinidysk.html", {
+        "request": request, "notice": notice, "config": cfg, "health": health, "queue": q,
+        "queue_slots": q.get("slots", []) if isinstance(q, dict) else [],
+        "history_slots": h.get("slots", []) if isinstance(h, dict) else [],
+        "metrics": metrics, "error": error,
+    })
+
+
+@app.post("/infinidysk/action")
+async def infinidysk_action(request: Request, action: str = Form(...)):
+    require_admin(request)
+    try:
+        client = InfiniDyskClient()
+        if action == "pause":
+            await client.pause()
+        elif action == "resume":
+            await client.resume()
+        else:
+            raise ValueError("Unsupported InfiniDysk action")
+        log_event("info", "infinidysk", f"queue_{action}", f"InfiniDysk queue {action} requested")
+        return RedirectResponse("/infinidysk?notice=" + quote(f"Queue {action} requested"), status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/infinidysk?notice=" + quote(f"InfiniDysk action failed: {exc}"), status_code=303)
+
+
+@app.get("/quality-lab", response_class=HTMLResponse)
+async def quality_lab_page(request: Request, title: str = "", media_type: str = "movie", protocol: str = "torrent", size_gb: float = 0, seeders: int = 0, cached: str = "false", pack_type: str = "", q: str = ""):
+    require_auth(request)
+    analysis = None
+    if title.strip():
+        analysis = evaluate_release(title.strip(), protocol=protocol, size_gb=size_gb, seeders=seeders, cached=cached.lower() in {"1","true","yes","on"}, media_type=media_type, pack_type=pack_type)
+    releases = []
+    search_error = ""
+    if q.strip():
+        try:
+            raw = await ProwlarrClient().search(q.strip(), limit=50)
+            for row in raw or []:
+                parsed = parse_release_name(str(row.get("title") or ""))
+                inferred_pack = (parsed.get("pack") or {}).get("kind") or ""
+                score = score_release(row, load_policy(), media_type=media_type, pack_type=inferred_pack)
+                releases.append({**row, "arrnexus_parsed": parsed, "arrnexus_policy": score})
+            releases.sort(key=lambda r: int((r.get("arrnexus_policy") or {}).get("score") or 0), reverse=True)
+        except Exception as exc:
+            search_error = str(exc)
+    profilarr_cfg = connector_config("profilarr")
+    return templates.TemplateResponse("qualitylab.html", {
+        "request": request, "analysis": analysis, "title": title, "media_type": media_type,
+        "protocol": protocol, "size_gb": size_gb, "seeders": seeders, "cached": cached,
+        "pack_type": pack_type, "q": q, "releases": releases, "search_error": search_error,
+        "policy": load_policy(), "profilarr": profilarr_cfg,
+    })
+
+
+@app.get("/self-healing", response_class=HTMLResponse)
+async def self_healing_page(request: Request, notice: str = ""):
+    require_auth(request)
+    rows = await scan_self_healing()
+    totals = {
+        "missing": sum(int((r.get("counts") or {}).get("missing") or 0) for r in rows),
+        "upgrades": sum(int((r.get("counts") or {}).get("upgrades") or 0) for r in rows),
+        "queue_issues": sum(int((r.get("counts") or {}).get("queue_issues") or 0) for r in rows),
+    }
+    return templates.TemplateResponse("selfhealing.html", {
+        "request": request, "notice": notice, "rows": rows, "totals": totals, "settings": selfheal_settings_state(),
+        "neutarr": connector_config("neutarr"), "cleanuparr": connector_config("cleanuparr"),
+    })
+
+
+@app.post("/self-healing/settings")
+async def self_healing_settings(request: Request, enabled: str = Form("false"), search_missing: str = Form("false"), search_upgrades: str = Form("false"), interval_minutes: int = Form(60), max_actions: int = Form(3), window_start: str = Form("02:00"), window_end: str = Form("06:00")):
+    require_admin(request)
+    save_selfheal_settings(
+        enabled=enabled.lower() in {"1","true","yes","on"},
+        search_missing=search_missing.lower() in {"1","true","yes","on"},
+        search_upgrades=search_upgrades.lower() in {"1","true","yes","on"},
+        interval_minutes=interval_minutes, max_actions=max_actions, window_start=window_start, window_end=window_end,
+    )
+    log_event("info", "selfheal", "settings_updated", "Self-healing settings updated")
+    return RedirectResponse("/self-healing?notice=" + quote("Self-healing settings saved"), status_code=303)
+
+
+@app.post("/self-healing/search")
+async def self_healing_search(request: Request, service: str = Form(...), instance: str = Form(...), kind: str = Form("missing"), limit: int = Form(10)):
+    require_admin(request)
+    try:
+        result = await selfheal_trigger_search(service, instance, kind, limit)
+        text = f"Triggered {result.get('completed',0)} {kind} search(es)"
+        if result.get("errors"):
+            text += f" · {len(result['errors'])} error(s)"
+        return RedirectResponse("/self-healing?notice=" + quote(text), status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/self-healing?notice=" + quote(f"Search failed: {exc}"), status_code=303)
 
 
 @app.get("/queue", response_class=HTMLResponse)

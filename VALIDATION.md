@@ -1,50 +1,105 @@
-# ArrNexus v4.0 validation report
+# ArrNexus v5.0 Validation Report
 
-This package was validated after the Discover, music-source and smart-TV-pack merge.
+Validation date: 2026-08-26
 
-## Passed
+## Result
 
-- Full Python compilation and AST parsing for `app/`.
-- JavaScript syntax check for `app/static/app.js`.
-- Jinja compilation of every template using ArrNexus' actual runtime environment and custom `human_size` filter.
-- Fresh-database first-run administrator creation.
-- Authenticated smoke rendering of Dashboard, Settings, Profile, Logs, Jobs, Routing Rules, Libraries, Connections, Download Queue, Scraping, Maintenance, Problem Centre, Timeline, Discover, Music Hub and Debrid/DMM without live service credentials.
-- PWA manifest/service-worker delivery.
-- **Discover regression test** using deterministic fake Seerr + specialist-library shelves and an Arr metadata search result. This specifically catches the shelf-dictionary `items` template bug that caused the prior Discover HTTP 500.
-- **Music provider isolation regression test** proving Apple and Deezer tabs render different provider-owned content and do not leak/relabel each other's highlights.
-- TV release parser tests for full-series packs, season packs, individual episodes and dotted `Season.1-2` naming.
-- TV pack-mode filtering and smart complete-pack/season-pack selection.
-- Debrid/DMM TV render with full-series controls, Real-Debrid cache badge, Sonarr coverage visualizer, `Get entire show intelligently` and `Get missing seasons only` actions.
-- Pack-aware release policy: a large full-series pack can use the full-series ceiling while the same size is correctly rejected for one episode.
-- Standalone Uvicorn boot and HTTP checks for `/api/health` and `/setup`.
-- Exact development credentials previously used while building ArrNexus were searched for and are not present in this package.
+**PASS** for the application-level and package-level checks available in the build environment.
 
-## Runtime behavior intentionally not faked as a guarantee
+## Automated validator
 
-The validator does not claim that third-party public APIs are always available. Apple/iTunes, MusicBrainz, ListenBrainz, Audius, Deezer, SoundCloud, Spotify, Jamendo, Last.fm, Seerr, Prowlarr and Real-Debrid can change or be unavailable independently. ArrNexus is designed to isolate these failures rather than crash unrelated pages.
+Command:
+
+```bash
+python validate.py
+```
+
+Result:
+
+```text
+PASS: v5 Python/templates/startup, Discover/music regressions, TV packs, connector SDK, InfiniDysk metrics, Quality Lab and Self-Healing
+```
+
+The validator covers:
+
+- Python compilation for the `app` package.
+- Jinja compilation using ArrNexus's real template environment and custom filters.
+- Fresh database creation and first-run administrator setup.
+- Authenticated smoke tests for Dashboard, Settings, Profile, Logs, Jobs, Rules, Libraries, Connections, Queue, Scraping, Maintenance, Problem Centre, Timeline, Discover, Music Hub, Debrid/DMM, Ecosystem, InfiniDysk, Quality Lab and Self-Healing.
+- Discover shelf/search regression coverage for the previous HTTP 500 failure.
+- Music-provider isolation so selected provider tabs do not silently reuse another provider's data.
+- TV full-series/season/episode parsing and pack filters.
+- Sonarr season-coverage rendering and smart full-series controls.
+- Real-Debrid cache badge rendering.
+- Pack-aware size/scoring rules.
+- v5 JSON-only ecosystem connector installation and rendering.
+- InfiniDysk Prometheus metric filtering.
+- Quality Lab release parsing and score explanations.
+- Self-Healing no-Arr graceful behaviour.
+- PWA manifest/service-worker routes.
+
+## Additional checks
+
+### Python AST / compile
+
+```text
+PASS
+```
+
+Every application Python file parses successfully.
+
+### JavaScript syntax
+
+`node --check app/static/app.js`:
+
+```text
+PASS
+```
+
+### Real Uvicorn boot
+
+The application was started with Uvicorn against a fresh temporary database.
+
+Checked over HTTP:
+
+```text
+GET /api/health  -> 200
+GET /setup       -> 200
+```
+
+Health response during the isolated validation host correctly reported that no DUMB namespace was available.
+
+### Credential scan
+
+The package was scanned for the API keys, password and session secret that had appeared during development/testing discussions.
+
+```text
+PASS — none of those known credentials are present in the package
+```
+
+### Clean-package revalidation
+
+The final ZIP is extracted into a separate clean directory and `python validate.py` is executed against the extracted copy before release. This catches missing-file/packaging errors that source-tree validation alone would miss.
+
+## Safety validation notes
+
+- The Self-Healing scheduler is disabled by default.
+- Built-in Self-Healing only triggers bounded Arr search commands; it does not delete library files, symlinks, Real-Debrid torrents or download-client jobs.
+- Community ecosystem connectors are JSON-only and cannot execute Python code.
+- InfiniDysk queue controls exposed in v5 are limited to safe global pause/resume operations.
+- External projects are integrated through APIs/health endpoints rather than bundled source code.
 
 ## Environment limitation
 
-The validation environment does not provide a Docker CLI/daemon, so an actual Docker image build could not be executed here. The application itself was booted with Uvicorn and the final package should still be built on the target server with:
+The build environment does not provide a Docker daemon/CLI, so an actual Docker image build could not be performed here. The included Compose file is unchanged in its core runtime requirements from v4 and the application itself was booted successfully with Uvicorn.
+
+The deployment host should still run:
 
 ```bash
+docker compose config
 docker compose up -d --build
+docker compose ps
+docker compose logs --tail=150 arrnexus
 ```
 
-## Standout feature set included
-
-- Per-title operational timeline.
-- Explainable release policy/scoring engine.
-- Smart TV full-series / season-pack / episode detection.
-- Sonarr season coverage and missing-only acquisition.
-- Real-Debrid cache-aware filtering/badges.
-- Problem Centre and library-health score.
-- Sanitized diagnostics bundle.
-- ntfy, Gotify, Discord webhook and email notifications.
-- Daily rolling database backups and manual backups.
-- Sanitized configuration export/import.
-- GitHub release update checker.
-- Safe JSON-only community catalogue provider SDK.
-- Installable PWA/mobile shell.
-- Per-user request permissions/daily limits.
-- UI-managed Arr/Prowlarr/Jellyfin/Seerr connections and logical mounts for Portainer-first deployment.
+before considering the container-level deployment validated.

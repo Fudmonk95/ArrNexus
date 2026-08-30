@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline ArrNexus v4 package validator.
+"""Offline ArrNexus v5 package validator.
 
 Run inside the project folder after dependencies are installed:
     python validate.py
@@ -25,7 +25,7 @@ def main() -> int:
     root = Path(__file__).resolve().parent
     require(compileall.compile_dir(root / "app", quiet=1), "Python compilation failed")
 
-    with tempfile.TemporaryDirectory(prefix="arrnexus-v4-validate-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="arrnexus-v5-validate-") as tmp:
         os.environ["DB_PATH"] = str(Path(tmp) / "router.db")
         os.environ["DB_DIR"] = tmp
         os.environ["SESSION_SECRET"] = "validation-only-session-secret"
@@ -67,7 +67,7 @@ def main() -> int:
                 "/", "/settings", "/profile", "/logs", "/jobs", "/rules",
                 "/libraries", "/arrs", "/queue", "/scraping", "/maintenance",
                 "/problems", "/timeline?title=Validation", "/discover", "/music",
-                "/debrid", "/static/manifest.webmanifest", "/static/sw.js",
+                "/debrid", "/ecosystem", "/infinidysk", "/quality-lab", "/self-healing", "/static/manifest.webmanifest", "/static/sw.js",
             ):
                 r = client.get(url, follow_redirects=False)
                 require(r.status_code < 500, f"{url}: HTTP {r.status_code}")
@@ -199,6 +199,41 @@ def main() -> int:
                 main_app._search_debrid_releases = old_release_search
                 main_app._tv_library_coverage = old_tv_coverage
 
+        # v5 connector/plugin architecture: install a data-only connector and
+        # confirm it appears in the Ecosystem page without executing code.
+        with TestClient(main_app.app) as client2:
+            # Re-use the administrator created in the same temporary DB.
+            login = client2.post("/login", data={"username":"validator","password":"validation-password-123"}, follow_redirects=False)
+            require(login.status_code == 303, "v5 validator login")
+            plugin = {
+                "key":"validation-service", "name":"Validation Service", "category":"Community",
+                "default_url":"http://127.0.0.1:9", "health_paths":["/health","/"],
+                "capabilities":["health","search"], "auth_header":"X-Api-Key"
+            }
+            import json as _json
+            r = client2.post("/ecosystem/plugin", files={"connector_file":("validation.json", _json.dumps(plugin).encode(), "application/json")}, follow_redirects=False)
+            require(r.status_code == 303, "connector plugin install")
+            page = client2.get("/ecosystem")
+            require(page.status_code == 200 and "Validation Service" in page.text, "connector plugin render")
+
+            # Quality Lab must parse and explain a release without any network.
+            ql = client2.get("/quality-lab", params={
+                "title":"Example.Movie.2026.2160p.WEB-DL.DV.HDR.x265-GROUP",
+                "media_type":"movie", "protocol":"torrent", "size_gb":20, "seeders":30, "cached":"true"
+            })
+            require(ql.status_code == 200, "Quality Lab render")
+            require("HEVC / x265" in ql.text, "Quality Lab parser")
+            require("/100" in ql.text and "Cached on Real-Debrid" in ql.text, "Quality Lab explanation")
+
+            # Self-Healing degrades gracefully when no DUMB Arr processes are present.
+            sh = client2.get("/self-healing")
+            require(sh.status_code == 200 and "Self-Healing AutoPilot" in sh.text, "Self-Healing page")
+
+        # InfiniDysk Prometheus parser is deterministic and must ignore noise.
+        from app.infinidysk import parse_prometheus_metrics
+        metrics = parse_prometheus_metrics("# HELP x test\ninfinidysk_nntp_bytes_total 1024\npython_gc_objects 99\ninfinidysk_seek_latency_seconds 0.25\n")
+        require(len(metrics) == 2, "InfiniDysk metric filtering")
+
         # TV pack parser / smart selector unit checks.
         full = classify_release("Show.Complete.Series.S01-S02.1080p")
         season = classify_release("Show.Season.2.1080p")
@@ -230,7 +265,7 @@ def main() -> int:
         require(full_score["decision"] != "rejected", "full-series size policy")
         require(episode_score["decision"] == "rejected", "episode size policy")
 
-    print("PASS: v4 Python/templates/startup, Discover regression, music source isolation, TV pack UI/parser, Sonarr coverage and pack-aware release policy")
+    print("PASS: v5 Python/templates/startup, Discover/music regressions, TV packs, connector SDK, InfiniDysk metrics, Quality Lab and Self-Healing")
     return 0
 
 
