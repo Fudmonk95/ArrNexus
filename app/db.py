@@ -868,3 +868,14 @@ def ui_pref_set(user_id: int, key: str, value: str):
     with db() as conn:
         conn.execute("INSERT INTO ui_preferences(user_id,pref_key,pref_value,updated_at) VALUES(?,?,?,?) ON CONFLICT(user_id,pref_key) DO UPDATE SET pref_value=excluded.pref_value,updated_at=excluded.updated_at",
                      (int(user_id),key,value or "",_utcnow()))
+
+# ---- v6 acquisition helpers -------------------------------------------------
+
+def update_request_progress(media_type: str, external_id: str, status: str, detail: str = "", protocol: str = ""):
+    if not external_id:
+        return
+    with db() as conn:
+        conn.execute(
+            "UPDATE requests SET status=?,status_detail=?,protocol=?,updated_at=? WHERE media_type=? AND external_id=?",
+            (status or "requested", detail or "", protocol or None, _utcnow(), media_type, str(external_id)),
+        )

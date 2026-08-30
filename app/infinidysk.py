@@ -27,7 +27,7 @@ class InfiniDyskClient:
 
     async def health(self) -> dict[str, Any]:
         self._require()
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers={"User-Agent":"ArrNexus/5.0"}) as client:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers={"User-Agent":"ArrNexus/6.0"}) as client:
             r = await client.get(self.url + "/healthz")
         if r.status_code >= 400:
             raise InfiniDyskError(f"Health check failed: HTTP {r.status_code}")
@@ -44,7 +44,7 @@ class InfiniDyskClient:
         query = {"mode": mode, "output": "json", **params}
         if self.api_key:
             query["apikey"] = self.api_key
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers={"User-Agent":"ArrNexus/5.0"}) as client:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers={"User-Agent":"ArrNexus/6.0"}) as client:
             r = await client.get(self.url + "/api", params=query)
         if r.status_code >= 400:
             raise InfiniDyskError(f"SAB API failed: HTTP {r.status_code} {r.text[:300]}")
@@ -70,7 +70,7 @@ class InfiniDyskClient:
 
     async def metrics(self) -> list[dict[str, Any]]:
         self._require()
-        headers = {"User-Agent":"ArrNexus/5.0"}
+        headers = {"User-Agent":"ArrNexus/6.0"}
         if self.api_key:
             headers["X-Api-Key"] = self.api_key
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=True, headers=headers) as client:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline ArrNexus v5 package validator.
+"""Offline ArrNexus v6 package validator.
 
 Run inside the project folder after dependencies are installed:
     python validate.py
@@ -25,7 +25,7 @@ def main() -> int:
     root = Path(__file__).resolve().parent
     require(compileall.compile_dir(root / "app", quiet=1), "Python compilation failed")
 
-    with tempfile.TemporaryDirectory(prefix="arrnexus-v5-validate-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="arrnexus-v6-validate-") as tmp:
         os.environ["DB_PATH"] = str(Path(tmp) / "router.db")
         os.environ["DB_DIR"] = tmp
         os.environ["SESSION_SECRET"] = "validation-only-session-secret"
@@ -265,7 +265,85 @@ def main() -> int:
         require(full_score["decision"] != "rejected", "full-series size policy")
         require(episode_score["decision"] == "rejected", "episode size policy")
 
-    print("PASS: v5 Python/templates/startup, Discover/music regressions, TV packs, connector SDK, InfiniDysk metrics, Quality Lab and Self-Healing")
+        # v6 acquisition strategy: strict first/fallback behavior and exactly
+        # one Arr grab. This test never contacts live indexers.
+        from app.acquisition import rank_releases, choose_release, plan_and_grab
+        raw_releases = [
+            {"title":"Example.Movie.2026.1080p.WEB-DL.x265", "protocol":"usenet", "size":8*1024**3, "seeders":0, "indexer":"NZB test"},
+            {"title":"Example.Movie.2026.2160p.WEB-DL.x265", "protocol":"torrent", "size":18*1024**3, "seeders":40, "indexer":"Torrent test"},
+        ]
+        ranked = rank_releases(raw_releases, "movie", False)
+        chosen, reasons = choose_release(ranked, "usenet_first", prefer_cached=False)
+        require(chosen and chosen.get("arrnexus_protocol") == "usenet", "Usenet-first strategy")
+        chosen2, _ = choose_release([r for r in ranked if r.get("arrnexus_protocol") != "usenet"], "usenet_first", prefer_cached=False)
+        require(chosen2 and chosen2.get("arrnexus_protocol") == "torrent", "Usenet fallback to Debrid")
+
+        class FakeAcquireClient:
+            def __init__(self): self.grabbed=[]
+            async def releases(self, _id): return raw_releases
+            async def grab_release(self, row): self.grabbed.append(row)
+        fake_client=FakeAcquireClient()
+        import asyncio as _asyncio
+        acquired=_asyncio.run(plan_and_grab(fake_client,"movie",1,"usenet_first"))
+        require(acquired.get("ok") and acquired.get("protocol") == "usenet", "v6 planner result")
+        require(len(fake_client.grabbed)==1, "v6 planner must grab exactly one release")
+
+        # Known operational failures receive a useful explanation in Unified Logs.
+        from app.log_diagnostics import explain_log
+        diag=explain_log("vfs reader: failed to write to cache file: 404 Not Found")
+        require(diag and "404" in diag.get("title",""), "v6 VFS 404 diagnostic")
+        seek=explain_log("could not seek to byte position 123456")
+        require(seek and "byte range" in seek.get("title","").lower(), "v6 seek diagnostic")
+
+        # Service-specific authentication probes. A reachable service with the
+        # wrong token must fail — this is the exact v5 false-positive regression.
+        import threading as _threading
+        from http.server import BaseHTTPRequestHandler as _Handler, ThreadingHTTPServer as _Server
+        from urllib.parse import urlparse as _urlparse, parse_qs as _parse_qs
+        class _ProbeHandler(_Handler):
+            def log_message(self,*_a): pass
+            def _send(self,code,body=b'{}'):
+                self.send_response(code); self.send_header('Content-Type','application/json'); self.end_headers(); self.wfile.write(body)
+            def do_GET(self):
+                parsed=_urlparse(self.path)
+                if parsed.path == '/version': return self._send(200,b'{"version":"2.5-test"}')
+                if parsed.path == '/healthz': return self._send(200,b'{"status":"healthy","version":"1.2-test"}')
+                if parsed.path == '/api/torrents':
+                    return self._send(200,b'[]') if self.headers.get('Authorization') == 'Bearer correct-decypharr' else self._send(401,b'{"error":"unauthorized"}')
+                if parsed.path == '/api':
+                    key=(_parse_qs(parsed.query).get('apikey') or [''])[0]
+                    return self._send(200,b'{"queue":{"slots":[]}}') if key == 'correct-infinidysk' else self._send(401,b'{"error":"bad key"}')
+                return self._send(404)
+        srv=_Server(('127.0.0.1',0),_ProbeHandler); port=srv.server_address[1]; th=_threading.Thread(target=srv.serve_forever,daemon=True); th.start()
+        try:
+            from app.ecosystem import save_connector as _save_connector, probe_connector as _probe_connector
+            _save_connector('decypharr',f'http://127.0.0.1:{port}','random-numbers',True)
+            bad=_asyncio.run(_probe_connector('decypharr')); require(not bad.get('ok') and bad.get('auth_ok') is False, 'Decypharr random token must fail')
+            _save_connector('decypharr',f'http://127.0.0.1:{port}','correct-decypharr',True)
+            good=_asyncio.run(_probe_connector('decypharr')); require(good.get('ok') and good.get('auth_ok') is True, 'Decypharr valid token')
+            _save_connector('infinidysk',f'http://127.0.0.1:{port}','random-numbers',True)
+            bad2=_asyncio.run(_probe_connector('infinidysk')); require(not bad2.get('ok') and bad2.get('auth_ok') is False, 'InfiniDysk random key must fail')
+            _save_connector('infinidysk',f'http://127.0.0.1:{port}','correct-infinidysk',True)
+            good2=_asyncio.run(_probe_connector('infinidysk')); require(good2.get('ok') and good2.get('auth_ok') is True, 'InfiniDysk valid key')
+        finally:
+            srv.shutdown(); srv.server_close()
+
+        # UI smoke: new navigation, acquisition selector, settings policy and logs.
+        with TestClient(main_app.app) as client3:
+            login=client3.post('/login',data={'username':'validator','password':'validation-password-123'},follow_redirects=False)
+            require(login.status_code==303,'v6 validator login')
+            disc=client3.get('/discover?q=test&media_type=movie')
+            require(disc.status_code==200 and 'coordinate Usenet + Debrid acquisition' in disc.text, 'Discover acquisition UI')
+            sett=client3.get('/settings')
+            require(sett.status_code==200 and 'Acquisition strategy' in sett.text, 'Acquisition settings UI')
+            logs=client3.get('/logs')
+            require(logs.status_code==200 and 'Unified Logs' in logs.text, 'Unified Logs UI')
+            eco=client3.get('/ecosystem')
+            require(eco.status_code==200 and 'Trust the connection status' in eco.text and 'Save & verify' in eco.text, 'Connector verification UI')
+            dec=client3.get('/decypharr')
+            require(dec.status_code==200, 'Decypharr control page')
+
+    print("PASS: v6 core, acquisition fallback, verified connectors, Unified Logs diagnostics, v5 regressions and clean startup")
     return 0
 
 

@@ -1,29 +1,82 @@
 # Changelog
 
+## 6.0.0
+
+### Acquisition Intelligence
+
+- Added explicit Discover acquisition strategies:
+  - Automatic — compare Usenet and torrent/debrid candidates and grab one best release.
+  - Debrid first → Usenet fallback.
+  - Usenet first → Debrid fallback.
+  - Debrid only.
+  - Usenet only.
+  - Fastest — favour verified Real-Debrid cache hits.
+  - Best quality / score.
+- Discover now adds/monitors a title first, then runs an ArrNexus acquisition job against the target Arr's interactive releases.
+- Added protocol-aware release selection while preserving Arr/Prowlarr indexer/tag visibility.
+- Added Real-Debrid instant-availability enrichment when an info hash is available.
+- Added a configurable final native Arr-search fallback if ArrNexus cannot select an acceptable interactive release.
+- Acquisition grabs exactly one release; comparing both sources never intentionally starts duplicate downloads.
+- Scraping has been reframed as **Acquisition** and now reports planning/search/grab/fallback progress and selected protocol/indexer.
+
+### Verified Ecosystem Connections
+
+- Replaced generic "URL returned HTTP 200" connector tests with service-specific verification.
+- InfiniDysk now verifies both reachability and its SAB API key using an authenticated SAB queue call.
+- Decypharr now verifies `/version` separately from a Bearer-token-protected `/api/torrents` request.
+- AltMount now supports username/password authentication and validates the resulting JWT-backed session against its management API.
+- Connector cards separately report reachability, authentication, API functionality, version and latency.
+- Random/incorrect InfiniDysk or Decypharr credentials now fail verification instead of being reported as connected.
+- Added service-specific credential labels rather than treating every ecosystem project as a generic API-key service.
+
+### Unified Logs & Diagnostics
+
+- Rebuilt the Logs page into an interactive log console.
+- Added ArrNexus, DUMB and InfiniDysk source views.
+- Added DUMB log ingestion through DUMB's `/logs` API with process selection and polling.
+- Added InfiniDysk warning/error ingestion through its documented SAB `warnings` operation.
+- Added level/source/process/text filtering and clickable log rows.
+- Added first-pass diagnostics for common media-stack failures including:
+  - VFS/cache `404 Not Found` errors.
+  - virtual-stream seek failures.
+  - missing/corrupt Usenet articles.
+  - Arr "not enough free space" warnings.
+  - authentication failures.
+- Known log patterns now expand into a plain-language explanation and suggested next actions.
+- External log polling can be toggled live from the browser.
+
+### Decypharr Control Surface
+
+- Added a native Decypharr page using its authenticated REST API.
+- Displays Decypharr version, managed torrent count, connected Arr count, repair state and broken health entries when available.
+- Reuses the same verified connector credential path as the Ecosystem page.
+
+### Interface Redesign
+
+- Rebuilt the global navigation around an InfiniDysk-inspired grouped sidebar while keeping ArrNexus's own branding and visual identity.
+- New navigation groups: Overview, Acquisition, Library & Automation, System and Settings.
+- Added compact top-bar shortcuts for Problems, Logs and Settings.
+- Added new responsive/mobile rules for the v6 navigation and log console.
+- Existing user-selectable themes remain supported.
+
+### Settings / Operations
+
+- Added **Settings → Acquisition** for global strategy, Real-Debrid cache preference, candidate limit and native Arr fallback.
+- Existing Portainer-first, UI-managed configuration remains; no `.env` is required for normal deployment.
+- Application version updated to 6.0.0 and service User-Agent strings updated to ArrNexus/6.0 where applicable.
+
+### Retained from v5 and earlier
+
+- Ecosystem connector SDK, InfiniDysk operations, Quality Lab and Self-Healing.
+- Full-series/season/episode TV pack planning and Sonarr coverage.
+- DMM Inbox routing/imports, specialist Arr support, safe symlinks and import jobs.
+- Discover shelves, Music Hub, Real-Debrid library, Problem Centre, profiles/themes, notifications, diagnostics, backups, PWA and read-only library browser.
+
 ## 5.0.0
 
-### Added
-- Ecosystem connector platform with built-in definitions for InfiniDysk, DUMB, Decypharr, AltMount, Profilarr, NeutArr, Cleanuparr, Maintainerr, Bazarr, Streamystats, Zilean, Riven and Pulsarr.
-- JSON-only community connector SDK stored in `/data/connectors`.
-- Ecosystem topology page showing DUMB namespace state and discovered Arr instances.
-- Native InfiniDysk page using `/healthz`, SAB-compatible queue/history/control and Prometheus metrics.
-- Quality Lab with release-name parsing, policy scoring explanations and Prowlarr comparison.
-- Self-Healing scanner for missing media, Radarr cutoff-unmet upgrades and queue warnings.
-- Optional bounded Self-Healing AutoPilot scheduler; disabled by default and non-destructive.
-- Direct links between Settings, Ecosystem, Quality Lab, Self-Healing and InfiniDysk.
-
-### Changed
-- Application version is now 5.0.0.
-- Music User-Agent updated to ArrNexus/5.0.
-- Dashboard quick actions include the v5 control-plane pages.
-
-### Safety
-- Companion projects remain external integrations; ArrNexus does not copy their implementations.
-- AutoPilot never deletes library media, Real-Debrid torrents or download-client jobs.
-- Community connectors remain data-only and cannot execute code.
-
-## 4.0.0
-- Discover regression fix and isolated shelf providers.
-- Music source isolation and Deezer provider.
-- Smart TV pack modes, season coverage and cache-aware acquisition.
-- Problem Centre.
+- Added ecosystem connector platform and JSON connector SDK.
+- Added native InfiniDysk operations.
+- Added Quality Lab.
+- Added Self-Healing / optional non-destructive AutoPilot.
+- Added DUMB topology awareness.
+- Application version updated to 5.0.0.

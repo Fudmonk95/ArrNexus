@@ -1,14 +1,149 @@
-# ArrNexus v5.0 — Media Intelligence & Ecosystem Control
+# ArrNexus v6.0 — Acquisition Intelligence & Unified Operations
 
-ArrNexus is a self-hosted media-control layer for DUMB-style Radarr/Sonarr/Lidarr stacks using InfiniDysk/NzbDAV, Decypharr/Real-Debrid, Prowlarr, Jellyfin and optional Seerr discovery.
+ArrNexus is a self-hosted media-control layer for Radarr/Sonarr/Lidarr stacks using DUMB, InfiniDysk/NzbDAV, Decypharr/Real-Debrid, Prowlarr, Jellyfin and optional Seerr discovery.
 
-v5 expands ArrNexus from a media router into a **control plane** for the wider self-hosted media ecosystem. It is still Portainer/Docker Compose first: deploy the container, open the browser, create the administrator and configure everything in the UI. A normal installation does **not** require an `.env` file.
+v6 focuses on the parts that need to be trustworthy in daily use: **which provider acquires a title, whether service credentials are actually valid, and what the logs are really telling you**. It also introduces a redesigned grouped navigation model inspired by the clarity of InfiniDysk while retaining ArrNexus as its own product.
 
-## What's new in v5
+ArrNexus remains Portainer/Docker Compose first. A normal deployment needs no application secrets in an `.env`: create the administrator in the browser and configure services, credentials, mounts, policies and integrations through the UI.
 
-### Ecosystem connector platform
+## What's new in v6
 
-A new **Ecosystem** page provides built-in connector definitions for:
+### Acquisition Strategy — Usenet and Debrid are now explicit
+
+Discover no longer relies solely on a broad Radarr/Sonarr search to choose the source. Each request can choose:
+
+- **Automatic** — compare acceptable Usenet and torrent/debrid candidates and grab one best release.
+- **Debrid first** — try torrent/debrid candidates first, then fall back to Usenet.
+- **Usenet first** — try Usenet first, then fall back to torrent/debrid.
+- **Debrid only** — never choose an NZB.
+- **Usenet only** — never choose a torrent.
+- **Fastest** — favour verified Real-Debrid cache hits when possible.
+- **Best quality / score** — compare acceptable candidates using ArrNexus scoring.
+
+ArrNexus requests interactive releases from the target Radarr/Sonarr instance, preserving the indexers and tags that Arr/Prowlarr already allow that instance to see. It then grabs **one** release through the Arr API. Protocol still controls the normal downstream download-client routing:
+
+```text
+Usenet result  → InfiniDysk / SAB-compatible client
+Torrent result → Decypharr / qBittorrent-compatible client → Real-Debrid
+```
+
+If ArrNexus cannot select an acceptable interactive release, an optional final native Arr-search fallback can be enabled under **Settings → Acquisition**. In that fallback, Arr itself resumes responsibility for release selection.
+
+#### Example: Usenet first
+
+```text
+Discover request
+      ↓
+Add / monitor in Radarr or Sonarr
+      ↓
+Interactive release search
+      ↓
+Acceptable Usenet result?
+  ├─ yes → grab one NZB → InfiniDysk
+  └─ no  → evaluate torrent/debrid results
+                    ↓
+              grab one torrent → Decypharr
+```
+
+Acquisition activity records the strategy, candidate counts, selected protocol/indexer and fallback reason.
+
+### Verified service authentication
+
+v5 could incorrectly report a connector as healthy when only its public web endpoint was reachable. v6 deliberately separates:
+
+```text
+Service reachable
+Authentication valid
+API functional
+Version
+Latency
+```
+
+Built-in verification now includes:
+
+- **InfiniDysk:** `/healthz` reachability plus an authenticated SAB queue request using the configured SAB API key.
+- **Decypharr:** public `/version` reachability plus Bearer-token-protected `/api/torrents` verification.
+- **AltMount:** username/password login followed by an authenticated management API request using the returned JWT session.
+- Other connectors continue to use the safest capability their public API exposes.
+
+Incorrect InfiniDysk/Decypharr credentials therefore fail verification rather than receiving a misleading green Connected state.
+
+### Unified Logs
+
+The previous operational-event table has become an interactive log console.
+
+Sources:
+
+- **ArrNexus** — application events stored by ArrNexus.
+- **DUMB** — service log tails obtained from DUMB's `/logs` API, including selectable DUMB process names.
+- **InfiniDysk** — Warning-and-above events exposed by InfiniDysk's documented SAB `warnings` operation.
+
+The InfiniDysk view is intentionally described as a warnings feed, not a fake full-log mirror. DUMB process logs can be polled live from the browser.
+
+Filters include origin, level, process/source and text search. Known problem rows are clickable and expand into an explanation and suggested action.
+
+Current built-in diagnostics recognise common messages such as:
+
+- VFS/cache `404 Not Found`
+- `could not seek to byte position`
+- missing/corrupt Usenet article failures
+- Arr `not enough free space`
+- connector/API authentication failures
+
+This gives ArrNexus a useful troubleshooting layer without replacing the native logs in DUMB or InfiniDysk.
+
+### Native Decypharr status
+
+A new **Decypharr** page uses the authenticated Decypharr REST API to display:
+
+- version
+- managed torrent count
+- connected Arr count
+- repair state
+- torrent summary
+- broken repair/health entries when exposed by the installed version
+
+### Redesigned navigation
+
+v6 adopts a clearer grouped sidebar inspired by InfiniDysk's information hierarchy:
+
+```text
+OVERVIEW
+  Dashboard
+  Discover
+  Music Hub
+
+ACQUISITION
+  Acquisition
+  Debrid / DMM
+  InfiniDysk
+  Decypharr
+  Download Queue
+
+LIBRARY & AUTOMATION
+  DMM Inbox
+  Libraries
+  Import Jobs
+  Routing Rules
+  Self-Healing
+  Quality Lab
+
+SYSTEM
+  Problem Centre
+  Maintenance
+  Unified Logs
+  Ecosystem
+
+SETTINGS
+  Connections
+  Settings
+```
+
+The product remains **ArrNexus** by default, while the existing branding/title setting can be changed from the UI if a deployment wants a custom name.
+
+## Ecosystem control retained from v5
+
+The **Ecosystem** page contains built-in connector definitions for:
 
 - InfiniDysk
 - DUMB
@@ -24,184 +159,103 @@ A new **Ecosystem** page provides built-in connector definitions for:
 - Riven
 - Pulsarr
 
-Connectors are API boundaries; ArrNexus does not bundle or copy these projects. Each connector advertises capabilities such as `health`, `queue`, `quality`, `search`, `analytics`, `lifecycle` or `subtitles`.
-
-Enabled connectors are health-probed from the UI. Secrets persist in `/data/router.db` and are never displayed back in plaintext.
-
-#### Safe community connector SDK
-
-Custom service connectors can be installed as JSON under `/data/connectors`. They are data-only and cannot execute Python code.
-
-Example:
-
-```json
-{
-  "key": "my-service",
-  "name": "My Service",
-  "category": "Community",
-  "default_url": "http://host.docker.internal:9000",
-  "health_paths": ["/api/health", "/"],
-  "auth_header": "X-Api-Key",
-  "capabilities": ["health", "search"]
-}
-```
-
-See `examples/connectors/example-service.json`.
+Connectors are API boundaries: ArrNexus does not bundle or copy those projects. A JSON-only connector SDK under `/data/connectors` allows additional services to advertise safe health/search/queue/etc. capabilities without executing third-party Python in the ArrNexus process.
 
 ### Native InfiniDysk operations
 
-A new **InfiniDysk** page uses stable public interfaces instead of scraping its UI:
+The existing InfiniDysk page continues to use documented public interfaces for:
 
-- `/healthz` health state
-- SAB-compatible queue
-- SAB-compatible recent history
-- queue pause/resume
-- `/metrics` Prometheus telemetry
-- filtered operational metrics for NNTP, throughput, bytes, latency, seeking, streams, errors and queue state
+- health
+- SAB-compatible queue/history
+- safe global queue pause/resume
+- filtered Prometheus telemetry where available
 
-The InfiniDysk connector key is treated as the SAB/API key for queue calls. Metrics degrade gracefully if the deployment does not expose them.
+The connector's SAB API key is now genuinely tested in v6.
 
 ### Quality Lab
 
-A new **Quality Lab** makes release selection explainable.
+Quality Lab continues to parse and compare:
 
-It can:
+- resolution / source / codec
+- HDR / Dolby Vision
+- audio indicators
+- TV episode, season-pack and full-series structure
+- size, seeders, Real-Debrid cache preference
+- ArrNexus release-policy score and explanation
 
-- parse resolution, codec, source, HDR/Dolby Vision, audio, edition and release group
-- identify TV episode / season pack / full-series pack structure
-- apply the current ArrNexus release policy
-- show a 0–100 score and every reason that affected the score
-- search Prowlarr and compare returned releases with the same scoring engine
-- show Real-Debrid cache preference, seeders and pack-aware size ceilings
-- recognise Profilarr as an optional external quality/configuration authority through the Ecosystem connector layer
-
-ArrNexus intentionally does not copy Profilarr/Recyclarr logic. The connector boundary leaves room for deeper API integration while keeping ArrNexus responsible for orchestration, comparison and troubleshooting.
+It can compare Prowlarr search results with the same engine. Profilarr/Recyclarr remain external configuration authorities rather than having their source logic copied into ArrNexus.
 
 ### Self-Healing
 
-A new **Self-Healing** page scans every discovered DUMB Arr instance for:
+Self-Healing can scan discovered Arr instances for missing media, cutoff-unmet upgrades and queue/import warnings. Its optional AutoPilot is off by default, rate/maintenance-window bounded and deliberately non-destructive.
 
-- monitored missing movies
-- missing TV episodes based on Sonarr statistics
-- missing Lidarr tracks based on artist statistics
-- Radarr cutoff-unmet upgrades where the Arr API exposes the flag
-- queue warnings/import/stalled signals
+## Major capabilities retained
 
-Manual actions can trigger bounded searches for the first N missing/upgradable items.
-
-An optional AutoPilot scheduler is included and is **off by default**. When enabled it:
-
-- respects a configurable maintenance window
-- has a minimum 15-minute interval
-- has a configurable maximum number of actions per cycle
-- can search missing items
-- can optionally search upgrades
-- never deletes torrents, Real-Debrid media or library files
-
-Destructive queue-cleaning logic is deliberately left to specialist tools such as Cleanuparr rather than duplicated inside ArrNexus.
-
-### DUMB topology awareness
-
-The Ecosystem page visualises the DUMB namespace and currently discovered Radarr/Sonarr/Lidarr processes. This works even if no DUMB HTTP connector is configured because ArrNexus already sees the host PID namespace.
-
-This makes ArrNexus useful both as:
-
-- a DUMB-aware control layer on a single all-in-one host; and
-- a standalone control layer for separately deployed Arr services.
-
-## Existing v4 features retained
-
-- Discover reliability fixes and Seerr-style poster shelves
-- per-specialist-library discovery rails
+- Seerr-style Discover poster rails and specialist-library shelves
 - source-isolated Music Hub providers
-- Debrid/DMM TV pack modes: Any / Full Series / Season Packs / Episodes
-- smart complete-series and missing-season acquisition planning
-- Real-Debrid cache badges
+- DMM/Real-Debrid search and library
+- Any / Full Series / Season Packs / Episodes TV pack modes
+- smart complete-series and missing-season planning
 - Sonarr season coverage visualiser
-- Problem Centre
-- first-run browser setup
-- UI-managed Radarr/Sonarr/Lidarr/Prowlarr/Jellyfin/Seerr credentials
-- automatic DUMB Arr process discovery
-- DMM/Decypharr inbox scanning through the Arr mount namespace
-- clean metadata titles, posters, genres, duplicate grouping and quality comparison
-- Waiting / Imported / Duplicates / Upgrades / Ignored inbox states
-- bulk import with route selection
-- non-destructive symlink imports
-- persistent import jobs and progress toasts
-- Scraping/search status page
+- Real-Debrid cache checks
+- DMM Inbox metadata cleanup, posters, genre badges and duplicate grouping
+- specialist Radarr/Sonarr routing
+- Waiting / Imported / Duplicates / Upgrades / Ignored views
+- bulk imports with route selection
+- safe symlink imports and Undo
+- persistent import jobs/progress
 - unified Arr download queue
-- Real-Debrid device OAuth and torrent library
 - routing rules and learned corrections
-- broken-link scanner, orphan detector, repair and safe Undo
+- broken-link scanner / orphan detector / repair tools
 - read-only namespace file browser
-- filterable logs
-- users, themes, email reset and request limits
-- title timeline
-- explainable release policy
-- diagnostics ZIP
-- ntfy/Gotify/Discord/email notifications
+- users, request limits and multiple themes
+- SMTP password reset
+- title timelines
+- notification providers
+- diagnostics bundle with secret redaction
 - rolling SQLite backups
 - config export/import
 - update checker
-- PWA/mobile shell
+- PWA/mobile support
 
 ## Architecture
 
-### Core workflow
-
 ```text
-Discover / DMM Inbox / Music Hub
-            ↓
-         ArrNexus
-            ↓
-   routing + policy + jobs
-            ↓
-Radarr / Sonarr / Lidarr / Prowlarr
-            ↓
-InfiniDysk / Decypharr / Real-Debrid
-            ↓
-        Jellyfin
+Discover / DMM / Music Hub
+           ↓
+       ArrNexus v6
+           ↓
+ routing + acquisition strategy + policy
+           ↓
+ Radarr / Sonarr / Lidarr / Prowlarr
+       ↙                         ↘
+ InfiniDysk                  Decypharr
+    Usenet                  Real-Debrid
+       ↘                         ↙
+           virtual libraries
+                  ↓
+               Jellyfin
 ```
-
-### Ecosystem workflow
-
-```text
-                    ┌─ InfiniDysk
-                    ├─ DUMB
-                    ├─ Profilarr
-                    ├─ NeutArr
-                    ├─ Cleanuparr
-ArrNexus connector ─┼─ Maintainerr
-     platform        ├─ Bazarr
-                    ├─ Streamystats
-                    ├─ Zilean
-                    ├─ Riven
-                    └─ community JSON connectors
-```
-
-The objective is orchestration, not source-code aggregation.
 
 ## DUMB namespace requirement
 
-The Debian host may not contain `/mnt/debrid`. DUMB can create that mount tree inside the Arr process mount namespace.
-
-ArrNexus therefore reads through:
+On DUMB installs the Debian host itself may not contain `/mnt/debrid`; the mount can exist inside the Arr process mount namespace. ArrNexus therefore follows the main Radarr process namespace through:
 
 ```text
 /proc/<main-radarr-pid>/root/mnt/debrid
 ```
 
-while symlinks written to media libraries retain normal DUMB-visible targets such as:
+while symlinks written into library roots use normal DUMB-visible targets such as:
 
 ```text
 /mnt/debrid/decypharr/__all__/Movie (2026)/Movie.mkv
 ```
 
-The stack requires `pid: host` and `SYS_PTRACE`. It does **not** require `privileged: true`.
+The supplied stack requires `pid: host` and `SYS_PTRACE`, not `privileged: true`.
 
 ## Portainer / Docker Compose
 
-The included Compose file contains no application secrets:
+The included Compose file keeps secrets out of the stack definition:
 
 ```yaml
 services:
@@ -220,39 +274,40 @@ services:
       - ./data:/data
 ```
 
-Build/start and open:
+Open:
 
 ```text
 http://YOUR-SERVER:8484
 ```
 
-On a fresh database the setup wizard creates the first administrator. Service URLs/API keys, mounts, connectors, provider settings, themes, users and policy are then managed through the UI.
+A fresh install creates its first administrator in the browser. Connections, connector credentials, mounts, Real-Debrid auth, acquisition policy, themes and users are then managed through ArrNexus.
 
 ### Recommended setup order
 
 1. **Connections** — Radarr, Sonarr, Lidarr, Prowlarr, Jellyfin and optional Seerr.
-2. **Settings** — confirm logical DUMB paths/mounts.
-3. **Ecosystem** — enable InfiniDysk and any optional companion services.
-4. **Debrid / DMM** — connect Real-Debrid if desired.
-5. **Quality Lab** — validate release policy against real Prowlarr results.
-6. **Self-Healing** — scan first; only enable AutoPilot after reviewing the results.
-7. **Problem Centre** — confirm overall service health.
+2. **Settings → Mounts** — verify DUMB paths.
+3. **Ecosystem** — verify InfiniDysk and Decypharr with their real credentials.
+4. **Debrid / DMM** — link Real-Debrid if required.
+5. **Settings → Acquisition** — choose the global provider strategy.
+6. **Discover** — run one controlled test request and watch **Acquisition**.
+7. **Unified Logs / Problem Centre** — confirm health and diagnose failures.
+8. **Self-Healing** — scan first; enable AutoPilot only after reviewing results.
 
-## Upgrading from v4.0
+## Upgrade from v5.0
 
-Stop v4, extract v5 and copy only the persistent `data` directory:
+Stop v5, extract v6 and copy only the persistent `data` directory:
 
 ```bash
-cd /opt/dmm-arr-router/arrnexus-v4.0
+cd /opt/dmm-arr-router/arrnexus-v5.0
 docker compose down
 
 cd /opt/dmm-arr-router
-unzip /home/<user>/arrnexus-v5.0.zip
+unzip /home/<user>/arrnexus-v6.0.zip
 
-mkdir -p arrnexus-v5.0/data
-cp -a arrnexus-v4.0/data/. arrnexus-v5.0/data/
+mkdir -p arrnexus-v6.0/data
+cp -a arrnexus-v5.0/data/. arrnexus-v6.0/data/
 
-cd arrnexus-v5.0
+cd arrnexus-v6.0
 docker compose config
 docker compose up -d --build
 docker compose ps
@@ -269,34 +324,38 @@ Run:
 python validate.py
 ```
 
-The v5 validator covers:
+The v6 validator includes regression and behaviour tests for:
 
 - Python compilation and Jinja templates
-- application startup/authenticated pages
+- first-run setup/authenticated pages
 - Discover regression protection
-- Music provider source isolation
-- TV pack parsing and coverage UI
-- pack-aware release scoring
-- connector JSON SDK installation/rendering
-- InfiniDysk Prometheus metric filtering
-- Quality Lab release parsing/explanation
-- Self-Healing graceful no-Arr behaviour
-- PWA resources
+- Music-provider source isolation
+- TV pack parsing and Sonarr coverage
+- connector JSON SDK
+- InfiniDysk telemetry parsing
+- Quality Lab / Self-Healing
+- pack-aware release policy
+- acquisition ranking
+- Usenet-first fallback behaviour
+- exactly-one-release grab protection
+- local mock-server verification that wrong InfiniDysk and Decypharr credentials fail
+- correct InfiniDysk and Decypharr credentials pass
+- Unified Logs diagnostic classification
+- v6 Discover, Ecosystem, Settings and Decypharr UI smoke tests
 
-See `VALIDATION.md` for the full report and environment limits.
+See `VALIDATION.md` for the exact packaged-build report.
 
 ## Security
 
-- Never commit `/data/router.db`, OAuth credentials, API keys or SMTP secrets.
-- Connector/API secrets are stored as secret application settings and masked in normal UI views.
-- Diagnostics/config exports omit or mask secrets.
-- Real-Debrid source media is never deleted during import.
-- Self-Healing does not delete media/downloads.
+- Never commit `/data/router.db`, OAuth credentials, API keys, SMTP credentials or connector secrets.
+- UI secrets are masked and diagnostics/config exports redact them.
+- Community connectors are JSON-only and cannot execute arbitrary Python.
+- DMM imports do not delete underlying Real-Debrid source media.
+- Self-Healing does not delete downloads/media.
 - Undo removes only symlinks recorded as created by ArrNexus.
-- The file browser is read-only.
-- Community connectors are JSON-only and cannot execute Python code.
-- Put ArrNexus behind an appropriate reverse proxy/authentication layer before exposing it outside a trusted network.
+- The namespace browser is read-only.
+- Put ArrNexus behind appropriate authentication/reverse-proxy controls before exposing it outside a trusted network.
 
-## Third-party integration / licensing approach
+## Third-party integration approach
 
-ArrNexus integrates with external applications through HTTP APIs, service health endpoints and user-configured connectors. It does not redistribute those projects inside the ArrNexus image. Review each project's own licence and documentation before enabling or redistributing companion services.
+ArrNexus talks to companion applications through their documented APIs, compatibility APIs and health endpoints. It does not redistribute their code inside ArrNexus. Review each companion project's own licence and documentation when redistributing or enabling those applications.

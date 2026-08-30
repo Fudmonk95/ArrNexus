@@ -25,7 +25,7 @@ from .db import (
     authenticate_user, get_user, update_user, setting_get, setting_set, activity_by_day, request_map, list_users, create_user, delete_user, create_password_reset, consume_password_reset,
     user_count, log_event, list_logs, log_sources, list_mounts, save_mount, delete_mount,
     add_scrape, update_scrape, list_scrapes, ui_pref_get, ui_pref_set,
-    update_user_access, requests_today, title_timeline, all_settings, replace_nonsecret_settings, request_rows,
+    update_user_access, requests_today, title_timeline, all_settings, replace_nonsecret_settings, request_rows, update_request_progress,
 )
 from .scanner import scan_source, inspect_item, normalize_title, human_size
 from .routing import decide_movie, decide_tv
@@ -62,6 +62,10 @@ from .selfhealing import (
     scan_self_healing, settings_state as selfheal_settings_state, save_settings as save_selfheal_settings,
     trigger_search as selfheal_trigger_search, scheduler_loop as selfheal_scheduler_loop,
 )
+from .acquisition import load_acquisition_settings, save_acquisition_settings, plan_and_grab, STRATEGIES
+from .logbridge import external_log_rows
+from .log_diagnostics import attach_explanations
+from .decypharr import DecypharrClient
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title="ArrNexus")
@@ -71,7 +75,7 @@ templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
 
-APP_VERSION = "5.0.0"
+APP_VERSION = "6.0.0"
 RUNNING_TASKS: set[asyncio.Task] = set()
 
 
@@ -696,10 +700,36 @@ async def active_jobs_api(request: Request):
 
 
 @app.get("/logs", response_class=HTMLResponse)
-async def logs_page(request: Request, level: str = "all", source: str = "all", q: str = ""):
+async def logs_page(request: Request, level: str = "all", source: str = "all", q: str = "", origin: str = "arrnexus", process: str = "DUMB"):
     require_auth(request)
-    rows=list_logs(level,source,q,500)
-    return templates.TemplateResponse("logs.html",{"request":request,"rows":rows,"level":level,"source":source,"q":q,"sources":log_sources()})
+    external_error = ""
+    if origin in {"dumb", "infinidysk"}:
+        rows, external_error = await external_log_rows(origin, process, 1200)
+        if level != "all": rows = [r for r in rows if r.get("level") == level]
+        if q:
+            nq=q.lower(); rows=[r for r in rows if nq in str(r.get("message") or "").lower() or nq in str(r.get("event") or "").lower()]
+    else:
+        rows=list_logs(level,source,q,800)
+    rows=attach_explanations([dict(r) for r in rows])
+    counts={k:sum(1 for r in rows if r.get("level")==k) for k in ("debug","info","warning","error","critical")}
+    processes=["DUMB","NzbWebDAV","Rclone w/ NzbDAV"]
+    try:
+        processes += [f"{i.service.capitalize()} {i.instance}" for i in discover_instances()]
+    except Exception: pass
+    processes=list(dict.fromkeys(processes))
+    return templates.TemplateResponse("logs.html",{
+        "request":request,"rows":rows,"level":level,"source":source,"q":q,"sources":log_sources(),
+        "origin":origin,"process":process,"processes":processes,"external_error":external_error,"counts":counts,
+    })
+
+@app.get("/api/logs/external")
+async def api_external_logs(request: Request, origin: str = "dumb", process: str = "DUMB", level: str = "all", q: str = ""):
+    require_auth(request)
+    rows,error=await external_log_rows(origin,process,1200)
+    if level != "all": rows=[r for r in rows if r.get("level")==level]
+    if q:
+        nq=q.lower(); rows=[r for r in rows if nq in str(r.get("message") or "").lower()]
+    return {"rows":attach_explanations(rows),"error":error}
 
 
 @app.post("/undo/{import_id}")
@@ -950,6 +980,7 @@ async def settings_page(request: Request, notice: str = ""):
         },
         "backups": list_backups(10), "backup_auto": setting_get("backup.auto_enabled","true"), "backup_retention": setting_get("backup.retention","10"),
         "update_repo": setting_get("update.repo",""), "version": APP_VERSION, "catalog_plugins": load_catalog_plugins(),
+        "acquisition": load_acquisition_settings(), "acquisition_strategies": STRATEGIES,
     })
 
 
@@ -1049,6 +1080,19 @@ async def settings_policy(request: Request, preferred_resolution: int = Form(108
     setting_set("policy.reject_terms", reject_terms.strip())
     log_event("info","policy","updated","Release scoring policy updated",{"movie_gb":max_movie_size_gb,"episode_gb":max_episode_size_gb,"season_gb":max_season_size_gb,"series_gb":max_series_size_gb})
     return RedirectResponse('/settings?notice='+quote('Release policy saved'),status_code=303)
+
+
+@app.post("/settings/acquisition")
+async def settings_acquisition(request: Request, default_strategy: str = Form("automatic"), native_search_fallback: str = Form("false"), prefer_cached_debrid: str = Form("false"), max_candidates: int = Form(100)):
+    require_admin(request)
+    save_acquisition_settings(
+        default_strategy,
+        native_search_fallback.lower() in {"1","true","yes","on"},
+        prefer_cached_debrid.lower() in {"1","true","yes","on"},
+        max_candidates,
+    )
+    log_event("info","acquisition","settings_updated",f"Default strategy: {default_strategy}")
+    return RedirectResponse('/settings?notice='+quote('Acquisition strategy saved'),status_code=303)
 
 
 @app.post("/settings/notifications")
@@ -1215,10 +1259,10 @@ async def ecosystem_page(request: Request, notice: str = ""):
 
 
 @app.post("/ecosystem/save")
-async def ecosystem_save(request: Request, key: str = Form(...), url: str = Form(""), api_key: str = Form(""), enabled: str = Form("false")):
+async def ecosystem_save(request: Request, key: str = Form(...), url: str = Form(""), api_key: str = Form(""), username: str = Form(""), password: str = Form(""), enabled: str = Form("false")):
     require_admin(request)
     try:
-        save_ecosystem_connector(key.strip(), url.strip(), api_key.strip(), enabled.lower() in {"1","true","yes","on"})
+        save_ecosystem_connector(key.strip(), url.strip(), api_key.strip(), enabled.lower() in {"1","true","yes","on"}, username.strip(), password)
         result = await probe_connector(key.strip())
         detail = "connected" if result.get("ok") else result.get("error") or result.get("state") or "saved"
         log_event("info" if result.get("ok") else "warning", "ecosystem", "connector_saved", f"{key}: {detail}")
@@ -1302,6 +1346,33 @@ async def infinidysk_action(request: Request, action: str = Form(...)):
         return RedirectResponse("/infinidysk?notice=" + quote(f"Queue {action} requested"), status_code=303)
     except Exception as exc:
         return RedirectResponse("/infinidysk?notice=" + quote(f"InfiniDysk action failed: {exc}"), status_code=303)
+
+
+@app.get("/decypharr", response_class=HTMLResponse)
+async def decypharr_page(request: Request):
+    require_auth(request)
+    cfg=connector_config("decypharr"); version={}; torrents=[]; repair={}; arrs=[]; broken=[]; error=""
+    if cfg.get("enabled") and cfg.get("url"):
+        c=DecypharrClient()
+        try: version=await c.version()
+        except Exception as exc: error=str(exc)
+        try:
+            raw=await c.torrents(); torrents=raw if isinstance(raw,list) else raw.get("torrents") or raw.get("data") or [] if isinstance(raw,dict) else []
+        except Exception as exc:
+            if not error: error=str(exc)
+        try:
+            raw=await c.repair_status(); repair=raw if isinstance(raw,dict) else {}
+        except Exception: repair={}
+        try:
+            raw=await c.arrs(); arrs=raw if isinstance(raw,list) else raw.get("arrs") or raw.get("data") or [] if isinstance(raw,dict) else []
+        except Exception: arrs=[]
+        try:
+            raw=await c.repair_health(); health=raw if isinstance(raw,list) else raw.get("entries") or raw.get("data") or [] if isinstance(raw,dict) else []
+            broken=[x for x in health if str(x.get("status") or "").lower() in {"broken","failed","error","unhealthy"}]
+        except Exception: broken=[]
+    else:
+        error="Enable and verify the Decypharr connector in Ecosystem first"
+    return templates.TemplateResponse("decypharr.html",{"request":request,"config":cfg,"version":version,"torrents":torrents,"torrent_count":len(torrents),"repair":repair,"arrs":arrs,"arr_count":len(arrs),"broken":broken,"error":error})
 
 
 @app.get("/quality-lab", response_class=HTMLResponse)
@@ -1524,6 +1595,7 @@ async def discover_page(request: Request, q: str = "", media_type: str = "movie"
             "request":request,"q":q,"media_type":media_type,"results":results,
             "error":page_error,"notice":notice,"movie_roots":movie_roots(),"tv_roots":tv_roots(),"rd_connected":rd.connected(),
             "catalog_shelves":seerr_shelves,"library_shelves":library_shelves,"seerr_notice":seerr_notice,"discover_warnings":warnings,
+            "acquisition":load_acquisition_settings(),"acquisition_strategies":STRATEGIES,
         })
     except Exception as exc:
         # Last-resort diagnostic instead of an opaque Internal Server Error.
@@ -1532,19 +1604,61 @@ async def discover_page(request: Request, q: str = "", media_type: str = "movie"
 
 
 @app.post("/discover/add")
-async def discover_add_route(request: Request, media_type: str = Form(...), candidate_json: str = Form(...), destination_key: str = Form("auto"), query: str = Form("")):
+async def discover_add_route(request: Request, media_type: str = Form(...), candidate_json: str = Form(...), destination_key: str = Form("auto"), query: str = Form(""), acquisition_strategy: str = Form("automatic")):
     user=require_request_access(request, count_against_limit=True)
     try:
         candidate=json.loads(candidate_json)
-        result=await discover_add(candidate,media_type,destination_key,search=True,user_id=int(user["id"]))
+        # v6 deliberately adds/monitors the title first but does not dispatch a
+        # broad Arr search. The background acquisition planner performs an
+        # interactive release search and grabs exactly one release according to
+        # the requested Usenet/Debrid strategy.
+        result=await discover_add(candidate,media_type,destination_key,search=False,user_id=int(user["id"]))
         item=result["item"]; ext=item.get("tmdbId") if media_type=="movie" else item.get("tvdbId")
-        add_scrape(media_type,item.get("title") or candidate.get("title") or "Untitled",str(ext or ""),"radarr" if media_type=="movie" else "sonarr",result["instance"],item.get("id"),result["destination"],"searching","Arr search command dispatched; waiting for indexer/download activity")
-        log_event("info","discover","search_dispatched",item.get("title") or "Untitled",{"media_type":media_type,"instance":result["instance"],"destination":result["destination"]})
-        msg=quote(f"Requested {item.get('title')} via {result['instance']}; search is now visible in Scraping")
+        strategy=acquisition_strategy if acquisition_strategy in STRATEGIES else load_acquisition_settings().default_strategy
+        scrape_id=add_scrape(media_type,item.get("title") or candidate.get("title") or "Untitled",str(ext or ""),"radarr" if media_type=="movie" else "sonarr",result["instance"],item.get("id"),result["destination"],"planning",f"Acquisition strategy: {strategy.replace('_',' ')} · comparing Usenet and Debrid releases")
+        update_request_progress(media_type,str(ext or ""),"planning",f"Acquisition strategy: {strategy}","")
+        _launch(_run_discover_acquisition(scrape_id,media_type,str(ext or ""),result["instance"],int(item.get("id") or 0),strategy,item.get("title") or candidate.get("title") or "Untitled"))
+        log_event("info","acquisition","planner_dispatched",item.get("title") or "Untitled",{"media_type":media_type,"instance":result["instance"],"destination":result["destination"],"strategy":strategy})
+        msg=quote(f"Requested {item.get('title')} via {result['instance']}; {strategy.replace('_',' ')} acquisition is running")
         return RedirectResponse(f"/discover?media_type={media_type}&q={quote(query)}&notice={msg}",status_code=303)
     except Exception as exc:
         log_event("error","discover","request_failed",str(exc),{"query":query,"media_type":media_type})
         return RedirectResponse(f"/discover?media_type={media_type}&q={quote(query)}&error={quote(str(exc))}",status_code=303)
+
+
+async def _run_discover_acquisition(scrape_id: int, media_type: str, external_id: str, instance_name: str, arr_id: int, strategy: str, title: str):
+    service="radarr" if media_type=="movie" else "sonarr"
+    try:
+        inst=next((i for i in discover_instances() if i.service==service and i.instance==instance_name and i.api_key),None)
+        client=client_for_instance(inst) if inst else (RadarrClient() if media_type=="movie" else SonarrClient())
+        update_scrape(scrape_id,"searching",f"{strategy.replace('_',' ').title()} · querying interactive Arr releases from Usenet + torrent indexers")
+        result=await plan_and_grab(client,media_type,arr_id,strategy)
+        counts=result.get("counts") or {}
+        if result.get("ok"):
+            proto=result.get("protocol") or "unknown"
+            label="Real-Debrid / torrent" if proto=="torrent" else "Usenet / InfiniDysk" if proto=="usenet" else proto
+            detail=(f"Selected {label} · {result.get('indexer') or 'indexer'} · score {result.get('score',0)} · "
+                    f"{counts.get('usenet',0)} Usenet / {counts.get('torrent',0)} torrent candidates" +
+                    (" · RD cached" if result.get("cached") else ""))
+            update_scrape(scrape_id,"grabbed",detail)
+            update_request_progress(media_type,external_id,"grabbed",detail,proto)
+            log_event("info","acquisition","release_grabbed",title,{"strategy":strategy,"protocol":proto,"indexer":result.get("indexer"),"release":result.get("title"),"score":result.get("score"),"counts":counts})
+            return
+        cfg=load_acquisition_settings()
+        reason="; ".join(result.get("reasons") or [])
+        if cfg.native_search_fallback and strategy in {"automatic","fastest","quality","debrid_first","usenet_first"}:
+            await client.search(arr_id)
+            detail=f"ArrNexus planner found no acceptable release ({reason}). Native Arr search dispatched as final fallback."
+            update_scrape(scrape_id,"searching",detail); update_request_progress(media_type,external_id,"searching",detail,"")
+            log_event("warning","acquisition","native_fallback",title,{"strategy":strategy,"reason":reason,"counts":counts})
+        else:
+            detail=f"No acceptable release: {reason}"
+            update_scrape(scrape_id,"failed",detail); update_request_progress(media_type,external_id,"failed",detail,"")
+            log_event("error","acquisition","no_release",title,{"strategy":strategy,"reason":reason,"counts":counts})
+    except Exception as exc:
+        detail=f"Acquisition planner failed: {exc}"
+        update_scrape(scrape_id,"failed",detail); update_request_progress(media_type,external_id,"failed",detail,"")
+        log_event("error","acquisition","planner_failed",detail,{"title":title,"strategy":strategy})
 
 
 @app.get("/scraping", response_class=HTMLResponse)

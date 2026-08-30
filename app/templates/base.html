@@ -6,31 +6,42 @@
   <meta name="theme-color" content="#07111f"><link rel="manifest" href="/static/manifest.webmanifest"><link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css"><script defer src="/static/app.js"></script>
 </head>
-<body><div class="shell">
-<aside class="sidebar" id="appSidebar">
-  <a class="brand" href="/"><div class="brandmark">AN</div><div><strong>{{ app_setting('app.title','ArrNexus') }}</strong><span>Unified Media Control</span></div></a>
-  <nav>
-    <a class="{{ 'active' if request.url.path=='/' }}" href="/">Dashboard</a>
-    <a class="{{ 'active' if request.url.path.startswith('/inbox') or request.url.path.startswith('/item') }}" href="/inbox">DMM Inbox</a>
-    <a class="{{ 'active' if request.url.path.startswith('/debrid') }}" href="/debrid">Debrid / DMM</a>
-    <a class="{{ 'active' if request.url.path.startswith('/discover') }}" href="/discover">Discover</a>
-    <a class="{{ 'active' if request.url.path.startswith('/scraping') }}" href="/scraping">Scraping</a>
-    <a class="{{ 'active' if request.url.path.startswith('/music') }}" href="/music">Music Hub</a>
-    <a class="{{ 'active' if request.url.path.startswith('/queue') }}" href="/queue">Download Queue</a>
-    <a class="{{ 'active' if request.url.path.startswith('/jobs') }}" href="/jobs">Import Jobs</a>
-    <a class="{{ 'active' if request.url.path.startswith('/libraries') or request.url.path.startswith('/browser') }}" href="/libraries">Libraries</a>
-    <a class="{{ 'active' if request.url.path.startswith('/maintenance') }}" href="/maintenance">Maintenance</a>
-    <a class="{{ 'active' if request.url.path.startswith('/problems') }}" href="/problems">Problem Centre</a>
-    <a class="{{ 'active' if request.url.path.startswith('/self-healing') }}" href="/self-healing">Self-Healing</a>
-    <a class="{{ 'active' if request.url.path.startswith('/quality-lab') }}" href="/quality-lab">Quality Lab</a>
-    <a class="{{ 'active' if request.url.path.startswith('/infinidysk') }}" href="/infinidysk">InfiniDysk</a>
-    <a class="{{ 'active' if request.url.path.startswith('/ecosystem') }}" href="/ecosystem">Ecosystem</a>
-    <a class="{{ 'active' if request.url.path.startswith('/rules') }}" href="/rules">Routing Rules</a>
-    <a class="{{ 'active' if request.url.path.startswith('/logs') }}" href="/logs">Logs</a>
-    <a class="{{ 'active' if request.url.path.startswith('/arrs') }}" href="/arrs">Connections</a>
-    <a class="{{ 'active' if request.url.path.startswith('/settings') }}" href="/settings">Settings</a>
+<body><div class="shell v6-shell">
+<aside class="sidebar v6-sidebar" id="appSidebar">
+  <a class="brand v6-brand" href="/"><div class="brandmark v6-brandmark">∞</div><div><strong>{{ app_setting('app.title','ArrNexus') }}</strong><span>Media Intelligence</span></div></a>
+  <nav class="v6-nav">
+    <div class="navgroup"><span class="navgroup-title">OVERVIEW</span>
+      <a class="{{ 'active' if request.url.path=='/' }}" href="/"><i>⌂</i><span>Dashboard</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/discover') }}" href="/discover"><i>⌕</i><span>Discover</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/music') }}" href="/music"><i>♪</i><span>Music Hub</span></a>
+    </div>
+    <div class="navgroup"><span class="navgroup-title">ACQUISITION</span>
+      <a class="{{ 'active' if request.url.path.startswith('/scraping') }}" href="/scraping"><i>⌁</i><span>Acquisition</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/debrid') }}" href="/debrid"><i>◈</i><span>Debrid / DMM</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/infinidysk') }}" href="/infinidysk"><i>☁</i><span>InfiniDysk</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/decypharr') }}" href="/decypharr"><i>◇</i><span>Decypharr</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/queue') }}" href="/queue"><i>⇣</i><span>Download Queue</span></a>
+    </div>
+    <div class="navgroup"><span class="navgroup-title">LIBRARY & AUTOMATION</span>
+      <a class="{{ 'active' if request.url.path.startswith('/inbox') or request.url.path.startswith('/item') }}" href="/inbox"><i>▣</i><span>DMM Inbox</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/libraries') or request.url.path.startswith('/browser') }}" href="/libraries"><i>▤</i><span>Libraries</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/jobs') }}" href="/jobs"><i>⇄</i><span>Import Jobs</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/rules') }}" href="/rules"><i>⌘</i><span>Routing Rules</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/self-healing') }}" href="/self-healing"><i>✚</i><span>Self-Healing</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/quality-lab') }}" href="/quality-lab"><i>◫</i><span>Quality Lab</span></a>
+    </div>
+    <div class="navgroup"><span class="navgroup-title">SYSTEM</span>
+      <a class="{{ 'active' if request.url.path.startswith('/problems') }}" href="/problems"><i>!</i><span>Problem Centre</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/maintenance') }}" href="/maintenance"><i>⚒</i><span>Maintenance</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/logs') }}" href="/logs"><i>≡</i><span>Unified Logs</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/ecosystem') }}" href="/ecosystem"><i>⌬</i><span>Ecosystem</span></a>
+    </div>
+    <div class="navgroup"><span class="navgroup-title">SETTINGS</span>
+      <a class="{{ 'active' if request.url.path.startswith('/arrs') }}" href="/arrs"><i>↔</i><span>Connections</span></a>
+      <a class="{{ 'active' if request.url.path.startswith('/settings') }}" href="/settings"><i>⚙</i><span>Settings</span></a>
+    </div>
   </nav>
-  <div class="sidefoot"><a class="profile-link" href="/profile"><span class="avatar-mini">{{ (request.session.get('display_name') or 'A')[:1]|upper }}</span><span>{{ request.session.get('display_name') or 'Profile' }}</span></a><a href="/logout">Log out</a></div>
+  <div class="sidefoot v6-sidefoot"><div class="sidebar-mode"><span class="dot ok"></span><span>safe symlink mode</span></div><a class="profile-link" href="/profile"><span class="avatar-mini">{{ (request.session.get('display_name') or 'A')[:1]|upper }}</span><span>{{ request.session.get('display_name') or 'Profile' }}</span></a><a href="/logout">Log out</a></div>
 </aside>
-<main class="main"><header class="topbar"><button class="mobile-menu" type="button" data-mobile-menu aria-label="Open navigation">☰</button><div><span class="eyebrow">ARR · DEBRID · USENET · JELLYFIN · MUSIC</span><h1>{% block heading %}Dashboard{% endblock %}</h1></div><div class="pill">safe symlink mode</div></header>{% block content %}{% endblock %}</main>
+<main class="main v6-main"><header class="topbar v6-topbar"><button class="mobile-menu" type="button" data-mobile-menu aria-label="Open navigation">☰</button><div><span class="eyebrow">ARR · DEBRID · USENET · JELLYFIN · MUSIC</span><h1>{% block heading %}Dashboard{% endblock %}</h1></div><div class="v6-header-actions"><a class="top-icon" href="/problems" title="Problem Centre">!</a><a class="top-icon" href="/logs" title="Logs">≡</a><a class="top-icon" href="/settings" title="Settings">⚙</a></div></header>{% block content %}{% endblock %}</main>
 </div><div id="jobToastStack" class="job-toast-stack" aria-live="polite"></div></body></html>

@@ -59,6 +59,15 @@ class ArrClient:
     async def command(self, payload: dict):
         return await self.request("POST", f"/api/{self.api_version}/command", json=payload)
 
+    async def grab_release(self, release: dict):
+        """Grab one interactive-search release through the Arr.
+
+        Radarr/Sonarr then route the release to the correct protocol-specific
+        download client (InfiniDysk/SAB for Usenet, Decypharr/qBittorrent for
+        torrent/debrid) using their normal rules and tags.
+        """
+        return await self.request("POST", f"/api/{self.api_version}/release", json=release)
+
 
 class RadarrClient(ArrClient):
     def __init__(self, base_url: str | None = None, api_key: str | None = None, name: str = "Radarr"):
@@ -128,6 +137,9 @@ class SonarrClient(ArrClient):
 
     async def search(self, series_id: int):
         return await self.command({"name": "SeriesSearch", "seriesId": series_id})
+
+    async def releases(self, series_id: int):
+        return await self.request("GET", "/api/v3/release", params={"seriesId": int(series_id)})
 
 
 class LidarrClient(ArrClient):
