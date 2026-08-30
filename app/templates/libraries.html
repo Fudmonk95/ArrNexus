@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block heading %}Library Directory{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="panelhead"><div><h2>Configured destinations</h2><p>Read-only directory overview of the Arr roots this router can target.</p></div></div>
+  <div class="library-grid">
+  {% for r in roots %}
+    <div class="library-card">
+      <div class="libtop"><strong>{{ r.key }}</strong><span class="dot {{ 'ok' if r.exists else 'bad' }}"></span></div>
+      <code>{{ r.path }}</code>
+      <div class="libcount">{{ r.count }} folders</div>
+      <div class="samples">{% for s in r.sample %}<span>{{ s }}</span>{% endfor %}</div>
+    </div>
+  {% endfor %}
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block heading %}Music Search{% endblock %}
+{% block content %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+<section class="panel">
+  <div class="panelhead"><div><h2>Lidarr / Usenet</h2><p>Debrid is not used here. Searches and grabs go through Lidarr's configured indexers and download client.</p></div></div>
+  <form class="searchbar" method="get" action="/music"><input name="q" value="{{ q }}" placeholder="Search artist in Lidarr metadata…"><button class="btn primary">Search</button></form>
+  {% if lookup %}<h3>Artist lookup</h3><div class="lookup-grid">{% for a in lookup[:12] %}<div class="lookup-card"><strong>{{ a.artistName or a.foreignArtistId }}</strong><span>{{ a.disambiguation or '' }}</span><small>{{ a.foreignArtistId }}</small></div>{% endfor %}</div>{% endif %}
+</section>
+
+<section class="panel">
+  <div class="panelhead"><div><h2>Your Lidarr artists</h2><p>Select an existing artist to browse albums.</p></div></div>
+  <div class="lookup-grid">{% for a in artists[:80] %}<a class="lookup-card linkcard" href="/music?artist_id={{ a.id }}"><strong>{{ a.artistName }}</strong><span>{{ a.status or '' }}</span></a>{% endfor %}</div>
+</section>
+
+{% if albums %}<section class="panel"><div class="panelhead"><div><h2>Albums</h2><p>Choose an album to run Lidarr's interactive release search.</p></div></div><div class="lookup-grid">{% for a in albums %}<a class="lookup-card linkcard" href="/music?artist_id={{ artist_id }}&album_id={{ a.id }}"><strong>{{ a.title }}</strong><span>{{ a.releaseDate or '' }}</span></a>{% endfor %}</div></section>{% endif %}
+
+{% if releases %}<section class="panel"><div class="panelhead"><div><h2>NZB / indexer results</h2><p>These are returned by Lidarr's own release search.</p></div></div><div class="tablewrap"><table><thead><tr><th>Title</th><th>Indexer</th><th>Protocol</th><th>Size</th><th>Peers</th><th></th></tr></thead><tbody>
+{% for r in releases %}<tr><td>{{ r.title }}</td><td>{{ r.indexer }}</td><td><span class="tag">{{ r.protocol }}</span></td><td>{{ '%.2f GB'|format((r.size or 0)/1073741824) }}</td><td>{{ r.seeders or '—' }}</td><td><form method="post" action="/music/grab"><input type="hidden" name="release_json" value='{{ r|tojson|forceescape }}'><button class="btn small primary">Grab</button></form></td></tr>{% endfor %}
+</tbody></table></div></section>{% endif %}
+{% endblock %}

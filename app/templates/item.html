@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block heading %}Route media{% endblock %}
+{% block content %}
+{% if request.query_params.get('error') %}<div class="alert error">{{ request.query_params.get('error') }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+<div class="grid-2">
+<section class="panel">
+  <div class="panelhead"><div><h2>{{ item.name }}</h2><p>{{ item.path }}</p></div><span class="tag {{ item.media_type }}">{{ item.media_type }}</span></div>
+  <dl class="details"><dt>Title guess</dt><dd>{{ item.title_guess }}</dd><dt>Year</dt><dd>{{ item.year_guess or 'Unknown' }}</dd><dt>Video files</dt><dd>{{ item.video_count }}</dd><dt>Seasons</dt><dd>{{ item.season_numbers|join(', ') if item.season_numbers else '—' }}</dd></dl>
+</section>
+<section class="panel">
+  <div class="panelhead"><div><h2>Suggested destination</h2><p>{{ decision.reason }}</p></div><span class="confidence">{{ decision.confidence }}%</span></div>
+  <div class="routebox"><strong>{{ decision.key|capitalize }}</strong><code>{{ decision.root }}</code></div>
+  {% if existing %}<div class="alert success">Already exists in {{ 'Radarr' if item.media_type == 'movie' else 'Sonarr' }} as <strong>{{ existing.title }}</strong>. Its existing Arr path wins when imported.</div>{% endif %}
+</section>
+</div>
+
+<section class="panel">
+  <div class="panelhead"><div><h2>Import</h2><p>Choose the destination. This creates symlinks only; source media stays in Decypharr.</p></div></div>
+  <form method="post" action="/import" class="formgrid">
+    <input type="hidden" name="source_path" value="{{ item.path }}">
+    <input type="hidden" name="media_type" value="{{ item.media_type }}">
+    <label>Destination library
+      <select name="destination_key">
+        {% for key, path in roots.items() %}<option value="{{ key }}" {% if key == decision.key %}selected{% endif %}>{{ key|capitalize }} — {{ path }}</option>{% endfor %}
+      </select>
+    </label>
+    {% if not existing and lookup %}
+    <label>Arr match
+      <select name="candidate_index">
+        {% for candidate in lookup %}<option value="{{ loop.index0 }}">{{ candidate.title }}{% if candidate.year %} ({{ candidate.year }}){% endif %}</option>{% endfor %}
+      </select>
+    </label>
+    {% else %}<input type="hidden" name="candidate_index" value="-1">{% endif %}
+    <div class="formactions"><a class="btn" href="/inbox">Cancel</a><button class="btn primary" type="submit">Create symlinks & rescan</button></div>
+  </form>
+</section>
+{% endblock %}

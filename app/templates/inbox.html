@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block heading %}DMM Inbox{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="panelhead"><div><h2>Decypharr __all__</h2><p>Review each item before linking it into an Arr library.</p></div><a class="btn" href="/inbox">Rescan</a></div>
+  <div class="tablewrap"><table><thead><tr><th>Source</th><th>Guess</th><th>Year</th><th>Type</th><th>Files</th><th></th></tr></thead><tbody>
+  {% for item in items %}
+    <tr><td>{{ item.name }}</td><td>{{ item.title_guess }}</td><td>{{ item.year_guess or '—' }}</td><td><span class="tag {{ item.media_type }}">{{ item.media_type }}</span></td><td>{{ item.video_count }}</td><td><a class="btn small primary" href="/item?path={{ item.path|urlencode }}">Route</a></td></tr>
+  {% else %}<tr><td colspan="6" class="empty">Nothing found in __all__.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endblock %}

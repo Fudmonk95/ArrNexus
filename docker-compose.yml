@@ -1,0 +1,52 @@
+services:
+  dmm-arr-router:
+    build: .
+    container_name: dmm-arr-router
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8484}:8000"
+    environment:
+      APP_USERNAME: ${APP_USERNAME:-admin}
+      APP_PASSWORD: ${APP_PASSWORD:-change-me}
+      SESSION_SECRET: ${SESSION_SECRET:-change-this-session-secret}
+      SOURCE_ROOT: ${SOURCE_ROOT:-/mnt/debrid/decypharr/__all__}
+      DB_PATH: /data/router.db
+
+      RADARR_URL: ${RADARR_URL:-http://192.168.137.10:7878}
+      RADARR_API_KEY: ${RADARR_API_KEY:-}
+      RADARR_QUALITY_PROFILE_NAME: ${RADARR_QUALITY_PROFILE_NAME:-Any HD}
+
+      SONARR_URL: ${SONARR_URL:-http://192.168.137.10:8989}
+      SONARR_API_KEY: ${SONARR_API_KEY:-}
+      SONARR_QUALITY_PROFILE_NAME: ${SONARR_QUALITY_PROFILE_NAME:-Any}
+
+      LIDARR_URL: ${LIDARR_URL:-http://192.168.137.10:8686}
+      LIDARR_API_KEY: ${LIDARR_API_KEY:-}
+      LIDARR_QUALITY_PROFILE_NAME: ${LIDARR_QUALITY_PROFILE_NAME:-Any}
+      LIDARR_METADATA_PROFILE_NAME: ${LIDARR_METADATA_PROFILE_NAME:-Standard}
+
+      PROWLARR_URL: ${PROWLARR_URL:-http://192.168.137.10:9696}
+      PROWLARR_API_KEY: ${PROWLARR_API_KEY:-}
+
+      RADARR_DEFAULT_ROOT: ${RADARR_DEFAULT_ROOT:-/mnt/debrid/nzbdav-symlinks/radarr-nzbdav}
+      RADARR_KIDS_ROOT: ${RADARR_KIDS_ROOT:-/mnt/debrid/nzbdav-symlinks/radarr-kids-nzbdav}
+      RADARR_CHRISTMAS_ROOT: ${RADARR_CHRISTMAS_ROOT:-/mnt/debrid/nzbdav-symlinks/radarr-christmas-nzbdav}
+      RADARR_HALLOWEEN_ROOT: ${RADARR_HALLOWEEN_ROOT:-/mnt/debrid/nzbdav-symlinks/radarr-halloween-nzbdav}
+      RADARR_EASTER_ROOT: ${RADARR_EASTER_ROOT:-/mnt/debrid/nzbdav-symlinks/radarr-easter-nzbdav}
+
+      SONARR_DEFAULT_ROOT: ${SONARR_DEFAULT_ROOT:-/mnt/debrid/nzbdav-symlinks/sonarr-nzbdav}
+      SONARR_KIDS_ROOT: ${SONARR_KIDS_ROOT:-/mnt/debrid/nzbdav-symlinks/sonarr-kids-nzbdav}
+      SONARR_NETFLIX_ROOT: ${SONARR_NETFLIX_ROOT:-/mnt/debrid/nzbdav-symlinks/sonarr-netflix-nzbdav}
+      SONARR_DISNEY_ROOT: ${SONARR_DISNEY_ROOT:-/mnt/debrid/nzbdav-symlinks/sonarr-disneyplus-nzbdav}
+      SONARR_AMAZON_ROOT: ${SONARR_AMAZON_ROOT:-/mnt/debrid/nzbdav-symlinks/sonarr-amazon-nzbdav}
+      SONARR_APPLE_ROOT: ${SONARR_APPLE_ROOT:-/mnt/debrid/nzbdav-symlinks/sonarr-appletv-nzbdav}
+      SONARR_BBC_ROOT: ${SONARR_BBC_ROOT:-/mnt/debrid/nzbdav-symlinks/sonarr-bbc-nzbdav}
+
+      LIDARR_ROOT: ${LIDARR_ROOT:-/mnt/debrid/nzbdav-symlinks/lidarr-nzbdav}
+    volumes:
+      - ./data:/data
+      - type: bind
+        source: /mnt/debrid
+        target: /mnt/debrid
+        bind:
+          propagation: rslave
