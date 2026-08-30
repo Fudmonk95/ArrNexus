@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 import os
+import secrets
+from pathlib import Path
 
 
 def env(name: str, default: str = "") -> str:
@@ -11,19 +13,52 @@ def env_bool(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def persistent_secret() -> str:
+    """Return a stable session secret without requiring an env file.
+
+    ARRNEXUS_SESSION_SECRET/SESSION_SECRET can still override this for advanced
+    deployments, but a normal Portainer deployment only needs /data persisted.
+    """
+    supplied = env("ARRNEXUS_SESSION_SECRET") or env("SESSION_SECRET")
+    if supplied:
+        return supplied
+    path = Path(env("DB_DIR", "/data")) / "session_secret"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            value = path.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+        value = secrets.token_hex(48)
+        path.write_text(value + "\n", encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        return value
+    except OSError:
+        # Last-resort ephemeral secret. This keeps the app bootable on a
+        # read-only filesystem, although sessions will reset after restart.
+        return secrets.token_hex(48)
+
+
 @dataclass(frozen=True)
 class Settings:
-    username: str = env("APP_USERNAME", "admin")
-    password: str = env("APP_PASSWORD", "change-me")
-    session_secret: str = env("SESSION_SECRET", "change-this-session-secret")
     db_path: str = env("DB_PATH", "/data/router.db")
+    session_secret: str = persistent_secret()
     app_name: str = env("APP_NAME", "ArrNexus")
+
+    # Optional legacy bootstrap. Fresh installs do not need these variables;
+    # they are sent to /setup and create the first administrator in the UI.
+    bootstrap_username: str = env("APP_USERNAME")
+    bootstrap_password: str = env("APP_PASSWORD")
 
     dumb_root: str = env("DUMB_ROOT", "/mnt/debrid")
     source_root: str = env("SOURCE_ROOT", "/mnt/debrid/decypharr/__all__")
     radarr_process_match: str = env("RADARR_PROCESS_MATCH", "/opt/radarr/Radarr/Radarr")
     radarr_data_match: str = env("RADARR_DATA_MATCH", "--data=/radarr/nzbdav")
 
+    # All connection values are only fallbacks. UI-saved values in SQLite win.
     radarr_url: str = env("RADARR_URL", "http://host.docker.internal:7878")
     radarr_api_key: str = env("RADARR_API_KEY")
     radarr_quality_profile_name: str = env("RADARR_QUALITY_PROFILE_NAME", "Any HD")
@@ -40,14 +75,16 @@ class Settings:
     prowlarr_url: str = env("PROWLARR_URL", "http://host.docker.internal:9696")
     prowlarr_api_key: str = env("PROWLARR_API_KEY")
 
-    # Optional: only needed for exact "present in Jellyfin" checks.
     jellyfin_url: str = env("JELLYFIN_URL", "http://host.docker.internal:8096")
     jellyfin_api_key: str = env("JELLYFIN_API_KEY")
 
-    # Public/free music discovery. No user account is required.
+    seerr_url: str = env("SEERR_URL", "http://host.docker.internal:5055")
+    seerr_api_key: str = env("SEERR_API_KEY")
+
+    # Public/free music discovery. No personal listener account is needed.
     musicbrainz_base: str = env("MUSICBRAINZ_BASE", "https://musicbrainz.org/ws/2")
     listenbrainz_base: str = env("LISTENBRAINZ_BASE", "https://api.listenbrainz.org")
-    music_user_agent: str = env("MUSIC_USER_AGENT", "ArrNexus/2.0 (self-hosted media manager)")
+    music_user_agent: str = env("MUSIC_USER_AGENT", "ArrNexus/3.0 (self-hosted media manager)")
     public_music_country: str = env("PUBLIC_MUSIC_COUNTRY", "GB")
     enable_itunes_search: bool = env_bool("ENABLE_ITUNES_SEARCH", True)
 
@@ -91,7 +128,6 @@ class Settings:
 
     @property
     def arr_host(self) -> str:
-        # hostname/IP shared by the configured Arr URLs.
         from urllib.parse import urlsplit
         return urlsplit(self.radarr_url).hostname or "127.0.0.1"
 

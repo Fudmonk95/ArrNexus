@@ -1,0 +1,13 @@
+{
+  "name": "ArrNexus",
+  "short_name": "ArrNexus",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#07111f",
+  "theme_color": "#07111f",
+  "description": "Unified self-hosted Arr, Debrid, Usenet, Jellyfin and music control.",
+  "icons": [
+    {"src": "/static/app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}

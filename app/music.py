@@ -4,7 +4,8 @@ import time
 from urllib.parse import quote_plus
 import httpx
 from .config import settings
-from .db import cache_get, cache_set
+from .db import cache_get, cache_set, setting_get, setting_set
+from .plugins import load_catalog_plugins, plugin_search_url
 
 _mb_lock = asyncio.Lock()
 _mb_last = 0.0
@@ -178,20 +179,150 @@ async def audius_search(term: str, count: int = 30) -> list[dict]:
         out.append({"source":"Audius","kind":"track","id":x.get("id") or "","title":x.get("title") or "","artist":user.get("name") or user.get("handle") or "","genre":x.get("genre") or "","artwork":art.get("1000x1000") or art.get("480x480") or art.get("150x150") or "","external":x.get("permalink") and f"https://audius.co{x.get('permalink')}" or "","play_count":x.get("play_count") or 0})
     return out
 
+async def internet_archive_search(term: str = "", count: int = 24) -> list[dict]:
+    """No-key public audio discovery from Internet Archive metadata."""
+    q = '(mediatype:audio)'
+    if term.strip():
+        safe = term.replace('"', ' ')
+        q += f' AND (title:("{safe}") OR creator:("{safe}"))'
+    else:
+        q += ' AND downloads:[100 TO *]'
+    params = {
+        "q": q, "fl[]": ["identifier","title","creator","date","downloads","subject"],
+        "rows": min(count, 50), "page": 1, "output": "json", "sort[]": "downloads desc"
+    }
+    try:
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
+            r = await client.get("https://archive.org/advancedsearch.php", params=params)
+        r.raise_for_status(); docs=((r.json().get("response") or {}).get("docs") or [])
+    except Exception:
+        return []
+    out=[]
+    for x in docs[:count]:
+        creator=x.get("creator") or "Unknown artist"
+        if isinstance(creator,list): creator=", ".join(str(v) for v in creator[:2])
+        out.append({
+            "source":"Internet Archive","kind":"release","id":x.get("identifier") or "",
+            "title":x.get("title") or x.get("identifier") or "Untitled","artist":str(creator),
+            "date":x.get("date") or "","genre":"", "artwork":f"https://archive.org/services/img/{x.get('identifier')}" if x.get('identifier') else "",
+            "external":f"https://archive.org/details/{x.get('identifier')}" if x.get('identifier') else "",
+            "play_count":x.get("downloads") or 0,
+        })
+    return out
+
+
+async def jamendo_search(term: str = "", count: int = 24) -> list[dict]:
+    client_id = setting_get("music.jamendo.client_id", "")
+    if not client_id:
+        return []
+    params={"client_id":client_id,"format":"json","limit":min(count,50),"order":"popularity_week"}
+    if term.strip(): params["search"] = term.strip()
+    try:
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
+            r=await client.get("https://api.jamendo.com/v3.0/tracks/",params=params)
+        r.raise_for_status(); rows=r.json().get("results") or []
+    except Exception:
+        return []
+    return [{
+        "source":"Jamendo","kind":"track","id":str(x.get("id") or ""),"title":x.get("name") or "",
+        "artist":x.get("artist_name") or "","genre":"","artwork":x.get("image") or x.get("album_image") or "",
+        "external":x.get("shareurl") or "","play_count":0
+    } for x in rows[:count]]
+
+
+async def _soundcloud_app_token() -> str:
+    cid=setting_get("music.soundcloud.client_id", "")
+    secret=setting_get("music.soundcloud.client_secret", "")
+    if not cid or not secret:
+        return ""
+    cached=cache_get("soundcloud:app_token") or {}
+    if isinstance(cached,dict) and cached.get("access_token") and float(cached.get("expires_at") or 0)>time.time()+90:
+        return cached["access_token"]
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            r=await client.post("https://secure.soundcloud.com/oauth/token", auth=(cid,secret), data={"grant_type":"client_credentials"}, headers={"Accept":"application/json"})
+        r.raise_for_status(); data=r.json(); token=data.get("access_token") or ""
+        if token:
+            cache_set("soundcloud:app_token", {"access_token":token,"expires_at":time.time()+int(data.get("expires_in") or 3000)})
+        return token
+    except Exception:
+        return ""
+
+
+async def soundcloud_search(term: str, count: int = 24) -> list[dict]:
+    if not term.strip(): return []
+    token=await _soundcloud_app_token()
+    if not token: return []
+    try:
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
+            r=await client.get("https://api.soundcloud.com/tracks", params={"q":term,"limit":min(count,50),"access":"playable"}, headers={"Authorization":f"OAuth {token}","Accept":"application/json"})
+        r.raise_for_status(); rows=r.json()
+        if isinstance(rows,dict): rows=rows.get("collection") or []
+    except Exception:
+        return []
+    out=[]
+    for x in (rows or [])[:count]:
+        user=x.get("user") or {}; art=x.get("artwork_url") or user.get("avatar_url") or ""
+        if art: art=art.replace("-large.","-t500x500.")
+        out.append({"source":"SoundCloud","kind":"track","id":str(x.get("id") or ""),"title":x.get("title") or "","artist":user.get("username") or "","genre":x.get("genre") or "","artwork":art,"external":x.get("permalink_url") or "","play_count":x.get("playback_count") or 0})
+    return out
+
+
+async def lastfm_search(term: str = "", kind: str = "artist", count: int = 24) -> list[dict]:
+    api_key=setting_get("music.lastfm.api_key", "")
+    if not api_key: return []
+    method="album.search" if kind in {"album","release"} else "artist.search"
+    params={"method":method,"api_key":api_key,"format":"json","limit":min(count,50)}
+    params["album" if method=="album.search" else "artist"] = term.strip()
+    if not term.strip(): return []
+    try:
+        async with httpx.AsyncClient(timeout=25.0,follow_redirects=True) as client:
+            r=await client.get("https://ws.audioscrobbler.com/2.0/",params=params)
+        r.raise_for_status(); data=r.json()
+    except Exception: return []
+    root=(data.get("results") or {})
+    rows=((root.get("albummatches") or {}).get("album") if method=="album.search" else (root.get("artistmatches") or {}).get("artist")) or []
+    out=[]
+    for x in rows[:count]:
+        artist=x.get("artist") if method=="album.search" else x.get("name")
+        title=x.get("name") if method=="album.search" else x.get("name")
+        images=x.get("image") or []; art=next((i.get("#text") for i in reversed(images) if i.get("#text")),"")
+        out.append({"source":"Last.fm","kind":"album" if method=="album.search" else "artist","id":x.get("mbid") or x.get("url") or "","title":title or artist or "","artist":artist or "","genre":"","artwork":art,"external":x.get("url") or "","play_count":int(x.get("listeners") or 0) if str(x.get("listeners") or "").isdigit() else 0})
+    return out
+
+async def lastfm_top(count: int = 24) -> list[dict]:
+    api_key=setting_get("music.lastfm.api_key", "")
+    if not api_key: return []
+    try:
+        async with httpx.AsyncClient(timeout=25.0,follow_redirects=True) as client:
+            r=await client.get("https://ws.audioscrobbler.com/2.0/",params={"method":"chart.gettoptracks","api_key":api_key,"format":"json","limit":min(count,50)})
+        r.raise_for_status(); rows=((r.json().get("tracks") or {}).get("track") or [])
+    except Exception: return []
+    out=[]
+    for x in rows[:count]:
+        a=x.get("artist") or {}; images=x.get("image") or []; art=next((i.get("#text") for i in reversed(images) if i.get("#text")),"")
+        out.append({"source":"Last.fm","kind":"track","id":x.get("mbid") or x.get("url") or "","title":x.get("name") or "","artist":a.get("name") or "","genre":"","artwork":art,"external":x.get("url") or "","play_count":int(x.get("playcount") or 0) if str(x.get("playcount") or "").isdigit() else 0})
+    return out
+
 def provider_catalog() -> list[dict]:
-    return [
-        {"key":"unified","name":"For You","mode":"native","description":"ListenBrainz + Apple + Audius + MusicBrainz"},
-        {"key":"listenbrainz","name":"ListenBrainz","mode":"native","description":"Public sitewide trends; no account required"},
-        {"key":"apple","name":"Apple / iTunes","mode":"native","description":"Public iTunes catalog search; no Apple account required"},
+    builtins = [
+        {"key":"unified","name":"For You","mode":"native","description":"ListenBrainz + Apple + Audius + MusicBrainz + open catalogs"},
+        {"key":"listenbrainz","name":"ListenBrainz","mode":"native","description":"Public sitewide trends; no listener account required"},
+        {"key":"apple","name":"Apple / iTunes","mode":"native","description":"Public iTunes catalog search; no Apple Music account required"},
         {"key":"audius","name":"Audius","mode":"native","description":"Open music discovery, trending and search"},
         {"key":"musicbrainz","name":"MusicBrainz","mode":"native","description":"Open music metadata and catalog search"},
-        {"key":"spotify","name":"Spotify","mode":"external","description":"Open public Spotify search without connecting your account"},
-        {"key":"amazon","name":"Amazon Music","mode":"external","description":"Open Amazon Music catalog search"},
-        {"key":"beatport","name":"Beatport","mode":"external","description":"Electronic music catalog/search; official API access is gated"},
-        {"key":"bandcamp","name":"Bandcamp","mode":"external","description":"Independent music discovery; public catalog API is gated"},
-        {"key":"lastfm","name":"Last.fm","mode":"external","description":"Charts and discovery; full API needs an app key"},
-        {"key":"discogs","name":"Discogs","mode":"external","description":"Release database search; API search generally needs authentication"},
+        {"key":"archive","name":"Internet Archive","mode":"native","description":"No-key public audio/archive discovery"},
+        {"key":"jamendo","name":"Jamendo","mode":"optional","description":"Public music catalog; optional free developer client ID"},
+        {"key":"soundcloud","name":"SoundCloud","mode":"optional","description":"Catalog search with optional app credentials; no listener account linking"},
+        {"key":"spotify","name":"Spotify","mode":"external","description":"Catalog launch/search without linking a personal Spotify account"},
+        {"key":"amazon","name":"Amazon Music","mode":"external","description":"Amazon Music catalog launcher"},
+        {"key":"beatport","name":"Beatport","mode":"external","description":"Electronic music catalog launcher"},
+        {"key":"bandcamp","name":"Bandcamp","mode":"external","description":"Independent music discovery launcher"},
+        {"key":"lastfm","name":"Last.fm","mode":"optional","description":"Global charts/search with an optional application API key; no listener login required"},
+        {"key":"discogs","name":"Discogs","mode":"external","description":"Release database launcher"},
     ]
+    return builtins + load_catalog_plugins()
+
 
 def external_music_links(artist: str, album: str = "") -> dict[str, str]:
     query = " ".join(x for x in [artist, album] if x).strip(); q=quote_plus(query)
@@ -203,7 +334,10 @@ def external_music_links(artist: str, album: str = "") -> dict[str, str]:
         "bandcamp": f"https://bandcamp.com/search?q={q}",
         "lastfm": f"https://www.last.fm/search?q={q}",
         "discogs": f"https://www.discogs.com/search/?q={q}&type=all",
+        "soundcloud": f"https://soundcloud.com/search?q={q}",
         "musicbrainz": f"https://musicbrainz.org/search?query={q}&type=release_group&method=indexed",
+        "archive": f"https://archive.org/search?query={q}+AND+mediatype%3Aaudio",
+        "jamendo": f"https://www.jamendo.com/search?q={q}",
     }
 
 async def enrich_release_art(rows: list[dict], limit: int = 8) -> list[dict]:

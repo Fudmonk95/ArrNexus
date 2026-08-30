@@ -1,42 +1,31 @@
 <!doctype html>
 <html lang="en" data-theme="{{ request.session.get('theme','nexus') }}">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{% block title %}{{ app_setting('app.title','ArrNexus') }}{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css">
-  <script defer src="/static/app.js"></script>
+  <meta name="theme-color" content="#07111f"><link rel="manifest" href="/static/manifest.webmanifest"><link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css"><script defer src="/static/app.js"></script>
 </head>
-<body>
-<div class="shell">
-  <aside class="sidebar">
-    <a class="brand" href="/"><div class="brandmark">AN</div><div><strong>{{ app_setting('app.title','ArrNexus') }}</strong><span>Unified Media Control</span></div></a>
-    <nav>
-      <a class="{% if request.url.path == '/' %}active{% endif %}" href="/">Dashboard</a>
-      <a class="{% if request.url.path.startswith('/inbox') or request.url.path.startswith('/item') %}active{% endif %}" href="/inbox">DMM Inbox</a>
-      <a class="{% if request.url.path.startswith('/debrid') %}active{% endif %}" href="/debrid">Debrid / DMM</a>
-      <a class="{% if request.url.path.startswith('/discover') %}active{% endif %}" href="/discover">Discover</a>
-      <a class="{% if request.url.path.startswith('/music') %}active{% endif %}" href="/music">Music Hub</a>
-      <a class="{% if request.url.path.startswith('/queue') %}active{% endif %}" href="/queue">Download Queue</a>
-      <a class="{% if request.url.path.startswith('/jobs') %}active{% endif %}" href="/jobs">Import Jobs</a>
-      <a class="{% if request.url.path.startswith('/libraries') %}active{% endif %}" href="/libraries">Libraries</a>
-      <a class="{% if request.url.path.startswith('/maintenance') %}active{% endif %}" href="/maintenance">Maintenance</a>
-      <a class="{% if request.url.path.startswith('/rules') %}active{% endif %}" href="/rules">Routing Rules</a>
-      <a class="{% if request.url.path.startswith('/arrs') %}active{% endif %}" href="/arrs">Connections</a>
-      <a class="{% if request.url.path.startswith('/settings') %}active{% endif %}" href="/settings">Settings</a>
-    </nav>
-    <div class="sidefoot">
-      <a class="profile-link" href="/profile"><span class="avatar-mini">{{ (request.session.get('display_name') or 'A')[:1]|upper }}</span><span>{{ request.session.get('display_name') or 'Profile' }}</span></a>
-      <a href="/logout">Log out</a>
-    </div>
-  </aside>
-  <main class="main">
-    <header class="topbar">
-      <div><span class="eyebrow">ARR · DEBRID · USENET · JELLYFIN · MUSIC</span><h1>{% block heading %}Dashboard{% endblock %}</h1></div>
-      <div class="pill">safe symlink mode</div>
-    </header>
-    {% block content %}{% endblock %}
-  </main>
-</div>
-</body>
-</html>
+<body><div class="shell">
+<aside class="sidebar" id="appSidebar">
+  <a class="brand" href="/"><div class="brandmark">AN</div><div><strong>{{ app_setting('app.title','ArrNexus') }}</strong><span>Unified Media Control</span></div></a>
+  <nav>
+    <a class="{{ 'active' if request.url.path=='/' }}" href="/">Dashboard</a>
+    <a class="{{ 'active' if request.url.path.startswith('/inbox') or request.url.path.startswith('/item') }}" href="/inbox">DMM Inbox</a>
+    <a class="{{ 'active' if request.url.path.startswith('/debrid') }}" href="/debrid">Debrid / DMM</a>
+    <a class="{{ 'active' if request.url.path.startswith('/discover') }}" href="/discover">Discover</a>
+    <a class="{{ 'active' if request.url.path.startswith('/scraping') }}" href="/scraping">Scraping</a>
+    <a class="{{ 'active' if request.url.path.startswith('/music') }}" href="/music">Music Hub</a>
+    <a class="{{ 'active' if request.url.path.startswith('/queue') }}" href="/queue">Download Queue</a>
+    <a class="{{ 'active' if request.url.path.startswith('/jobs') }}" href="/jobs">Import Jobs</a>
+    <a class="{{ 'active' if request.url.path.startswith('/libraries') or request.url.path.startswith('/browser') }}" href="/libraries">Libraries</a>
+    <a class="{{ 'active' if request.url.path.startswith('/maintenance') }}" href="/maintenance">Maintenance</a>
+    <a class="{{ 'active' if request.url.path.startswith('/rules') }}" href="/rules">Routing Rules</a>
+    <a class="{{ 'active' if request.url.path.startswith('/logs') }}" href="/logs">Logs</a>
+    <a class="{{ 'active' if request.url.path.startswith('/arrs') }}" href="/arrs">Connections</a>
+    <a class="{{ 'active' if request.url.path.startswith('/settings') }}" href="/settings">Settings</a>
+  </nav>
+  <div class="sidefoot"><a class="profile-link" href="/profile"><span class="avatar-mini">{{ (request.session.get('display_name') or 'A')[:1]|upper }}</span><span>{{ request.session.get('display_name') or 'Profile' }}</span></a><a href="/logout">Log out</a></div>
+</aside>
+<main class="main"><header class="topbar"><button class="mobile-menu" type="button" data-mobile-menu aria-label="Open navigation">☰</button><div><span class="eyebrow">ARR · DEBRID · USENET · JELLYFIN · MUSIC</span><h1>{% block heading %}Dashboard{% endblock %}</h1></div><div class="pill">safe symlink mode</div></header>{% block content %}{% endblock %}</main>
+</div><div id="jobToastStack" class="job-toast-stack" aria-live="polite"></div></body></html>

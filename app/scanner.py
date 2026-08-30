@@ -5,6 +5,7 @@ import hashlib
 import os
 import re
 from .config import settings
+from .paths import source_root
 from .namespace import view_path, logical_from_view
 
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".m2ts", ".webm"}
@@ -161,7 +162,7 @@ def inspect_item(path: Path | str) -> ScanItem:
 
 
 def scan_source() -> list[ScanItem]:
-    logical_root = Path(settings.source_root)
+    logical_root = Path(source_root())
     actual_root = view_path(logical_root)
     if not actual_root.exists():
         return []

@@ -5,6 +5,7 @@ import os
 from .scanner import video_files, episode_season, EPISODE_RE
 from .namespace import view_path, logical_from_view
 from .config import settings
+from .paths import movie_roots, tv_roots, lidarr_root, source_root
 
 
 class ImportErrorSafe(RuntimeError):
@@ -114,9 +115,9 @@ def unlink_created(paths: list[str]) -> tuple[int, list[str]]:
 
 def all_library_roots() -> dict[str, str]:
     roots = {}
-    roots.update({f"radarr:{k}": v for k, v in settings.movie_roots.items()})
-    roots.update({f"sonarr:{k}": v for k, v in settings.tv_roots.items()})
-    roots["lidarr:default"] = settings.lidarr_root
+    roots.update({f"radarr:{k}": v for k, v in movie_roots().items()})
+    roots.update({f"sonarr:{k}": v for k, v in tv_roots().items()})
+    roots["lidarr:default"] = lidarr_root()
     return roots
 
 
@@ -156,7 +157,7 @@ def repair_broken_symlink(logical_path: str) -> tuple[bool, str]:
     if not actual.is_symlink():
         return False, "Path is not a symlink"
     filename = actual.name
-    source_root = view_path(settings.source_root)
+    source_root = view_path(source_root())
     matches = []
     try:
         for p in source_root.rglob(filename):

@@ -40,7 +40,7 @@
 <td><input type="checkbox" name="source_path" value="{{ i.path }}"></td>
 <td><strong>{{ row.display_title }}</strong>{% if row.display_year %} ({{ row.display_year }}){% endif %}<small class="block muted">{{ i.name }}</small>{% if row.duplicate_count > 1 %}<span class="tag amber">{{ row.duplicate_count }} RD copies grouped</span>{% endif %}</td>
 <td><span class="tag state-{{ row.state }}">{{ 'imported' if row.state in ['imported','linked'] else row.state }}</span>{% if row.upgrade %}<span class="tag amber">Upgrade</span>{% endif %}{% if row.changed %}<span class="tag blue">New files</span>{% endif %}</td>
-<td><span class="tag {{ i.media_type }}">{{ i.media_type }}</span></td>
+<td><span class="tag {{ i.media_type }}">{{ i.media_type }}</span><div class="tags">{% for g in row.genres[:2] %}<span class="tag genre">{{ g }}</span>{% endfor %}</div></td>
 <td>{{ row.decision.key }} <small class="muted">{{ row.decision.confidence }}%</small></td>
 <td>{{ i.quality ~ 'p' if i.quality else '?' }}{% if row.existing_resolution %} / library {{ row.existing_resolution }}p{% endif %}</td>
 <td>{% if row.existing %}<span class="tag green">In Arr</span>{% endif %}{% if row.linked_paths %}<span class="tag blue">Symlinked</span>{% endif %}{% if row.jellyfin.configured %}<span class="tag {{ 'green' if row.jellyfin.found else 'mutedtag' }}">Jellyfin {{ '✓' if row.jellyfin.found else '…' }}</span>{% endif %}</td>
@@ -58,7 +58,7 @@
   </a>
   <div class="media-card-body">
     <h3>{{ row.display_title }}</h3><p>{{ row.display_year or 'Year unknown' }} · {{ i.media_type|upper }} · {{ i.video_count }} file{{ '' if i.video_count==1 else 's' }}</p>
-    <div class="tags"><span class="tag">{{ row.decision.key }}</span><span class="tag">{{ row.decision.confidence }}%</span>{% if i.quality %}<span class="tag">{{ i.quality }}p</span>{% endif %}{% if row.duplicate_count > 1 %}<span class="tag amber">{{ row.duplicate_count }} RD copies</span>{% endif %}</div>
+    <div class="tags"><span class="tag">{{ row.decision.key }}</span><span class="tag">{{ row.decision.confidence }}%</span>{% if i.quality %}<span class="tag">{{ i.quality }}p</span>{% endif %}{% for g in row.genres[:2] %}<span class="tag genre">{{ g }}</span>{% endfor %}{% if row.duplicate_count > 1 %}<span class="tag amber">{{ row.duplicate_count }} RD copies</span>{% endif %}</div>
     <small class="route-reason">{{ row.decision.reason }}</small>
     <div class="tags">{% if row.existing %}<span class="tag green">Already in Arr</span>{% endif %}{% if row.linked_paths %}<span class="tag blue">Already imported</span>{% endif %}{% if row.upgrade %}<span class="tag amber">Upgrade available</span>{% endif %}{% if row.changed %}<span class="tag blue">New files</span>{% endif %}</div>
     <div class="card-actions"><a class="btn small" href="/item?path={{ i.path|urlencode }}">Review</a></div>

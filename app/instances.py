@@ -5,6 +5,7 @@ import re
 import xml.etree.ElementTree as ET
 from urllib.parse import urlsplit
 from .config import settings
+from .paths import movie_roots, tv_roots, lidarr_root
 from .connections import get_connection, get_instance_override
 
 DATA_RE = re.compile(r"--data=(\S+)")
@@ -57,26 +58,26 @@ def destination_for(service: str, instance: str) -> tuple[str | None, str | None
     s = instance.lower().replace("_", "-")
     if service == "radarr":
         mapping = {
-            "nzbdav": ("default", settings.radarr_default_root),
-            "kids-nzbdav": ("kids", settings.radarr_kids_root),
-            "christmas-nzbdav": ("christmas", settings.radarr_christmas_root),
-            "halloween-nzbdav": ("halloween", settings.radarr_halloween_root),
-            "easter-nzbdav": ("easter", settings.radarr_easter_root),
+            "nzbdav": ("default", movie_roots()["default"]),
+            "kids-nzbdav": ("kids", movie_roots()["kids"]),
+            "christmas-nzbdav": ("christmas", movie_roots()["christmas"]),
+            "halloween-nzbdav": ("halloween", movie_roots()["halloween"]),
+            "easter-nzbdav": ("easter", movie_roots()["easter"]),
         }
     elif service == "sonarr":
         mapping = {
-            "nzbdav": ("default", settings.sonarr_default_root),
-            "kids-nzbdav": ("kids", settings.sonarr_kids_root),
-            "netflix-nzbdav": ("netflix", settings.sonarr_netflix_root),
-            "disneyplus-nzbdav": ("disney", settings.sonarr_disney_root),
-            "disney-nzbdav": ("disney", settings.sonarr_disney_root),
-            "amazon-nzbdav": ("amazon", settings.sonarr_amazon_root),
-            "appletv-nzbdav": ("apple", settings.sonarr_apple_root),
-            "apple-nzbdav": ("apple", settings.sonarr_apple_root),
-            "bbc-nzbdav": ("bbc", settings.sonarr_bbc_root),
+            "nzbdav": ("default", tv_roots()["default"]),
+            "kids-nzbdav": ("kids", tv_roots()["kids"]),
+            "netflix-nzbdav": ("netflix", tv_roots()["netflix"]),
+            "disneyplus-nzbdav": ("disney", tv_roots()["disney"]),
+            "disney-nzbdav": ("disney", tv_roots()["disney"]),
+            "amazon-nzbdav": ("amazon", tv_roots()["amazon"]),
+            "appletv-nzbdav": ("apple", tv_roots()["apple"]),
+            "apple-nzbdav": ("apple", tv_roots()["apple"]),
+            "bbc-nzbdav": ("bbc", tv_roots()["bbc"]),
         }
     elif service == "lidarr":
-        mapping = {"nzbdav": ("default", settings.lidarr_root)}
+        mapping = {"nzbdav": ("default", lidarr_root())}
     else:
         mapping = {}
     return mapping.get(s, (None, None))

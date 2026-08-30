@@ -17,3 +17,13 @@ async def search_jellyfin(term: str, limit: int = 5) -> dict:
         return {"configured": True, "found": bool(items), "items": items}
     except Exception as exc:
         return {"configured": True, "found": False, "items": [], "error": str(exc)}
+
+async def jellyfin_status() -> dict:
+    conn = get_connection("jellyfin")
+    if not conn.api_key:
+        raise RuntimeError("Jellyfin API key is not configured")
+    headers={"X-Emby-Token":conn.api_key,"Accept":"application/json"}
+    async with httpx.AsyncClient(timeout=15.0,follow_redirects=True) as client:
+        r=await client.get(f"{conn.url.rstrip('/')}/System/Info",headers=headers)
+    r.raise_for_status()
+    return r.json()

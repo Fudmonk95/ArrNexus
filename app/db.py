@@ -112,7 +112,9 @@ CREATE TABLE IF NOT EXISTS users (
     theme TEXT NOT NULL DEFAULT 'nexus',
     dashboard_layout TEXT NOT NULL DEFAULT 'default',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    can_request INTEGER NOT NULL DEFAULT 1,
+    daily_request_limit INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS requests (
@@ -125,6 +127,9 @@ CREATE TABLE IF NOT EXISTS requests (
     arr_instance TEXT,
     arr_id INTEGER,
     status TEXT NOT NULL DEFAULT 'requested',
+    status_detail TEXT,
+    protocol TEXT,
+    user_id INTEGER,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(media_type, external_id)
@@ -136,6 +141,55 @@ CREATE TABLE IF NOT EXISTS password_resets (
     expires_at REAL NOT NULL,
     used INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS app_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    level TEXT NOT NULL DEFAULT 'info',
+    source TEXT NOT NULL DEFAULT 'app',
+    event TEXT NOT NULL,
+    message TEXT,
+    context TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_app_logs_source ON app_logs(source);
+CREATE INDEX IF NOT EXISTS idx_app_logs_level ON app_logs(level);
+
+CREATE TABLE IF NOT EXISTS mount_registry (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    logical_path TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'library',
+    service TEXT,
+    destination_key TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS scrape_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    media_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    external_id TEXT,
+    arr_service TEXT,
+    arr_instance TEXT,
+    arr_id INTEGER,
+    destination_key TEXT,
+    status TEXT NOT NULL DEFAULT 'searching',
+    detail TEXT,
+    started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_scrape_jobs_status ON scrape_jobs(status);
+
+CREATE TABLE IF NOT EXISTS ui_preferences (
+    user_id INTEGER NOT NULL,
+    pref_key TEXT NOT NULL,
+    pref_value TEXT NOT NULL DEFAULT '',
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(user_id, pref_key),
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 """
@@ -165,13 +219,33 @@ def _migrate(conn: sqlite3.Connection):
             conn.execute(f"ALTER TABLE imports ADD COLUMN {name} {decl}")
     conn.execute("UPDATE imports SET updated_at=COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)")
 
+    # Older v1/v2 databases may have partial user/request schemas.
+    user_cols = _columns(conn, "users")
+    for name, decl in {
+        "email": "TEXT", "display_name": "TEXT", "role": "TEXT NOT NULL DEFAULT 'admin'",
+        "theme": "TEXT NOT NULL DEFAULT 'nexus'", "dashboard_layout": "TEXT NOT NULL DEFAULT 'default'",
+        "created_at": "TEXT", "updated_at": "TEXT",
+        "can_request": "INTEGER NOT NULL DEFAULT 1", "daily_request_limit": "INTEGER NOT NULL DEFAULT 0"
+    }.items():
+        if name not in user_cols:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {name} {decl}")
+    req_cols = _columns(conn, "requests")
+    if req_cols:
+        for name, decl in {"status_detail":"TEXT", "protocol":"TEXT", "updated_at":"TEXT", "user_id":"INTEGER"}.items():
+            if name not in req_cols:
+                conn.execute(f"ALTER TABLE requests ADD COLUMN {name} {decl}")
+
 
 def init_db():
     with sqlite3.connect(settings.db_path) as conn:
         conn.executescript(SCHEMA)
         _migrate(conn)
         conn.commit()
-    ensure_user(settings.username, settings.password)
+    # Legacy deployments can still bootstrap from environment variables, but
+    # a normal v3/Portainer install uses the first-run /setup wizard instead.
+    if user_count() == 0 and settings.bootstrap_password:
+        ensure_user(settings.bootstrap_username or 'admin', settings.bootstrap_password)
+    seed_default_mounts()
 
 
 @contextmanager
@@ -509,16 +583,16 @@ def all_settings(mask_secrets: bool = True) -> dict[str, str]:
     return out
 
 
-def track_request(media_type: str, external_id: str, title: str, year=None, destination_key="", arr_instance="", arr_id=None, status="requested"):
+def track_request(media_type: str, external_id: str, title: str, year=None, destination_key="", arr_instance="", arr_id=None, status="requested", user_id: int | None = None):
     if not external_id:
         return
     with db() as conn:
         conn.execute(
-            """INSERT INTO requests(media_type,external_id,title,year,destination_key,arr_instance,arr_id,status,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?)
+            """INSERT INTO requests(media_type,external_id,title,year,destination_key,arr_instance,arr_id,status,user_id,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(media_type,external_id) DO UPDATE SET title=excluded.title,year=excluded.year,destination_key=excluded.destination_key,
-               arr_instance=excluded.arr_instance,arr_id=excluded.arr_id,status=excluded.status,updated_at=excluded.updated_at""",
-            (media_type, str(external_id), title, year, destination_key, arr_instance, arr_id, status, _utcnow()),
+               arr_instance=excluded.arr_instance,arr_id=excluded.arr_id,status=excluded.status,user_id=COALESCE(excluded.user_id,requests.user_id),updated_at=excluded.updated_at""",
+            (media_type, str(external_id), title, year, destination_key, arr_instance, arr_id, status, user_id, _utcnow()),
         )
 
 
@@ -539,7 +613,7 @@ def activity_by_day(days: int = 7):
 
 def list_users():
     with db() as conn:
-        rows = conn.execute("SELECT id,username,email,display_name,role,theme,dashboard_layout,created_at,updated_at FROM users ORDER BY id").fetchall()
+        rows = conn.execute("SELECT id,username,email,display_name,role,theme,dashboard_layout,can_request,daily_request_limit,created_at,updated_at FROM users ORDER BY id").fetchall()
     return [dict(r) for r in rows]
 
 
@@ -593,3 +667,204 @@ def consume_password_reset(token: str, new_password: str) -> bool:
         conn.execute("UPDATE users SET password_hash=?,updated_at=? WHERE id=?", (_hash_password(new_password), _utcnow(), int(row["user_id"])))
         conn.execute("UPDATE password_resets SET used=1 WHERE token_hash=?", (token_hash,))
         return True
+
+
+def update_user_access(user_id: int, role: str, can_request: bool, daily_request_limit: int):
+    role = role if role in {"admin", "user"} else "user"
+    limit = max(0, int(daily_request_limit or 0))
+    with db() as conn:
+        conn.execute(
+            "UPDATE users SET role=?,can_request=?,daily_request_limit=?,updated_at=? WHERE id=?",
+            (role, int(bool(can_request)), limit, _utcnow(), int(user_id)),
+        )
+
+
+def requests_today(user_id: int) -> int:
+    if not user_id:
+        return 0
+    with db() as conn:
+        return int(conn.execute(
+            "SELECT count(*) FROM requests WHERE user_id=? AND date(created_at)=date('now')",
+            (int(user_id),),
+        ).fetchone()[0])
+
+
+def title_timeline(title: str, source_path: str = "", limit: int = 120) -> list[dict]:
+    title = (title or "").strip()
+    events: list[dict] = []
+    with db() as conn:
+        if title:
+            rows = conn.execute(
+                "SELECT created_at,kind AS source,kind AS event,title,detail AS message FROM activity WHERE lower(title)=lower(?) ORDER BY id DESC LIMIT ?",
+                (title, int(limit)),
+            ).fetchall()
+            events.extend(dict(r) for r in rows)
+            reqs = conn.execute(
+                "SELECT created_at,'request' AS source,status AS event,title,COALESCE(status_detail,'') AS message FROM requests WHERE lower(title)=lower(?) ORDER BY id DESC LIMIT ?",
+                (title, int(limit)),
+            ).fetchall()
+            events.extend(dict(r) for r in reqs)
+        if source_path:
+            rows = conn.execute(
+                "SELECT created_at,'import' AS source,status AS event,source_name AS title,COALESCE(note,'') AS message FROM imports WHERE source_path=? ORDER BY id DESC LIMIT ?",
+                (source_path, int(limit)),
+            ).fetchall()
+            events.extend(dict(r) for r in rows)
+        if title:
+            scrapes = conn.execute(
+                "SELECT started_at AS created_at,'scraping' AS source,status AS event,title,COALESCE(detail,'') AS message FROM scrape_jobs WHERE lower(title)=lower(?) ORDER BY id DESC LIMIT ?",
+                (title, int(limit)),
+            ).fetchall()
+            events.extend(dict(r) for r in scrapes)
+    events.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    return events[:limit]
+
+
+def setting_rows() -> list[dict]:
+    with db() as conn:
+        return [dict(r) for r in conn.execute("SELECT key,value,secret,updated_at FROM app_settings ORDER BY key").fetchall()]
+
+
+def replace_nonsecret_settings(values: dict[str, str]):
+    for key, value in (values or {}).items():
+        if value == "********":
+            continue
+        # Never import known credential/token namespaces from a sanitized config file.
+        if any(x in key.lower() for x in ("api_key", "password", "secret", "token", "webhook")):
+            continue
+        setting_set(str(key), str(value), False)
+
+
+def request_rows(limit: int = 500):
+    with db() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM requests ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()]
+
+
+# ---- v3 operational helpers -------------------------------------------------
+
+def user_count() -> int:
+    try:
+        with db() as conn:
+            return int(conn.execute("SELECT count(*) FROM users").fetchone()[0])
+    except sqlite3.OperationalError:
+        return 0
+
+
+def log_event(level: str, source: str, event: str, message: str = "", context: dict | None = None):
+    level = (level or "info").lower()
+    if level not in {"debug","info","warning","error","critical"}:
+        level = "info"
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO app_logs(level,source,event,message,context,created_at) VALUES(?,?,?,?,?,?)",
+            (level, (source or "app").lower(), event or "event", message or "", json.dumps(context or {}), _utcnow()),
+        )
+
+
+def list_logs(level: str = "all", source: str = "all", q: str = "", limit: int = 300):
+    clauses=[]; args=[]
+    if level != "all": clauses.append("level=?"); args.append(level)
+    if source != "all": clauses.append("source=?"); args.append(source)
+    if q:
+        clauses.append("(event LIKE ? OR message LIKE ? OR context LIKE ?)")
+        like=f"%{q}%"; args.extend([like,like,like])
+    where=(" WHERE "+" AND ".join(clauses)) if clauses else ""
+    args.append(int(limit))
+    with db() as conn:
+        rows=conn.execute(f"SELECT * FROM app_logs{where} ORDER BY id DESC LIMIT ?", args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def log_sources():
+    with db() as conn:
+        return [r[0] for r in conn.execute("SELECT DISTINCT source FROM app_logs ORDER BY source").fetchall()]
+
+
+def seed_default_mounts():
+    defaults = [
+        ("DMM / Decypharr source", settings.source_root, "source", "decypharr", None),
+        ("Movies", settings.radarr_default_root, "movie", "radarr", "default"),
+        ("Movies - Kids", settings.radarr_kids_root, "movie", "radarr", "kids"),
+        ("Movies - Christmas", settings.radarr_christmas_root, "movie", "radarr", "christmas"),
+        ("Movies - Halloween", settings.radarr_halloween_root, "movie", "radarr", "halloween"),
+        ("Movies - Easter", settings.radarr_easter_root, "movie", "radarr", "easter"),
+        ("TV", settings.sonarr_default_root, "tv", "sonarr", "default"),
+        ("TV - Kids", settings.sonarr_kids_root, "tv", "sonarr", "kids"),
+        ("TV - Netflix", settings.sonarr_netflix_root, "tv", "sonarr", "netflix"),
+        ("TV - Disney+", settings.sonarr_disney_root, "tv", "sonarr", "disney"),
+        ("TV - Amazon", settings.sonarr_amazon_root, "tv", "sonarr", "amazon"),
+        ("TV - Apple TV+", settings.sonarr_apple_root, "tv", "sonarr", "apple"),
+        ("TV - BBC", settings.sonarr_bbc_root, "tv", "sonarr", "bbc"),
+        ("Music", settings.lidarr_root, "music", "lidarr", "default"),
+    ]
+    try:
+        with db() as conn:
+            for name,path,kind,service,destination in defaults:
+                conn.execute(
+                    "INSERT OR IGNORE INTO mount_registry(name,logical_path,kind,service,destination_key,enabled) VALUES(?,?,?,?,?,1)",
+                    (name,path,kind,service,destination),
+                )
+    except sqlite3.OperationalError:
+        pass
+
+
+def list_mounts(enabled_only: bool = False):
+    with db() as conn:
+        sql="SELECT * FROM mount_registry" + (" WHERE enabled=1" if enabled_only else "") + " ORDER BY kind,name"
+        return [dict(r) for r in conn.execute(sql).fetchall()]
+
+
+def save_mount(name: str, logical_path: str, kind: str = "library", service: str = "", destination_key: str = "", mount_id: int | None = None):
+    name=(name or "").strip(); logical_path=(logical_path or "").strip()
+    if not name or not logical_path.startswith("/"):
+        raise ValueError("Mount name and absolute logical path are required")
+    with db() as conn:
+        if mount_id:
+            conn.execute("UPDATE mount_registry SET name=?,logical_path=?,kind=?,service=?,destination_key=?,updated_at=? WHERE id=?",
+                         (name,logical_path,kind,service or None,destination_key or None,_utcnow(),int(mount_id)))
+            return int(mount_id)
+        cur=conn.execute("INSERT INTO mount_registry(name,logical_path,kind,service,destination_key,enabled,updated_at) VALUES(?,?,?,?,?,1,?)",
+                         (name,logical_path,kind,service or None,destination_key or None,_utcnow()))
+        return int(cur.lastrowid)
+
+
+def delete_mount(mount_id: int):
+    with db() as conn:
+        conn.execute("DELETE FROM mount_registry WHERE id=?", (int(mount_id),))
+
+
+def add_scrape(media_type: str, title: str, external_id: str = "", arr_service: str = "", arr_instance: str = "", arr_id: int | None = None, destination_key: str = "", status: str = "searching", detail: str = "") -> int:
+    with db() as conn:
+        cur=conn.execute("INSERT INTO scrape_jobs(media_type,title,external_id,arr_service,arr_instance,arr_id,destination_key,status,detail,started_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                         (media_type,title,str(external_id or ""),arr_service,arr_instance,arr_id,destination_key,status,detail,_utcnow(),_utcnow()))
+        return int(cur.lastrowid)
+
+
+def update_scrape(scrape_id: int, status: str | None = None, detail: str | None = None):
+    fields=[]; args=[]
+    if status is not None: fields.append("status=?"); args.append(status)
+    if detail is not None: fields.append("detail=?"); args.append(detail)
+    fields.append("updated_at=?"); args.append(_utcnow()); args.append(int(scrape_id))
+    with db() as conn:
+        conn.execute(f"UPDATE scrape_jobs SET {','.join(fields)} WHERE id=?", args)
+
+
+def list_scrapes(limit: int = 100, status: str = "all"):
+    with db() as conn:
+        if status == "all":
+            rows=conn.execute("SELECT * FROM scrape_jobs ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+        else:
+            rows=conn.execute("SELECT * FROM scrape_jobs WHERE status=? ORDER BY id DESC LIMIT ?", (status,int(limit))).fetchall()
+    return [dict(r) for r in rows]
+
+
+def ui_pref_get(user_id: int, key: str, default: str = "") -> str:
+    with db() as conn:
+        row=conn.execute("SELECT pref_value FROM ui_preferences WHERE user_id=? AND pref_key=?", (int(user_id),key)).fetchone()
+    return row[0] if row else default
+
+
+def ui_pref_set(user_id: int, key: str, value: str):
+    with db() as conn:
+        conn.execute("INSERT INTO ui_preferences(user_id,pref_key,pref_value,updated_at) VALUES(?,?,?,?) ON CONFLICT(user_id,pref_key) DO UPDATE SET pref_value=excluded.pref_value,updated_at=excluded.updated_at",
+                     (int(user_id),key,value or "",_utcnow()))

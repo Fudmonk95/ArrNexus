@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from .config import settings
 from .db import setting_get, setting_set
 
+
 @dataclass
 class Connection:
     service: str
@@ -17,6 +18,7 @@ def _env_pair(service: str) -> tuple[str, str]:
     if service == "lidarr": return settings.lidarr_url, settings.lidarr_api_key
     if service == "prowlarr": return settings.prowlarr_url, settings.prowlarr_api_key
     if service == "jellyfin": return settings.jellyfin_url, settings.jellyfin_api_key
+    if service == "seerr": return settings.seerr_url, settings.seerr_api_key
     raise KeyError(service)
 
 
@@ -31,8 +33,12 @@ def get_connection(service: str, instance: str = "main") -> Connection:
 def save_connection(service: str, url: str, api_key: str, instance: str = "main"):
     prefix = f"connection.{service.lower()}.{instance}"
     setting_set(prefix + ".url", url.strip(), False)
-    if api_key and api_key != "********":
+    if api_key and api_key not in {"********", "••••••••"}:
         setting_set(prefix + ".api_key", api_key.strip(), True)
+
+
+def clear_connection_secret(service: str, instance: str = "main"):
+    setting_set(f"connection.{service.lower()}.{instance}.api_key", "", True)
 
 
 def get_instance_override(service: str, instance: str) -> Connection | None:

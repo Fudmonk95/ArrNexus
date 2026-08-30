@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 from .config import settings
+from .paths import source_root
 from .namespace import view_path, logical_from_view
 from .importer import all_library_roots
 
@@ -44,7 +45,7 @@ def inventory_roots(sample_limit: int = 5) -> list[dict]:
 def build_source_link_index(limit: int = 200000) -> dict[str, list[str]]:
     """Map /mnt/debrid/decypharr/__all__/<folder> to symlinks that target it."""
     index: dict[str, list[str]] = {}
-    source_prefix = settings.source_root.rstrip("/") + "/"
+    source_prefix = source_root().rstrip("/") + "/"
     seen = 0
     for _, logical_root in all_library_roots().items():
         try:
@@ -62,7 +63,7 @@ def build_source_link_index(limit: int = 200000) -> dict[str, list[str]]:
                     continue
                 rel = target[len(source_prefix):]
                 source_folder = rel.split("/", 1)[0]
-                source_path = f"{settings.source_root.rstrip('/')}/{source_folder}"
+                source_path = f"{source_root().rstrip('/')}/{source_folder}"
                 index.setdefault(source_path, []).append(str(logical_from_view(p)))
         except Exception:
             continue

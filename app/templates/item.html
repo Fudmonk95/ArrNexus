@@ -28,5 +28,7 @@
 {% if history %}<div class="alert success">Imported previously: {{ history.created_at }} · {{ history.destination_key }}{% if not history.undone %}<form method="post" action="/undo/{{ history.id }}" class="inline"><button class="btn small" type="submit">Undo Router links</button></form>{% endif %}</div>{% endif %}
 </div>
 
+<div class="panel"><div class="panelhead"><div><h2>Timeline</h2><p>Trace this title across import and library activity.</p></div><a class="btn" href="/timeline?title={{ display_title|urlencode }}&source_path={{ item.path|urlencode }}">Open timeline</a></div></div>
+
 <div class="panel"><h2>Ignore / restore</h2><form method="post" action="/item/state" class="inline-actions"><input type="hidden" name="source_path" value="{{ item.path }}"><button class="btn" name="state" value="ignored" type="submit">Ignore in inbox</button><button class="btn" name="state" value="waiting" type="submit">Mark waiting</button></form></div>
 {% endblock %}

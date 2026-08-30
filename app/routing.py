@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from .config import settings
+from .paths import movie_roots, tv_roots
 from .db import list_rules, increment_rule_hit
 from .scanner import normalize_title
 
@@ -29,7 +30,7 @@ def lower_set(values):
 
 
 def _root(media_type: str, key: str) -> str:
-    roots = settings.movie_roots if media_type == "movie" else settings.tv_roots
+    roots = movie_roots() if media_type == "movie" else tv_roots()
     return roots.get(key, roots["default"])
 
 

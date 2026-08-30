@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 
 from .config import settings
+from .paths import source_root, dumb_root
 
 
 class NamespaceError(RuntimeError):
@@ -41,7 +42,7 @@ def find_anchor_pid() -> int:
             continue
         if data_match and data_match not in cmdline:
             continue
-        view = Path(f"/proc/{pid}/root{settings.dumb_root}")
+        view = Path(f"/proc/{pid}/root{dumb_root()}")
         if view.is_dir():
             candidates.append(pid)
 
@@ -60,10 +61,10 @@ def refresh_anchor_pid() -> int:
 
 def namespace_root() -> Path:
     pid = find_anchor_pid()
-    root = Path(f"/proc/{pid}/root{settings.dumb_root}")
+    root = Path(f"/proc/{pid}/root{dumb_root()}")
     if not root.is_dir():
         pid = refresh_anchor_pid()
-        root = Path(f"/proc/{pid}/root{settings.dumb_root}")
+        root = Path(f"/proc/{pid}/root{dumb_root()}")
     if not root.is_dir():
         raise NamespaceError(f"DUMB root is unavailable through PID {pid}: {root}")
     return root
@@ -76,11 +77,11 @@ def logical_path(value: str | Path) -> Path:
 def view_path(value: str | Path) -> Path:
     """Translate a DUMB-visible path (/mnt/debrid/...) to this container's /proc view."""
     logical = logical_path(value)
-    dumb_root = Path(settings.dumb_root)
+    root_path = Path(dumb_root())
     try:
-        rel = logical.relative_to(dumb_root)
+        rel = logical.relative_to(root_path)
     except ValueError as exc:
-        raise NamespaceError(f"Path is outside DUMB root {dumb_root}: {logical}") from exc
+        raise NamespaceError(f"Path is outside DUMB root {root_path}: {logical}") from exc
     return namespace_root() / rel
 
 
@@ -91,7 +92,7 @@ def logical_from_view(value: str | Path) -> Path:
         rel = view.relative_to(root)
     except ValueError as exc:
         raise NamespaceError(f"Path is outside namespace root {root}: {view}") from exc
-    return Path(settings.dumb_root) / rel
+    return Path(dumb_root()) / rel
 
 
 def is_within_logical(value: str | Path, parent: str | Path) -> bool:
@@ -112,15 +113,15 @@ def namespace_status() -> dict:
             "ok": True,
             "pid": pid,
             "root": str(root),
-            "dumb_root": settings.dumb_root,
-            "source_exists": view_path(settings.source_root).is_dir(),
+            "dumb_root": dumb_root(),
+            "source_exists": view_path(source_root()).is_dir(),
         }
     except Exception as exc:
         return {
             "ok": False,
             "pid": None,
             "root": None,
-            "dumb_root": settings.dumb_root,
+            "dumb_root": dumb_root(),
             "source_exists": False,
             "error": str(exc),
         }

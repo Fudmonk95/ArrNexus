@@ -3,6 +3,7 @@ import copy
 import httpx
 from typing import Any
 from .config import settings
+from .paths import lidarr_root
 from .connections import get_connection
 
 
@@ -162,7 +163,7 @@ class LidarrClient(ArrClient):
         payload.pop("id", None)
         payload["qualityProfileId"] = qid
         payload["metadataProfileId"] = mid
-        payload["rootFolderPath"] = root or settings.lidarr_root
+        payload["rootFolderPath"] = root or lidarr_root()
         payload["monitored"] = True
         payload["monitorNewItems"] = payload.get("monitorNewItems") or "all"
         payload["addOptions"] = {"monitor": "all", "searchForMissingAlbums": bool(search)}

@@ -5,6 +5,7 @@ from typing import Any
 
 from .arr import RadarrClient, SonarrClient, LidarrClient, poster_url, ArrError
 from .config import settings
+from .paths import movie_roots, tv_roots, lidarr_root
 from .instances import discover_instances, get_instance, ArrInstance
 from .scanner import ScanItem, inspect_item, normalize_title
 from .routing import decide_movie, decide_tv, RouteDecision
@@ -92,7 +93,7 @@ async def route_item(item: ScanItem) -> dict:
         lookup = await lookup_item(item)
         metadata = lookup[0] if lookup else {}
     if existing and inst and inst.destination_key:
-        roots = settings.movie_roots if item.media_type == "movie" else settings.tv_roots
+        roots = movie_roots() if item.media_type == "movie" else tv_roots()
         decision = RouteDecision(inst.destination_key, roots.get(inst.destination_key, roots["default"]), f"Already owned by {inst.service}/{inst.instance}", 100)
     else:
         decision = decide_movie(item.title_guess, metadata) if item.media_type == "movie" else decide_tv(item.title_guess, metadata)
@@ -114,7 +115,7 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
     recommended: RouteDecision = routed["decision"]
     chosen = destination_key or recommended.key
     service = "radarr" if item.media_type == "movie" else "sonarr"
-    roots = settings.movie_roots if item.media_type == "movie" else settings.tv_roots
+    roots = movie_roots() if item.media_type == "movie" else tv_roots()
     if chosen not in roots:
         raise ImportErrorSafe(f"Invalid {item.media_type} destination: {chosen}")
     root = roots[chosen]
@@ -219,23 +220,23 @@ async def discover_lookup(term: str, media_type: str) -> list[dict]:
     return results
 
 
-async def discover_add(candidate: dict, media_type: str, destination_key: str = "auto", search: bool = True) -> dict:
+async def discover_add(candidate: dict, media_type: str, destination_key: str = "auto", search: bool = True, user_id: int | None = None) -> dict:
     if media_type == "movie":
         decision = decide_movie(candidate.get("title", ""), candidate)
         key = decision.key if destination_key == "auto" else destination_key
-        root = settings.movie_roots[key]
+        root = movie_roots()[key]
         client, inst = client_for_destination("radarr", key)
         existing = [x for x in await client.movies() if x.get("tmdbId") and x.get("tmdbId") == candidate.get("tmdbId")]
         movie = existing[0] if existing else await client.add_movie(candidate, root, search=False)
         if search:
             await client.search(int(movie["id"]))
         inst_name = inst.instance if inst else "main"
-        track_request("movie", str(movie.get("tmdbId") or candidate.get("tmdbId") or ""), movie.get("title", candidate.get("title", "Movie")), movie.get("year"), key, inst_name, movie.get("id"), "requested")
+        track_request("movie", str(movie.get("tmdbId") or candidate.get("tmdbId") or ""), movie.get("title", candidate.get("title", "Movie")), movie.get("year"), key, inst_name, movie.get("id"), "requested", user_id=user_id)
         add_activity("discover", movie.get("title", "Movie"), f"Added to Radarr/{inst_name} and search queued")
         return {"item": movie, "destination": key, "instance": inst_name}
     decision = decide_tv(candidate.get("title", ""), candidate)
     key = decision.key if destination_key == "auto" else destination_key
-    root = settings.tv_roots[key]
+    root = tv_roots()[key]
     client, inst = client_for_destination("sonarr", key)
     tvdb = candidate.get("tvdbId")
     existing = [x for x in await client.series() if tvdb and x.get("tvdbId") == tvdb]
@@ -243,7 +244,7 @@ async def discover_add(candidate: dict, media_type: str, destination_key: str = 
     if search:
         await client.search(int(series["id"]))
     inst_name = inst.instance if inst else "main"
-    track_request("tv", str(series.get("tvdbId") or tvdb or ""), series.get("title", candidate.get("title", "Series")), series.get("year"), key, inst_name, series.get("id"), "requested")
+    track_request("tv", str(series.get("tvdbId") or tvdb or ""), series.get("title", candidate.get("title", "Series")), series.get("year"), key, inst_name, series.get("id"), "requested", user_id=user_id)
     add_activity("discover", series.get("title", "Series"), f"Added to Sonarr/{inst_name} and search queued")
     return {"item": series, "destination": key, "instance": inst_name}
 
