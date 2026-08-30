@@ -2,6 +2,14 @@ from __future__ import annotations
 import httpx
 from .connections import get_connection
 
+_HTTP: httpx.AsyncClient | None = None
+
+def _client() -> httpx.AsyncClient:
+    global _HTTP
+    if _HTTP is None or _HTTP.is_closed:
+        _HTTP = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=6.0), follow_redirects=True, limits=httpx.Limits(max_connections=20, max_keepalive_connections=10, keepalive_expiry=30.0))
+    return _HTTP
+
 
 class SeerrError(RuntimeError):
     pass
@@ -26,8 +34,7 @@ class SeerrClient:
         if not self.api_key:
             raise SeerrError("Seerr API key is not configured")
         url = f"{self.base_url}/{path.lstrip('/')}"
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            r = await client.get(url, headers=self.headers, params=params)
+        r = await _client().get(url, headers=self.headers, params=params)
         if r.status_code >= 400:
             raise SeerrError(f"Seerr returned HTTP {r.status_code}: {r.text[:300]}")
         return r.json()

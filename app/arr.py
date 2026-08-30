@@ -1,10 +1,25 @@
 from __future__ import annotations
 import copy
 import httpx
+import time
 from typing import Any
 from .config import settings
 from .paths import lidarr_root
 from .connections import get_connection
+
+_HTTP_CLIENT: httpx.AsyncClient | None = None
+_GET_CACHE: dict[tuple, tuple[float, object]] = {}
+_GET_CACHE_TTL = 3.0
+
+def _http_client() -> httpx.AsyncClient:
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None or _HTTP_CLIENT.is_closed:
+        _HTTP_CLIENT = httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=8.0),
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=40, max_keepalive_connections=20, keepalive_expiry=30.0),
+        )
+    return _HTTP_CLIENT
 
 
 class ArrError(RuntimeError):
@@ -25,21 +40,48 @@ class ArrClient:
     async def request(self, method: str, path: str, **kwargs) -> Any:
         if not self.api_key:
             raise ArrError(f"{self.name} API key is not configured")
+        method = method.upper()
         url = f"{self.base_url}{path}"
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            r = await client.request(method, url, headers=self.headers, **kwargs)
+        cache_key = None
+        if method == "GET":
+            params = kwargs.get("params") or {}
+            try:
+                frozen_params = tuple(sorted((str(k), str(v)) for k, v in params.items()))
+            except Exception:
+                frozen_params = (str(params),)
+            cache_key = (url, frozen_params, self.api_key[-6:])
+            cached = _GET_CACHE.get(cache_key)
+            if cached and time.monotonic() - cached[0] < _GET_CACHE_TTL:
+                return copy.deepcopy(cached[1])
+        else:
+            # Any mutation can change queue/library state. Keep the tiny cache
+            # honest by evicting this service's GET responses immediately.
+            for key in [k for k in _GET_CACHE if str(k[0]).startswith(self.base_url)]:
+                _GET_CACHE.pop(key, None)
+
+        client = _http_client()
+        r = await client.request(method, url, headers=self.headers, **kwargs)
         if r.status_code >= 400:
             body = r.text[:1200]
             raise ArrError(f"{self.name}: {r.status_code} {body}")
         if not r.content:
-            return None
-        ctype = r.headers.get("content-type", "")
-        if "json" in ctype:
-            return r.json()
-        try:
-            return r.json()
-        except Exception:
-            return r.text
+            data = None
+        else:
+            ctype = r.headers.get("content-type", "")
+            if "json" in ctype:
+                data = r.json()
+            else:
+                try:
+                    data = r.json()
+                except Exception:
+                    data = r.text
+        if cache_key is not None:
+            _GET_CACHE[cache_key] = (time.monotonic(), copy.deepcopy(data))
+            if len(_GET_CACHE) > 300:
+                oldest = sorted(_GET_CACHE.items(), key=lambda kv: kv[1][0])[:80]
+                for key, _ in oldest:
+                    _GET_CACHE.pop(key, None)
+        return data
 
     async def status(self):
         return await self.request("GET", f"/api/{self.api_version}/system/status")
@@ -231,8 +273,8 @@ class ProwlarrClient(ArrClient):
         if not download_url:
             raise ArrError("Release does not contain a download URL")
         url = download_url if download_url.startswith("http") else f"{self.base_url}/{download_url.lstrip('/')}"
-        async with httpx.AsyncClient(timeout=90.0, follow_redirects=True) as client:
-            r = await client.get(url, headers=self.headers)
+        client = _http_client()
+        r = await client.get(url, headers=self.headers, timeout=90.0)
         if r.status_code >= 400:
             raise ArrError(f"Prowlarr release download failed: {r.status_code} {r.text[:500]}")
         final_url = str(r.url)

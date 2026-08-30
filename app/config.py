@@ -84,7 +84,7 @@ class Settings:
     # Public/free music discovery. No personal listener account is needed.
     musicbrainz_base: str = env("MUSICBRAINZ_BASE", "https://musicbrainz.org/ws/2")
     listenbrainz_base: str = env("LISTENBRAINZ_BASE", "https://api.listenbrainz.org")
-    music_user_agent: str = env("MUSIC_USER_AGENT", "ArrNexus/6.0 (self-hosted media manager)")
+    music_user_agent: str = env("MUSIC_USER_AGENT", "ArrNexus/6.1 (self-hosted media manager)")
     public_music_country: str = env("PUBLIC_MUSIC_COUNTRY", "GB")
     enable_itunes_search: bool = env_bool("ENABLE_ITUNES_SEARCH", True)
 

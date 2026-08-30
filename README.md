@@ -1,10 +1,19 @@
-# ArrNexus v6.0 — Acquisition Intelligence & Unified Operations
+# ArrNexus v6.1.0 — Acquisition Intelligence & Unified Operations
 
 ArrNexus is a self-hosted media-control layer for Radarr/Sonarr/Lidarr stacks using DUMB, InfiniDysk/NzbDAV, Decypharr/Real-Debrid, Prowlarr, Jellyfin and optional Seerr discovery.
 
-v6 focuses on the parts that need to be trustworthy in daily use: **which provider acquires a title, whether service credentials are actually valid, and what the logs are really telling you**. It also introduces a redesigned grouped navigation model inspired by the clarity of InfiniDysk while retaining ArrNexus as its own product.
+v6.1 adds a full interface/performance hotfix on top of v6. v6 focuses on the parts that need to be trustworthy in daily use: **which provider acquires a title, whether service credentials are actually valid, and what the logs are really telling you**. It also introduces a redesigned grouped navigation model inspired by the clarity of InfiniDysk while retaining ArrNexus as its own product.
 
 ArrNexus remains Portainer/Docker Compose first. A normal deployment needs no application secrets in an `.env`: create the administrator in the browser and configure services, credentials, mounts, policies and integrations through the UI.
+
+
+## v6.1 interface and speed overhaul
+
+The v6 navigation used legacy sidebar CSS underneath the new grouped menu. At some viewport widths that old responsive grid could still win, causing menu items to wrap and interleave. v6.1 replaces the application shell with isolated `nx-*` layout classes so those old rules cannot affect it.
+
+The new shell adds collapsible navigation groups, a sticky command bar, a Ctrl+K/Cmd+K page switcher, responsive three/two/one-column connection grids, and safer wrapping for long mount/root paths.
+
+Navigation is also much faster: normal internal links use same-origin soft navigation, hover prefetch and a small recent-page cache. Server-side fan-out has been reduced with persistent HTTP keep-alive, short-lived Arr GET caching, cached process discovery, and concurrent Dashboard/Connections/Discover/Queue API requests.
 
 ## What's new in v6
 
@@ -223,7 +232,7 @@ Self-Healing can scan discovered Arr instances for missing media, cutoff-unmet u
 ```text
 Discover / DMM / Music Hub
            ↓
-       ArrNexus v6
+       ArrNexus v6.1
            ↓
  routing + acquisition strategy + policy
            ↓

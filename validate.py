@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline ArrNexus v6 package validator.
+"""Offline ArrNexus v6.1.1 package validator.
 
 Run inside the project folder after dependencies are installed:
     python validate.py
@@ -338,12 +338,20 @@ def main() -> int:
             require(sett.status_code==200 and 'Acquisition strategy' in sett.text, 'Acquisition settings UI')
             logs=client3.get('/logs')
             require(logs.status_code==200 and 'Unified Logs' in logs.text, 'Unified Logs UI')
+            require('nx-command-trigger' in logs.text and 'nx-nav-section' in logs.text, 'v6.1 isolated sidebar shell')
             eco=client3.get('/ecosystem')
             require(eco.status_code==200 and 'Trust the connection status' in eco.text and 'Save & verify' in eco.text, 'Connector verification UI')
             dec=client3.get('/decypharr')
             require(dec.status_code==200, 'Decypharr control page')
 
-    print("PASS: v6 core, acquisition fallback, verified connectors, Unified Logs diagnostics, v5 regressions and clean startup")
+        js=(root/'app'/'static'/'app.js').read_text(encoding='utf-8')
+        css=(root/'app'/'static'/'app.css').read_text(encoding='utf-8')
+        inst=(root/'app'/'instances.py').read_text(encoding='utf-8')
+        require('X-ArrNexus-Navigation' in js and 'pageCache=new Map()' in js, 'v6.1 soft navigation/prefetch')
+        require('.nx-shell' in css and '.nx-nav-links' in css and 'grid-template-columns:repeat(3,minmax(280px,1fr))' in css, 'v6.1 responsive shell and connection grids')
+        require('_INSTANCE_CACHE_TTL = 4.0' in inst, 'v6.1 namespace discovery cache')
+
+    print("PASS: v6.1 UX shell, fast navigation/cache, acquisition fallback, verified connectors, Unified Logs diagnostics and v6 regressions")
     return 0
 
 

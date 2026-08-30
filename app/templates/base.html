@@ -1,47 +1,121 @@
 <!doctype html>
 <html lang="en" data-theme="{{ request.session.get('theme','nexus') }}">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
   <title>{% block title %}{{ app_setting('app.title','ArrNexus') }}{% endblock %}</title>
-  <meta name="theme-color" content="#07111f"><link rel="manifest" href="/static/manifest.webmanifest"><link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/app.css"><script defer src="/static/app.js"></script>
+  <meta name="theme-color" content="#07111f">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css?v=6.1">
+  <script defer src="/static/app.js?v=6.1"></script>
 </head>
-<body><div class="shell v6-shell">
-<aside class="sidebar v6-sidebar" id="appSidebar">
-  <a class="brand v6-brand" href="/"><div class="brandmark v6-brandmark">∞</div><div><strong>{{ app_setting('app.title','ArrNexus') }}</strong><span>Media Intelligence</span></div></a>
-  <nav class="v6-nav">
-    <div class="navgroup"><span class="navgroup-title">OVERVIEW</span>
-      <a class="{{ 'active' if request.url.path=='/' }}" href="/"><i>⌂</i><span>Dashboard</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/discover') }}" href="/discover"><i>⌕</i><span>Discover</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/music') }}" href="/music"><i>♪</i><span>Music Hub</span></a>
+<body class="nx-body">
+<div class="nx-progress" id="nxProgress" aria-hidden="true"></div>
+<div class="nx-shell">
+  <aside class="nx-sidebar" id="appSidebar">
+    <div class="nx-sidebar-head">
+      <a class="nx-brand" href="/" data-nav>
+        <span class="nx-brandmark">∞</span>
+        <span class="nx-brandcopy"><strong>{{ app_setting('app.title','ArrNexus') }}</strong><small>Media Intelligence</small></span>
+      </a>
+      <button class="nx-sidebar-close" type="button" data-mobile-menu aria-label="Close navigation">×</button>
     </div>
-    <div class="navgroup"><span class="navgroup-title">ACQUISITION</span>
-      <a class="{{ 'active' if request.url.path.startswith('/scraping') }}" href="/scraping"><i>⌁</i><span>Acquisition</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/debrid') }}" href="/debrid"><i>◈</i><span>Debrid / DMM</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/infinidysk') }}" href="/infinidysk"><i>☁</i><span>InfiniDysk</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/decypharr') }}" href="/decypharr"><i>◇</i><span>Decypharr</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/queue') }}" href="/queue"><i>⇣</i><span>Download Queue</span></a>
+
+    <button class="nx-command-trigger" type="button" data-command-open>
+      <span class="nx-command-icon">⌕</span><span>Jump anywhere</span><kbd>Ctrl K</kbd>
+    </button>
+
+    <nav class="nx-nav" aria-label="Main navigation">
+      <details class="nx-nav-section" open>
+        <summary><span>Overview</span><span class="nx-caret">⌄</span></summary>
+        <div class="nx-nav-links">
+          <a class="{{ 'active' if request.url.path=='/' }}" href="/" data-nav><span class="nx-nav-icon">⌂</span><span>Dashboard</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/discover') }}" href="/discover" data-nav><span class="nx-nav-icon">⌕</span><span>Discover</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/music') }}" href="/music" data-nav><span class="nx-nav-icon">♫</span><span>Music Hub</span></a>
+        </div>
+      </details>
+
+      <details class="nx-nav-section" open>
+        <summary><span>Acquisition</span><span class="nx-caret">⌄</span></summary>
+        <div class="nx-nav-links">
+          <a class="{{ 'active' if request.url.path.startswith('/scraping') }}" href="/scraping" data-nav><span class="nx-nav-icon">↯</span><span>Acquisition</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/debrid') }}" href="/debrid" data-nav><span class="nx-nav-icon">◇</span><span>Debrid / DMM</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/infinidysk') }}" href="/infinidysk" data-nav><span class="nx-nav-icon">☁</span><span>InfiniDysk</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/decypharr') }}" href="/decypharr" data-nav><span class="nx-nav-icon">D</span><span>Decypharr</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/queue') }}" href="/queue" data-nav><span class="nx-nav-icon">⇣</span><span>Download Queue</span></a>
+        </div>
+      </details>
+
+      <details class="nx-nav-section" open>
+        <summary><span>Library & automation</span><span class="nx-caret">⌄</span></summary>
+        <div class="nx-nav-links">
+          <a class="{{ 'active' if request.url.path.startswith('/inbox') or request.url.path.startswith('/item') }}" href="/inbox" data-nav><span class="nx-nav-icon">▣</span><span>DMM Inbox</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/libraries') or request.url.path.startswith('/browser') }}" href="/libraries" data-nav><span class="nx-nav-icon">▤</span><span>Libraries</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/jobs') }}" href="/jobs" data-nav><span class="nx-nav-icon">⇄</span><span>Import Jobs</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/rules') }}" href="/rules" data-nav><span class="nx-nav-icon">⌘</span><span>Routing Rules</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/self-healing') }}" href="/self-healing" data-nav><span class="nx-nav-icon">✚</span><span>Self-Healing</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/quality-lab') }}" href="/quality-lab" data-nav><span class="nx-nav-icon">◫</span><span>Quality Lab</span></a>
+        </div>
+      </details>
+
+      <details class="nx-nav-section" open>
+        <summary><span>System</span><span class="nx-caret">⌄</span></summary>
+        <div class="nx-nav-links">
+          <a class="{{ 'active' if request.url.path.startswith('/problems') }}" href="/problems" data-nav><span class="nx-nav-icon">!</span><span>Problem Centre</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/maintenance') }}" href="/maintenance" data-nav><span class="nx-nav-icon">⚒</span><span>Maintenance</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/logs') }}" href="/logs" data-nav><span class="nx-nav-icon">≡</span><span>Unified Logs</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/ecosystem') }}" href="/ecosystem" data-nav><span class="nx-nav-icon">⌬</span><span>Ecosystem</span></a>
+        </div>
+      </details>
+
+      <details class="nx-nav-section" open>
+        <summary><span>Settings</span><span class="nx-caret">⌄</span></summary>
+        <div class="nx-nav-links">
+          <a class="{{ 'active' if request.url.path.startswith('/arrs') }}" href="/arrs" data-nav><span class="nx-nav-icon">↔</span><span>Connections</span></a>
+          <a class="{{ 'active' if request.url.path.startswith('/settings') }}" href="/settings" data-nav><span class="nx-nav-icon">⚙</span><span>Settings</span></a>
+        </div>
+      </details>
+    </nav>
+
+    <div class="nx-sidebar-foot">
+      <div class="nx-mode"><span class="dot ok"></span><span>Safe symlink mode</span></div>
+      <a class="nx-profile" href="/profile" data-nav>
+        <span class="avatar-mini">{{ (request.session.get('display_name') or 'A')[:1]|upper }}</span>
+        <span><strong>{{ request.session.get('display_name') or 'Profile' }}</strong><small>Profile & appearance</small></span>
+      </a>
+      <a class="nx-logout" href="/logout">Log out</a>
     </div>
-    <div class="navgroup"><span class="navgroup-title">LIBRARY & AUTOMATION</span>
-      <a class="{{ 'active' if request.url.path.startswith('/inbox') or request.url.path.startswith('/item') }}" href="/inbox"><i>▣</i><span>DMM Inbox</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/libraries') or request.url.path.startswith('/browser') }}" href="/libraries"><i>▤</i><span>Libraries</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/jobs') }}" href="/jobs"><i>⇄</i><span>Import Jobs</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/rules') }}" href="/rules"><i>⌘</i><span>Routing Rules</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/self-healing') }}" href="/self-healing"><i>✚</i><span>Self-Healing</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/quality-lab') }}" href="/quality-lab"><i>◫</i><span>Quality Lab</span></a>
-    </div>
-    <div class="navgroup"><span class="navgroup-title">SYSTEM</span>
-      <a class="{{ 'active' if request.url.path.startswith('/problems') }}" href="/problems"><i>!</i><span>Problem Centre</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/maintenance') }}" href="/maintenance"><i>⚒</i><span>Maintenance</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/logs') }}" href="/logs"><i>≡</i><span>Unified Logs</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/ecosystem') }}" href="/ecosystem"><i>⌬</i><span>Ecosystem</span></a>
-    </div>
-    <div class="navgroup"><span class="navgroup-title">SETTINGS</span>
-      <a class="{{ 'active' if request.url.path.startswith('/arrs') }}" href="/arrs"><i>↔</i><span>Connections</span></a>
-      <a class="{{ 'active' if request.url.path.startswith('/settings') }}" href="/settings"><i>⚙</i><span>Settings</span></a>
-    </div>
-  </nav>
-  <div class="sidefoot v6-sidefoot"><div class="sidebar-mode"><span class="dot ok"></span><span>safe symlink mode</span></div><a class="profile-link" href="/profile"><span class="avatar-mini">{{ (request.session.get('display_name') or 'A')[:1]|upper }}</span><span>{{ request.session.get('display_name') or 'Profile' }}</span></a><a href="/logout">Log out</a></div>
-</aside>
-<main class="main v6-main"><header class="topbar v6-topbar"><button class="mobile-menu" type="button" data-mobile-menu aria-label="Open navigation">☰</button><div><span class="eyebrow">ARR · DEBRID · USENET · JELLYFIN · MUSIC</span><h1>{% block heading %}Dashboard{% endblock %}</h1></div><div class="v6-header-actions"><a class="top-icon" href="/problems" title="Problem Centre">!</a><a class="top-icon" href="/logs" title="Logs">≡</a><a class="top-icon" href="/settings" title="Settings">⚙</a></div></header>{% block content %}{% endblock %}</main>
-</div><div id="jobToastStack" class="job-toast-stack" aria-live="polite"></div></body></html>
+  </aside>
+
+  <div class="nx-workspace">
+    <header class="nx-topbar">
+      <button class="nx-mobile-menu" type="button" data-mobile-menu aria-label="Open navigation">☰</button>
+      <div class="nx-title-wrap">
+        <span class="nx-kicker">ARR · DEBRID · USENET · JELLYFIN · MUSIC</span>
+        <h1>{% block heading %}Dashboard{% endblock %}</h1>
+      </div>
+      <div class="nx-top-actions">
+        <button class="nx-top-button" type="button" data-command-open title="Jump anywhere">⌕</button>
+        <a class="nx-top-button" href="/problems" data-nav title="Problem Centre">!</a>
+        <a class="nx-top-button" href="/logs" data-nav title="Logs">≡</a>
+        <a class="nx-top-button" href="/settings" data-nav title="Settings">⚙</a>
+      </div>
+    </header>
+    <main class="nx-main" id="pageContent" data-soft-nav-root>
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+
+<div class="nx-command" id="nxCommand" hidden>
+  <button class="nx-command-backdrop" type="button" data-command-close aria-label="Close"></button>
+  <section class="nx-command-dialog" role="dialog" aria-modal="true" aria-label="Jump anywhere">
+    <div class="nx-command-search"><span>⌕</span><input id="nxCommandInput" autocomplete="off" placeholder="Search pages…"><kbd>Esc</kbd></div>
+    <div class="nx-command-results" id="nxCommandResults"></div>
+  </section>
+</div>
+<div id="jobToastStack" class="job-toast-stack" aria-live="polite"></div>
+</body>
+</html>

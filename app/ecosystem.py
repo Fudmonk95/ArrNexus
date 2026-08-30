@@ -266,7 +266,7 @@ async def probe_connector(key: str, timeout: float = 5.0) -> dict[str, Any]:
     url=str(config.get("url") or "").rstrip("/")
     if not url: return {**config,"ok":False,"state":"unconfigured","reachable":False,"auth_ok":False,"api_ok":False,"error":"URL is not configured"}
     if not url.startswith(("http://","https://")): return {**config,"ok":False,"state":"invalid","reachable":False,"auth_ok":False,"api_ok":False,"error":"URL must start with http:// or https://"}
-    headers={"User-Agent":"ArrNexus/6.0"}
+    headers={"User-Agent":"ArrNexus/6.1"}
     async with httpx.AsyncClient(timeout=timeout,follow_redirects=True,headers=headers) as client:
         try:
             if key=="infinidysk": result=await _probe_infinidysk(config,client)

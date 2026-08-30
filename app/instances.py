@@ -2,6 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import re
+import time
+import threading
 import xml.etree.ElementTree as ET
 from urllib.parse import urlsplit
 from .config import settings
@@ -83,7 +85,23 @@ def destination_for(service: str, instance: str) -> tuple[str | None, str | None
     return mapping.get(s, (None, None))
 
 
+_INSTANCE_CACHE: tuple[float, list[ArrInstance]] = (0.0, [])
+_INSTANCE_CACHE_LOCK = threading.Lock()
+_INSTANCE_CACHE_TTL = 4.0
+
+
+def invalidate_instance_cache() -> None:
+    global _INSTANCE_CACHE
+    with _INSTANCE_CACHE_LOCK:
+        _INSTANCE_CACHE = (0.0, [])
+
+
 def discover_instances() -> list[ArrInstance]:
+    global _INSTANCE_CACHE
+    now = time.monotonic()
+    cached_at, cached_rows = _INSTANCE_CACHE
+    if cached_rows and now - cached_at < _INSTANCE_CACHE_TTL:
+        return list(cached_rows)
     primary_radarr = get_connection("radarr")
     host = urlsplit(primary_radarr.url).hostname or settings.arr_host
     scheme = urlsplit(primary_radarr.url).scheme or "http"
@@ -134,7 +152,10 @@ def discover_instances() -> list[ArrInstance]:
     dedup: dict[tuple[str, str], ArrInstance] = {}
     for item in sorted(found, key=lambda x: x.pid):
         dedup[(item.service, item.instance)] = item
-    return sorted(dedup.values(), key=lambda x: (x.service, x.instance))
+    result = sorted(dedup.values(), key=lambda x: (x.service, x.instance))
+    with _INSTANCE_CACHE_LOCK:
+        _INSTANCE_CACHE = (time.monotonic(), list(result))
+    return result
 
 
 def get_instance(service: str, destination_key: str | None = None) -> ArrInstance | None:

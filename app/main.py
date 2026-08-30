@@ -33,7 +33,7 @@ from .arr import RadarrClient, SonarrClient, LidarrClient, ProwlarrClient, ArrEr
 from .router_service import import_one, route_item, discover_lookup, discover_add, client_for_instance
 from .importer import ImportErrorSafe, unlink_created, scan_broken_symlinks, repair_broken_symlink
 from .namespace import view_path, is_within_logical, namespace_status, NamespaceError
-from .instances import discover_instances
+from .instances import discover_instances, invalidate_instance_cache
 from .library import inventory_roots, build_source_link_index
 from .jellyfin import search_jellyfin, jellyfin_status
 from .music import (
@@ -75,7 +75,7 @@ templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
 
-APP_VERSION = "6.0.0"
+APP_VERSION = "6.1.0"
 RUNNING_TASKS: set[asyncio.Task] = set()
 
 
@@ -464,25 +464,41 @@ async def dashboard(request: Request):
     imported = sum(1 for x in items if x.path in imports or x.path in links)
     ignored = sum(1 for x in items if (states.get(x.path) or {}).get("state") == "ignored")
     waiting = max(0, len(items) - imported - ignored)
-    statuses = {"radarr": await arr_status(RadarrClient()), "sonarr": await arr_status(SonarrClient()), "lidarr": await arr_status(LidarrClient()), "prowlarr": await arr_status(ProwlarrClient())}
-    try:
-        js=await jellyfin_status(); statuses["jellyfin"]={"ok":True,"version":js.get("Version") or js.get("version") or "Connected"}
-    except Exception as exc: statuses["jellyfin"]={"ok":False,"error":str(exc)}
-    try: statuses["seerr"] = await arr_status(SeerrClient())
-    except Exception: statuses["seerr"] = {"ok": False, "error": "not configured"}
+    async def _jf_status():
+        try:
+            js = await jellyfin_status()
+            return {"ok": True, "version": js.get("Version") or js.get("version") or "Connected"}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    rad_s, son_s, lid_s, pro_s, jf_s, see_s = await asyncio.gather(
+        arr_status(RadarrClient()), arr_status(SonarrClient()), arr_status(LidarrClient()),
+        arr_status(ProwlarrClient()), _jf_status(), arr_status(SeerrClient()),
+    )
+    statuses = {"radarr": rad_s, "sonarr": son_s, "lidarr": lid_s, "prowlarr": pro_s, "jellyfin": jf_s, "seerr": see_s}
+
     queue_counts = {"radarr":0,"sonarr":0,"lidarr":0}; library_movie_count=library_tv_count=0
     route_inventory=[]
-    for inst in discover_instances():
-        if inst.service not in {"radarr","sonarr","lidarr"} or not inst.api_key: continue
+    dashboard_instances=[i for i in discover_instances() if i.service in {"radarr","sonarr","lidarr"} and i.api_key]
+
+    async def _load_dashboard_instance(inst):
         try:
             c=client_for_instance(inst)
-            if inst.service=="radarr": rows=await c.movies(); library_movie_count += len(rows or [])
-            elif inst.service=="sonarr": rows=await c.series(); library_tv_count += len(rows or [])
+            if inst.service=="radarr": rows=await c.movies()
+            elif inst.service=="sonarr": rows=await c.series()
             else: rows=await c.artists()
-            route_inventory.append({"service":inst.service,"instance":inst.instance,"route":inst.destination_key or "default","count":len(rows or [])})
-            q=await c.queue(200); rec=q.get("records",[]) if isinstance(q,dict) else (q or [])
-            queue_counts[inst.service] = queue_counts.get(inst.service,0) + len(rec)
-        except Exception: pass
+            q=await c.queue(200)
+            rec=q.get("records",[]) if isinstance(q,dict) else (q or [])
+            return inst, rows or [], rec
+        except Exception:
+            return inst, [], []
+
+    loaded = await asyncio.gather(*(_load_dashboard_instance(i) for i in dashboard_instances))
+    for inst, rows, rec in loaded:
+        if inst.service=="radarr": library_movie_count += len(rows)
+        elif inst.service=="sonarr": library_tv_count += len(rows)
+        route_inventory.append({"service":inst.service,"instance":inst.instance,"route":inst.destination_key or "default","count":len(rows)})
+        queue_counts[inst.service] = queue_counts.get(inst.service,0) + len(rec)
     dest_counts={}
     for row in recent_imports(5000):
         if row["status"] in {"complete","linked"} and not row["undone"]:
@@ -879,34 +895,40 @@ async def rule_delete(request: Request, rule_id: int):
 async def arrs_page(request: Request, notice: str = ""):
     require_auth(request)
     instances = discover_instances()
-    rows = []
-    for inst in instances:
+
+    async def _load_arr(inst):
         try:
             client = client_for_instance(inst)
-            status = await client.status()
-            roots = await client.roots()
-            tags = await client.tags()
-            rows.append({"kind": "arr", "instance": inst, "ok": True, "status": status, "roots": roots, "tags": tags, "url": inst.url, "has_key": bool(inst.api_key)})
+            status, roots, tags = await asyncio.gather(client.status(), client.roots(), client.tags())
+            return {"kind": "arr", "instance": inst, "ok": True, "status": status, "roots": roots or [], "tags": tags or [], "url": inst.url, "has_key": bool(inst.api_key)}
         except Exception as exc:
-            rows.append({"kind": "arr", "instance": inst, "ok": False, "error": str(exc), "roots": [], "tags": [], "url": inst.url, "has_key": bool(inst.api_key)})
-    # Prowlarr is not a DUMB Arr process, but belongs on the same connection page.
-    pc = get_connection("prowlarr")
-    try:
-        ps = await ProwlarrClient().status()
-        rows.append({"kind":"prowlarr","service":"prowlarr","instance_name":"main","ok":True,"status":ps,"roots":[],"tags":[],"url":pc.url,"has_key":bool(pc.api_key)})
-    except Exception as exc:
-        rows.append({"kind":"prowlarr","service":"prowlarr","instance_name":"main","ok":False,"error":str(exc),"roots":[],"tags":[],"url":pc.url,"has_key":bool(pc.api_key)})
-    jc = get_connection("jellyfin")
-    try:
-        js=await jellyfin_status(); rows.append({"kind":"jellyfin","service":"jellyfin","instance_name":"main","ok":True,"status":{"version":js.get("Version") or js.get("version")},"roots":[],"tags":[],"url":jc.url,"has_key":bool(jc.api_key)})
-    except Exception as exc:
-        rows.append({"kind":"jellyfin","service":"jellyfin","instance_name":"main","ok":False,"status":{},"roots":[],"tags":[],"url":jc.url,"has_key":bool(jc.api_key),"error":str(exc)})
-    sc = get_connection("seerr")
-    try:
-        ss = await SeerrClient().status()
-        rows.append({"kind":"seerr","service":"seerr","instance_name":"main","ok":True,"status":ss,"roots":[],"tags":[],"url":sc.url,"has_key":bool(sc.api_key)})
-    except Exception as exc:
-        rows.append({"kind":"seerr","service":"seerr","instance_name":"main","ok":False,"status":{},"roots":[],"tags":[],"url":sc.url,"has_key":bool(sc.api_key),"error":str(exc)})
+            return {"kind": "arr", "instance": inst, "ok": False, "error": str(exc), "roots": [], "tags": [], "url": inst.url, "has_key": bool(inst.api_key)}
+
+    async def _load_prowlarr():
+        pc = get_connection("prowlarr")
+        try:
+            ps = await ProwlarrClient().status()
+            return {"kind":"prowlarr","service":"prowlarr","instance_name":"main","ok":True,"status":ps,"roots":[],"tags":[],"url":pc.url,"has_key":bool(pc.api_key)}
+        except Exception as exc:
+            return {"kind":"prowlarr","service":"prowlarr","instance_name":"main","ok":False,"error":str(exc),"roots":[],"tags":[],"url":pc.url,"has_key":bool(pc.api_key)}
+
+    async def _load_jellyfin():
+        jc = get_connection("jellyfin")
+        try:
+            js = await jellyfin_status()
+            return {"kind":"jellyfin","service":"jellyfin","instance_name":"main","ok":True,"status":{"version":js.get("Version") or js.get("version")},"roots":[],"tags":[],"url":jc.url,"has_key":bool(jc.api_key)}
+        except Exception as exc:
+            return {"kind":"jellyfin","service":"jellyfin","instance_name":"main","ok":False,"status":{},"roots":[],"tags":[],"url":jc.url,"has_key":bool(jc.api_key),"error":str(exc)}
+
+    async def _load_seerr():
+        sc = get_connection("seerr")
+        try:
+            ss = await SeerrClient().status()
+            return {"kind":"seerr","service":"seerr","instance_name":"main","ok":True,"status":ss,"roots":[],"tags":[],"url":sc.url,"has_key":bool(sc.api_key)}
+        except Exception as exc:
+            return {"kind":"seerr","service":"seerr","instance_name":"main","ok":False,"status":{},"roots":[],"tags":[],"url":sc.url,"has_key":bool(sc.api_key),"error":str(exc)}
+
+    rows = list(await asyncio.gather(*(_load_arr(i) for i in instances), _load_prowlarr(), _load_jellyfin(), _load_seerr()))
     return templates.TemplateResponse("arrs.html", {"request": request, "rows": rows, "notice": notice})
 
 
@@ -917,6 +939,7 @@ async def save_connection_route(request: Request, service: str = Form(...), inst
     if service not in {"radarr","sonarr","lidarr","prowlarr","jellyfin","seerr"}:
         raise HTTPException(400, "Unsupported service")
     save_connection(service, url, api_key, instance)
+    invalidate_instance_cache()
     # Main DUMB instances are named nzbdav; keep the generic connection in sync
     # so Dashboard/Discover clients use the same credentials.
     if instance == "nzbdav" and service in {"radarr","sonarr","lidarr"}:
@@ -1447,18 +1470,19 @@ async def self_healing_search(request: Request, service: str = Form(...), instan
 @app.get("/queue", response_class=HTMLResponse)
 async def queue_page(request: Request):
     require_auth(request)
-    rows = []
-    sources = []
-    for inst in discover_instances():
+    instances=discover_instances()
+    async def _load(inst):
         try:
-            client = client_for_instance(inst)
-            data = await client.queue(100)
-            records = data.get("records", []) if isinstance(data, dict) else (data or [])
-            sources.append({"instance": inst, "ok": True, "count": len(records)})
-            for x in records:
-                rows.append({"instance": inst, "item": x})
+            client=client_for_instance(inst); data=await client.queue(100)
+            records=data.get("records",[]) if isinstance(data,dict) else (data or [])
+            return inst, records, None
         except Exception as exc:
-            sources.append({"instance": inst, "ok": False, "count": 0, "error": str(exc)})
+            return inst, [], exc
+    loaded=await asyncio.gather(*(_load(i) for i in instances))
+    rows=[]; sources=[]
+    for inst, records, exc in loaded:
+        sources.append({"instance":inst,"ok":exc is None,"count":len(records),**({"error":str(exc)} if exc else {})})
+        rows.extend({"instance":inst,"item":x} for x in records)
     return templates.TemplateResponse("queue.html", {"request": request, "rows": rows, "sources": sources})
 
 
@@ -1474,19 +1498,22 @@ def _arr_media_card(row: dict, media_type: str, route: str = "default", instance
 async def _library_shelves() -> tuple[list[dict], list[str]]:
     shelves=[]; warnings=[]
     try:
-        instances=discover_instances()
+        instances=[i for i in discover_instances() if i.service in {"radarr","sonarr"} and i.api_key]
     except Exception as exc:
         log_event("error","discover","instance_discovery_failed",str(exc))
         return [], [f"DUMB Arr discovery failed: {exc}"]
-    for inst in instances:
-        if inst.service not in {"radarr","sonarr"} or not inst.api_key:
-            continue
+
+    async def _load(inst):
         try:
             c=client_for_instance(inst)
             rows=await (c.movies() if inst.service=="radarr" else c.series())
-            if not isinstance(rows,list):
-                rows=[]
+            return inst, rows if isinstance(rows,list) else [], None
         except Exception as exc:
+            return inst, [], exc
+
+    loaded=await asyncio.gather(*(_load(i) for i in instances))
+    for inst, rows, exc in loaded:
+        if exc is not None:
             warnings.append(f"{inst.service.title()}/{inst.instance}: {exc}")
             log_event("warning","discover","library_shelf_failed",str(exc),{"service":inst.service,"instance":inst.instance})
             continue
@@ -1499,8 +1526,8 @@ async def _library_shelves() -> tuple[list[dict], list[str]]:
         for row in rows:
             try:
                 cards.append(_arr_media_card(row,media_type,route,inst.instance))
-            except Exception as exc:
-                log_event("warning","discover","library_card_failed",str(exc),{"title":str(row.get("title") or "")})
+            except Exception as card_exc:
+                log_event("warning","discover","library_card_failed",str(card_exc),{"title":str(row.get("title") or "")})
         shelves.append({"key":f"{inst.service}-{route}".replace("/","-"),"title":label,"subtitle":f"{len(cards)} shown from {inst.service}/{inst.instance}","items":cards})
     return shelves,warnings
 
@@ -1563,15 +1590,18 @@ async def _mark_shelf_library_state(shelves: list[dict]):
 async def discover_page(request: Request, q: str = "", media_type: str = "movie", notice: str = "", error: str = ""):
     require_auth(request)
     results=[]; page_error=error or None; rd_names=[]; warnings=[]
-    # Discover must never white-screen because one optional data source fails.
-    try:
-        seerr_shelves,seerr_notice=await _seerr_shelves()
-    except Exception as exc:
-        seerr_shelves=[]; seerr_notice=f"Seerr discovery unavailable: {exc}"; warnings.append(seerr_notice)
-    try:
-        library_shelves,library_warnings=await _library_shelves(); warnings.extend(library_warnings)
-    except Exception as exc:
-        library_shelves=[]; warnings.append(f"Library shelves unavailable: {exc}")
+    # Seerr and local Arr shelves are independent, so load them together.
+    # One failure is isolated instead of delaying or blanking the whole page.
+    seerr_result, library_result = await asyncio.gather(_seerr_shelves(), _library_shelves(), return_exceptions=True)
+    if isinstance(seerr_result, Exception):
+        seerr_shelves=[]; seerr_notice=f"Seerr discovery unavailable: {seerr_result}"; warnings.append(seerr_notice)
+    else:
+        seerr_shelves,seerr_notice=seerr_result
+        if seerr_notice: warnings.append(seerr_notice)
+    if isinstance(library_result, Exception):
+        library_shelves=[]; warnings.append(f"Library shelves unavailable: {library_result}")
+    else:
+        library_shelves,library_warnings=library_result; warnings.extend(library_warnings)
     try:
         await _mark_shelf_library_state(seerr_shelves)
     except Exception as exc:

@@ -1,5 +1,33 @@
 # Changelog
 
+## 6.1.0 — Interface & Performance Hotfix
+
+### New application shell
+
+- Replaced the v6 sidebar implementation with an isolated `nx-*` shell so legacy responsive CSS can no longer force navigation links into multi-column/wrapped layouts.
+- Navigation groups are collapsible, full-width and independently scrollable, inspired by the clarity of InfiniDysk without copying its branding.
+- Added a sticky translucent command bar and a **Ctrl+K / Cmd+K Jump Anywhere** palette.
+- Reworked the visual language toward flatter operational surfaces, reduced glass effects and stronger hierarchy.
+- Added cache-busted CSS/JS asset URLs so browser caching cannot leave the sidebar half-upgraded.
+- Connections and Ecosystem now cap at three cards per row on large displays, two on medium displays and one on small displays. Long roots, URLs and tags wrap safely instead of forcing horizontal overflow.
+
+### Faster navigation
+
+- Added same-origin soft navigation for normal ArrNexus links: page content is fetched and swapped without reloading the complete shell.
+- Added hover prefetch and an 18-second page cache for recently visited views.
+- Added a thin navigation progress indicator and loading state rather than leaving clicks looking unresponsive.
+- Added a 4-second cache for expensive `/proc` DUMB/Arr instance discovery.
+- Added a 3-second GET cache and persistent HTTP keep-alive pool for Radarr/Sonarr/Lidarr/Prowlarr calls.
+- Dashboard service/library/queue calls are now concurrent rather than sequential.
+- Connections now loads all Arr instances and each instance's status/roots/tags concurrently.
+- Discover loads Seerr shelves and local Arr shelves concurrently; local library shelves also query specialist Arrs in parallel.
+- Download Queue queries all discovered Arr instances concurrently.
+
+### Regression protection
+
+- Validator now asserts the isolated navigation shell, soft-navigation/prefetch code, responsive connection grid and instance-discovery cache are present.
+- Existing v6 acquisition, connector-authentication and Unified Logs tests remain enabled.
+
 ## 6.0.0
 
 ### Acquisition Intelligence
@@ -63,7 +91,7 @@
 
 - Added **Settings → Acquisition** for global strategy, Real-Debrid cache preference, candidate limit and native Arr fallback.
 - Existing Portainer-first, UI-managed configuration remains; no `.env` is required for normal deployment.
-- Application version updated to 6.0.0 and service User-Agent strings updated to ArrNexus/6.0 where applicable.
+- Application version updated to 6.0.0 and service User-Agent strings updated to ArrNexus/6.1 where applicable.
 
 ### Retained from v5 and earlier
 
