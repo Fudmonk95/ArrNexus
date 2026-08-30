@@ -73,6 +73,7 @@ from .decypharr import DecypharrClient
 from .language_guard import (
     cached_language_result, inspect_source_languages, load_language_policy,
     save_language_policy, result_badge as language_result_badge,
+    set_language_override, language_override,
 )
 from .providers import list_provider_states, save_provider, provider_definition, categories as provider_categories, migrate_legacy_providers
 from .readiness import stack_readiness
@@ -90,6 +91,8 @@ from . import aiometadata as aiometadata_integration
 from . import provider_cleanup as provider_cleanup_tools
 from . import archive_rescue
 from . import tv_recovery
+from . import archive_media
+from . import media_identity
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title="ArrNexus")
@@ -98,10 +101,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.3.0-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.4.0-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "10.3.0-beta"
+APP_VERSION = "10.4.0-beta"
 
 
 @app.middleware("http")
@@ -601,14 +604,34 @@ async def enrich_items(items):
     sem = asyncio.Semaphore(5)
 
     async def one(item):
+        detected_item = item
+        item, identity = media_identity.apply_to_item(item)
         match = None
         match_inst = None
         candidates = movie_map.get(normalize_title(item.title_guess), []) if item.media_type == "movie" else tv_map.get(normalize_title(item.title_guess), [])
-        for candidate, inst in candidates:
-            if item.year_guess and candidate.get("year") and int(candidate.get("year")) != int(item.year_guess):
-                continue
-            match, match_inst = candidate, inst
-            break
+        if item.media_type == "movie":
+            for candidate, inst in candidates:
+                if item.year_guess and candidate.get("year") and int(candidate.get("year")) != int(item.year_guess):
+                    continue
+                match, match_inst = candidate, inst
+                break
+        else:
+            # TV season-pack folder years are frequently upload/release years,
+            # so do not reject a single unambiguous Sonarr title just because
+            # its folder says 2005/2006.  If Sonarr contains multiple series
+            # with the same title (Doctor Who-style remakes), require stronger
+            # evidence: an exact TMDb identity or one unique premiere-year match.
+            tmdb_id = int((identity or {}).get("tmdb_id") or 0)
+            if tmdb_id:
+                exact = [(candidate, inst) for candidate, inst in candidates if int(candidate.get("tmdbId") or 0) == tmdb_id]
+                if len(exact) == 1:
+                    match, match_inst = exact[0]
+            if match is None and len(candidates) == 1:
+                match, match_inst = candidates[0]
+            elif match is None and len(candidates) > 1 and item.year_guess:
+                year_matches = [(candidate, inst) for candidate, inst in candidates if candidate.get("year") and int(candidate.get("year")) == int(item.year_guess)]
+                if len(year_matches) == 1:
+                    match, match_inst = year_matches[0]
 
         metadata = match
         lookup = []
@@ -656,10 +679,14 @@ async def enrich_items(items):
         display_title = (metadata or {}).get("title") or item.title_guess
         display_year = (metadata or {}).get("year") or item.year_guess
         external_id = (metadata or {}).get("tmdbId") if item.media_type == "movie" else (metadata or {}).get("tvdbId")
-        # Title/year is the stable grouping key across mixed-quality RD release
-        # names. Using an external ID for only some copies caused duplicate cards
-        # when one release matched metadata and another did not.
-        canonical_key = f"{item.media_type}:{normalize_title(display_title)}:{display_year or 0}"
+        # TV is grouped series-first. Season-pack folder years often represent
+        # the release/upload year rather than the show's premiere year (for
+        # example different Tracy Beaker seasons). Prefer Sonarr/TVDB identity,
+        # then cautiously fall back to canonical title. Movies keep title/year.
+        if item.media_type == "tv":
+            canonical_key = f"tv:tvdb:{external_id}" if external_id else f"tv:title:{normalize_title(display_title)}"
+        else:
+            canonical_key = f"movie:{normalize_title(display_title)}:{display_year or 0}"
         language_guard = cached_language_result(item.path, item.fingerprint)
         language_badge_key, language_badge_label = language_result_badge(language_guard)
         if language_guard is None and state in {"language_rejected", "language_issue", "language_review"}:
@@ -686,6 +713,11 @@ async def enrich_items(items):
             "language_guard": language_guard,
             "language_badge_key": language_badge_key,
             "language_badge_label": language_badge_label,
+            "identity": identity,
+            "identity_confidence": int((identity or {}).get("confidence") or decision.get("confidence") or 0),
+            "identity_needs_review": bool(not identity and int(decision.get("confidence") or 0) < 75),
+            "provenance": "Extracted RAR" if is_within_logical(item.path, archive_media.extraction_root()) else "DMM / provider source",
+            "detected_item": detected_item,
         }
 
     return await asyncio.gather(*(one(x) for x in items))
@@ -715,7 +747,9 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
         )
         primary = group[0]
         managed = [r for r in group if r.get("state") in {"imported", "linked"} or r.get("linked_paths")]
-        rejected_rows = [r for r in group if r.get("language_badge_key") == "fail" or r.get("state") in {"language_issue", "language_rejected"}]
+        # Persistent historical states do not count as a current rejection.
+        # Only a current-policy fail may present as Language rejected.
+        rejected_rows = [r for r in group if r.get("language_badge_key") == "fail"]
         language_counts = {}
         for row in group:
             key = str(row.get("language_badge_key") or "unchecked")
@@ -737,6 +771,25 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
         ignored = len(group) and all(r.get("state") == "ignored" for r in group)
         primary["duplicate_count"] = len(group)
         primary["duplicate_sources"] = [r["item"].path for r in group]
+        if primary["item"].media_type == "tv":
+            series_sources = []
+            seasons = set()
+            for r in group:
+                nums = list(r["item"].season_numbers or [])
+                seasons.update(nums)
+                series_sources.append({
+                    "path": r["item"].path,
+                    "name": r["item"].name,
+                    "seasons": nums,
+                    "video_count": r["item"].video_count,
+                    "quality": r["item"].quality,
+                    "language_key": r.get("language_badge_key") or "unchecked",
+                    "language_label": r.get("language_badge_label") or "Language unchecked",
+                    "state": r.get("state") or "waiting",
+                })
+            primary["series_sources"] = sorted(series_sources, key=lambda x: (x["seasons"] or [999], x["name"].lower()))
+            primary["series_seasons"] = sorted(seasons)
+            primary["source_pack_count"] = len(group)
         primary["imported_copy_count"] = len(managed)
         primary["linked_paths"] = sorted({p for r in group for p in (r.get("linked_paths") or [])})
         primary["existing"] = primary.get("existing") or next((r.get("existing") for r in group if r.get("existing")), None)
@@ -749,6 +802,8 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
             primary["state"] = "imported"
         elif rejected_rows:
             primary["state"] = "language_rejected"
+        elif language_counts.get("recheck_required") or language_counts.get("unknown") or language_counts.get("probe_failed"):
+            primary["state"] = "language_review"
         else:
             primary["state"] = "waiting"
         primary["duplicate"] = len(group) > 1
@@ -1069,9 +1124,15 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
             enriched = [x for x in enriched if x.get("language_badge_key") in {"fail", "probe_failed", "unknown", "recheck_required"} or x.get("state") in {"language_issue", "language_rejected"}]
         else:
             enriched = [x for x in enriched if x["state"] == status]
+    try:
+        archive_rows = await asyncio.to_thread(archive_media.scan_archives, bool(refresh), 500)
+        archive_count = sum(1 for row in archive_rows if not row.get("ignored"))
+    except Exception:
+        archive_count = 0
     return templates.TemplateResponse("inbox.html", {
         "request": request,
         "rows": enriched,
+        "archive_count": archive_count,
         "counts": counts,
         "movie_roots": movie_roots(),
         "tv_roots": tv_roots(),
@@ -1080,20 +1141,34 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
     })
 
 
+def _managed_media_source(value: str | Path) -> bool:
+    """Allow normal DMM sources plus ArrNexus-managed recovery output."""
+    return is_within_logical(value, source_root()) or is_within_logical(value, archive_media.extraction_root())
+
+
 @app.get("/item", response_class=HTMLResponse)
-async def item_detail(request: Request, path: str):
+async def item_detail(request: Request, path: str, identity_q: str = "", identity_type: str = ""):
     require_auth(request)
     src = Path(path)
-    if not is_within_logical(src, source_root()):
+    if not _managed_media_source(src):
         raise HTTPException(400, "Invalid source path")
     try:
         if not view_path(src).exists():
             raise HTTPException(404, "Source not found")
-        item = await asyncio.to_thread(inspect_item, src)
+        detected_item = await asyncio.to_thread(inspect_item, src)
+        item, identity = media_identity.apply_to_item(detected_item)
         routed = await route_item(item)
         meta = routed.get("metadata") or routed.get("existing") or ((routed.get("lookup") or [{}])[0] if routed.get("lookup") else {})
-        display_title = meta.get("title") or item.title_guess
-        display_year = meta.get("year") or item.year_guess
+        display_title = (identity or {}).get("title") or meta.get("title") or item.title_guess
+        display_year = (identity or {}).get("year") or meta.get("year") or item.year_guess
+        identity_results = []
+        identity_error = ""
+        if identity_q.strip():
+            try:
+                identity_results = await media_identity.search_tmdb(identity_q.strip(), identity_type or item.media_type, expected_year=item.year_guess)
+            except Exception as exc:
+                identity_error = str(exc)
+        naming_preview = media_identity.naming_preview(item.path, item.fingerprint, identity)
         jf_conn = get_connection("jellyfin")
         try:
             jf = await search_jellyfin(display_title, 10) if jf_conn.api_key else {"configured": False, "found": False, "items": []}
@@ -1109,7 +1184,13 @@ async def item_detail(request: Request, path: str):
             "roots": movie_roots() if item.media_type == "movie" else tv_roots(), "upgrade": routed["upgrade"],
             "existing_resolution": routed["existing_resolution"], "jellyfin": jf, "history": latest_success_for_source(item.path),
             "language_guard": language, "language_policy": load_language_policy(), "language_recheck_required": recheck_required,
+            "language_override": language_override(item.path, item.fingerprint),
             "item_state": state,
+            "identity": identity, "identity_results": identity_results, "identity_error": identity_error,
+            "identity_q": identity_q, "tmdb_configured": media_identity.tmdb_configured(),
+            "naming_preview": naming_preview, "detected_item": detected_item,
+            "provenance": "Extracted RAR" if is_within_logical(item.path, archive_media.extraction_root()) else "DMM / provider source",
+            "can_provider_delete": is_within_logical(item.path, source_root()),
         })
     except HTTPException:
         raise
@@ -1124,7 +1205,7 @@ async def item_detail(request: Request, path: str):
 @app.post("/item/language-check")
 async def item_language_check(request: Request, source_path: str = Form(...)):
     require_auth(request)
-    if not is_within_logical(source_path, source_root()):
+    if not _managed_media_source(source_path):
         raise HTTPException(400, "Invalid source path")
     item = inspect_item(source_path)
     result = await asyncio.to_thread(inspect_source_languages, source_path, item.fingerprint, True)
@@ -1144,9 +1225,59 @@ async def item_language_check(request: Request, source_path: str = Form(...)):
     return RedirectResponse("/item?path=" + quote(source_path), status_code=303)
 
 
+@app.post("/item/language-override")
+async def item_language_override(request: Request, source_path: str = Form(...), action: str = Form("english")):
+    user = require_admin(request)
+    if not _managed_media_source(source_path):
+        raise HTTPException(400, "Invalid source path")
+    item = inspect_item(source_path)
+    if action == "english":
+        set_language_override(source_path, item.fingerprint, english=True, actor=str(user.get("username") or "administrator"))
+        set_item_state(source_path, "waiting", "English audio confirmed manually for this exact source fingerprint")
+        add_activity("language_override", item.title_guess, "Administrator confirmed English audio", source_path)
+    elif action == "clear":
+        set_language_override(source_path, item.fingerprint, english=False, actor=str(user.get("username") or "administrator"))
+        set_item_state(source_path, "language_review", "Manual English override cleared; re-check required")
+    else:
+        raise HTTPException(400, "Invalid language override action")
+    _INBOX_SNAPSHOT.clear(); invalidate_scan_cache()
+    return RedirectResponse("/item?path=" + quote(source_path), status_code=303)
+
+
+@app.post("/item/identity")
+async def item_identity_save(request: Request):
+    require_admin(request)
+    form = await request.form()
+    source_path = str(form.get("source_path") or "").strip()
+    if not _managed_media_source(source_path):
+        raise HTTPException(400, "Invalid source path")
+    item = inspect_item(source_path)
+    action = str(form.get("action") or "save")
+    if action == "clear":
+        media_identity.clear_identity(source_path, item.fingerprint)
+        add_activity("media_identity", item.title_guess, "Cleared source identity override", source_path)
+    else:
+        payload = {
+            "media_type": str(form.get("media_type") or item.media_type),
+            "title": str(form.get("title") or "").strip(),
+            "year": int(form.get("year") or 0) or None,
+            "tmdb_id": int(form.get("tmdb_id") or 0) or None,
+            "poster": str(form.get("poster") or ""),
+            "overview": str(form.get("overview") or ""),
+            "confidence": int(form.get("confidence") or 100),
+            "source": "tmdb",
+        }
+        saved = media_identity.save_identity(source_path, item.fingerprint, payload)
+        add_activity("media_identity", saved["title"], f"Resolved source identity via TMDb ({saved.get('confidence', 100)}%)", source_path)
+    _INBOX_SNAPSHOT.clear(); invalidate_scan_cache()
+    return RedirectResponse("/item?path=" + quote(source_path), status_code=303)
+
+
 @app.post("/item/state")
 async def item_state(request: Request, source_path: str = Form(...), state: str = Form(...), note: str = Form("")):
     require_auth(request)
+    if not _managed_media_source(source_path):
+        raise HTTPException(400, "Invalid source path")
     if state not in {"waiting", "ignored"}:
         raise HTTPException(400, "Invalid state")
     set_item_state(source_path, state, note)
@@ -1381,7 +1512,7 @@ async def bulk_import(request: Request):
         return RedirectResponse("/inbox", status_code=303)
     valid = []
     for p in paths:
-        if is_within_logical(p, source_root()):
+        if _managed_media_source(p):
             valid.append({"source_path": p, "display_name": Path(p).name, "destination_key": destination})
     if not valid:
         raise HTTPException(400, "No valid source paths")
@@ -1394,8 +1525,30 @@ async def bulk_import(request: Request):
 
 
 @app.post("/import")
-async def single_import(request: Request, source_path: str = Form(...), destination_key: str = Form("auto")):
+async def single_import(
+    request: Request, source_path: str = Form(...), destination_key: str = Form("auto"),
+    title_override: str = Form(""), identity_media_type: str = Form(""), year_override: str = Form(""), tmdb_id: str = Form(""),
+):
     require_auth(request)
+    if not _managed_media_source(source_path):
+        raise HTTPException(400, "Invalid source path")
+    if title_override.strip():
+        item = inspect_item(source_path)
+        try:
+            year = int(year_override or 0) or None
+        except Exception:
+            year = None
+        try:
+            tid = int(tmdb_id or 0) or None
+        except Exception:
+            tid = None
+        media_type = str(identity_media_type or item.media_type).lower()
+        if media_type not in {"movie", "tv"}:
+            media_type = item.media_type
+        media_identity.save_identity(source_path, item.fingerprint, {
+            "media_type": media_type, "title": title_override.strip(), "year": year, "tmdb_id": tid,
+            "source": "tmdb" if tid else "administrator", "confidence": 100,
+        })
     jid = create_job("import", [{"source_path": source_path, "display_name": Path(source_path).name, "destination_key": destination_key}])
     _launch(run_import_job(jid))
     log_event("info","import","job_started",f"Import job #{jid} started",{"job_id":jid,"source":source_path,"destination":destination_key})
@@ -3710,6 +3863,133 @@ async def tv_recovery_split(request: Request):
     except Exception as exc:
         plan = cache_get(f"tv_recovery:plan:{digest}")
         return templates.TemplateResponse("tv_recovery.html", {"request": request, "plan": plan, "result": None, "error": str(exc)}, status_code=400)
+
+
+
+# ===== ARRNEXUS V10.4 ARCHIVED MEDIA RECOVERY ===============================
+
+async def run_archive_extract_job(job_id: int):
+    job, items = get_job(job_id)
+    if not job:
+        return
+    update_job(job_id, status="running", message="RAR extraction in progress")
+    completed = failed = 0
+    for ji in items:
+        iid = int(ji["id"])
+        source_path = str(ji.get("source_path") or "")
+        try:
+            update_job_item(iid, status="running", stage="inspect", message="Revalidating archive contents and free space")
+            row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
+            if not row:
+                raise RuntimeError("RAR source is no longer present in the DMM source tree")
+            update_job_item(iid, stage="extract", message="Extracting selected RAR to the DUMB-visible recovery root")
+            result = await asyncio.to_thread(archive_media.extract_archive, source_path, expected_fingerprint=str(row.get("fingerprint") or ""))
+            completed += 1
+            target = str(result.get("target") or "")
+            update_job_item(iid, status="complete", stage="complete", message=f"Extracted {result.get('videos', 0)} media file(s) → {target}")
+            log_event("info", "archive_recovery", "job_complete", f"Recovered {Path(source_path).name}", {"target": target, "job_id": job_id})
+        except Exception as exc:
+            failed += 1
+            update_job_item(iid, status="error", stage="error", message=str(exc))
+            log_event("error", "archive_recovery", "job_failed", str(exc), {"source": source_path, "job_id": job_id})
+        update_job(job_id, completed=completed, failed=failed, message=f"{completed} extracted, {failed} failed")
+    update_job(job_id, status="complete_with_errors" if failed else "complete", completed=completed, failed=failed, message=f"Finished: {completed} extracted, {failed} failed")
+
+
+@app.get("/maintenance/archives", response_class=HTMLResponse)
+async def archived_media_page(request: Request, refresh: int = 0, inspect_path: str = "", identity_q: str = "", identity_type: str = "tv", notice: str = "", error: str = ""):
+    require_admin(request)
+    rows = []
+    inspection = None
+    identity_results = []
+    page_error = error
+    storage = None
+    try:
+        rows = await asyncio.to_thread(archive_media.scan_archives, bool(refresh), 1000)
+        if inspect_path:
+            if not is_within_logical(inspect_path, source_root()):
+                raise RuntimeError("Archive path is outside the DMM source root")
+            inspection = await asyncio.to_thread(archive_media.inspect_archive, inspect_path)
+            storage = await asyncio.to_thread(archive_media.storage_state, int((inspection or {}).get("unpacked_size") or 0))
+            if identity_q.strip():
+                identity_results = await media_identity.search_tmdb(identity_q.strip(), identity_type or "tv", limit=12)
+    except Exception as exc:
+        page_error = str(exc)
+    return templates.TemplateResponse("archive_media.html", {
+        "request": request, "rows": rows, "inspection": inspection,
+        "identity_results": identity_results, "identity_q": identity_q, "identity_type": identity_type,
+        "notice": notice, "error": page_error, "storage": storage,
+        "recovery_root": archive_media.extraction_root(),
+        "max_extract_gb": int(archive_media.max_extract_bytes() / 1024**3),
+        "tmdb_configured": media_identity.tmdb_configured(),
+        "extractor_state": archive_media.extractor_state(),
+    })
+
+
+@app.post("/maintenance/archives/settings")
+async def archived_media_settings(request: Request):
+    require_admin(request)
+    form = await request.form()
+    try:
+        archive_media.save_settings(root=str(form.get("recovery_root") or ""), max_gb=int(form.get("max_extract_gb") or 100))
+        key = str(form.get("tmdb_api_key") or "").strip()
+        if key:
+            media_identity.save_tmdb_api_key(key)
+        return RedirectResponse("/maintenance/archives?notice=" + quote("Archived Media Recovery settings saved"), status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/maintenance/archives?error=" + quote(str(exc)), status_code=303)
+
+
+@app.post("/maintenance/archives/ignore")
+async def archived_media_ignore(request: Request):
+    require_admin(request)
+    form = await request.form()
+    source_path = str(form.get("source_path") or "")
+    fingerprint = str(form.get("fingerprint") or "")
+    ignored = str(form.get("ignored") or "1").lower() in {"1", "true", "yes", "on"}
+    if not is_within_logical(source_path, source_root()):
+        raise HTTPException(400, "Invalid archive source")
+    archive_media.set_ignored(source_path, fingerprint, ignored)
+    return RedirectResponse("/maintenance/archives?refresh=1", status_code=303)
+
+
+@app.post("/maintenance/archives/identity")
+async def archived_media_identity(request: Request):
+    require_admin(request)
+    form = await request.form()
+    source_path = str(form.get("source_path") or "").strip()
+    if not is_within_logical(source_path, source_root()):
+        raise HTTPException(400, "Invalid archive source")
+    row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
+    if not row:
+        raise HTTPException(404, "Archive source was not found")
+    identity = media_identity.save_identity(source_path, str(row.get("fingerprint") or ""), {
+        "media_type": str(form.get("media_type") or "tv"),
+        "title": str(form.get("title") or "").strip(),
+        "year": int(form.get("year") or 0) or None,
+        "tmdb_id": int(form.get("tmdb_id") or 0) or None,
+        "poster": str(form.get("poster") or ""),
+        "overview": str(form.get("overview") or ""),
+        "confidence": int(form.get("confidence") or 100),
+        "source": "tmdb",
+    })
+    add_activity("media_identity", identity["title"], "Resolved archived source identity via TMDb", source_path)
+    return RedirectResponse("/maintenance/archives?inspect_path=" + quote(source_path) + "&notice=" + quote(f"Identity set to {identity['title']}"), status_code=303)
+
+
+@app.post("/maintenance/archives/extract")
+async def archived_media_extract(request: Request):
+    require_admin(request)
+    form = await request.form()
+    source_path = str(form.get("source_path") or "").strip()
+    if not is_within_logical(source_path, source_root()):
+        raise HTTPException(400, "Invalid archive source")
+    row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
+    if not row:
+        raise HTTPException(404, "Archive source was not found")
+    jid = create_job("archive_extract", [{"source_path": source_path, "display_name": Path(source_path).name, "destination_key": "archive-recovery"}])
+    _launch(run_archive_extract_job(jid))
+    return RedirectResponse(f"/jobs/{jid}", status_code=303)
 
 
 # ===== ARRNEXUS V10.3 ARCHIVE RESCUE ========================================

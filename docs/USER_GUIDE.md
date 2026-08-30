@@ -1183,7 +1183,7 @@ Settings manages application branding/public URL, SMTP, users, paths, music appl
 
 ## Language Guard & rejected-source cleanup
 
-Language Guard uses ffprobe against actual stream metadata before a DMM source is linked. v10.3 also makes language inspection a first-class bulk Inbox workflow.
+Language Guard uses ffprobe against actual stream metadata before a source is linked. v10.4 treats undefined/unknown audio tags as Manual review rather than proof of non-English and supports a fingerprint-bound administrator English override.
 
 ### Before you start
 
@@ -1197,12 +1197,15 @@ Language Guard uses ffprobe against actual stream metadata before a DMM source i
 
 - Use Item Review for one source or DMM Inbox actions to Check selected languages, Check all unchecked or Force re-check all.
 - A cached result from an older policy is labelled Re-check required.
+- Block import when language metadata is unknown controls whether Manual-review media is held or allowed through; either way uncertainty never authorizes provider deletion.
+- If an old encode has undefined language metadata but you have verified it is English, an administrator can Mark this source as English; the override is bound to the exact source fingerprint.
 - Confirmed rejected RD sources can be removed individually or in a selected cleanup job.
 
 ### What working looks like
 
 - Confirmed non-English failures display Language rejected.
-- Probe failures/unknown metadata become Manual review and never authorize deletion.
+- `und`, blank, mixed/unknown tags and probe failures become Manual review and never authorize deletion.
+- A manual English override expires automatically when the source fingerprint changes.
 - After a successful exact RD deletion ArrNexus invalidates DMM/Inbox state so the removed source disappears cleanly.
 
 ### If it does not work
@@ -1216,6 +1219,50 @@ Language Guard uses ffprobe against actual stream metadata before a DMM source i
 - Every destructive action rechecks the current policy result, source fingerprint, surviving managed links and exact provider identity at apply time.
 
 # Library & automation
+
+## Archived Media Recovery & RAR sources
+
+Archived Media Recovery scans the DMM __all__ tree for RAR/multipart RAR sets that the normal video scanner cannot see, then lets an administrator inspect and explicitly extract only reviewed media archives.
+
+### Before you start
+
+- The RAR source is visible under the configured DMM source root.
+- The v10.4 container includes a supported 7zip/unrar extractor.
+- The recovery root must be DUMB-visible so Sonarr/Jellyfin can resolve recovered media.
+
+### Setup
+
+1. Open Archived Media from Library & automation or Maintenance.
+2. Configure the DUMB-visible recovery root, extraction size ceiling and optional TMDb API key.
+
+### How to use it
+
+- Scan __all__ for archives.
+- Inspect an archive before extraction; ArrNexus lists contents, volume count, estimated output, free space and media classification.
+- For ambiguous names such as season-4_202405.rar, search TMDb and choose the exact movie/TV identity before extracting.
+- Extract only explicitly reviewed archives, then open the recovered source in Item Review for Language Guard and Sonarr/Radarr import.
+
+### What working looks like
+
+- Multipart RAR sets appear once using their first volume.
+- Recovered files live under the configured DUMB-visible root and can be symlinked by ArrNexus.
+- TMDb identity drives canonical title/filename previews without renaming the read-only provider source.
+
+### If it does not work
+
+- Passworded archives and nested-only archives stay Manual review.
+- If no extractor is available, rebuild the v10.4 container because native-update application files cannot add OS packages to an already-running image.
+- If extraction is blocked for space, choose a larger DUMB-visible recovery root or free space.
+
+### Safety / privacy
+
+- Nothing is extracted automatically during normal DMM scanning.
+- Path traversal, archive-created symlinks, unsafe paths and over-limit extraction plans are refused.
+- The original provider archive is retained.
+
+### Related guides
+
+`dmm-inbox`, `item-review`, `archive-rescue`, `tv-recovery`, `language-guard`
 
 ## Archive Rescue & Internet Archive
 

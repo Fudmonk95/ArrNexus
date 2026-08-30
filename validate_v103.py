@@ -171,7 +171,7 @@ def main() -> int:
 
         with TestClient(main_app.app) as client:
             health = client.get("/api/health", follow_redirects=False)
-            require(health.status_code == 200 and health.json().get("version") == "10.3.0-beta", "v10.3 health/version")
+            require(health.status_code == 200 and version_key(str(health.json().get("version") or "0")) >= version_key("10.3.0-beta"), "v10.3+ health/version")
             setup = client.post("/setup", data={
                 "username":"v103validator", "email":"v103@example.invalid", "display_name":"V10.3 Validator",
                 "password":"validation-password-123", "confirm":"validation-password-123",
@@ -202,7 +202,7 @@ def main() -> int:
     audit = (root / "docs" / "DOCUMENTATION_AUDIT.md").read_text(encoding="utf-8")
     readme = (root / "README.md").read_text(encoding="utf-8")
 
-    require('APP_VERSION = "10.3.0-beta"' in main_source, "v10.3 version string missing")
+    require("APP_VERSION" in main_source and version_key(main_source.split('APP_VERSION = "',1)[1].split('"',1)[0]) >= version_key("10.3.0-beta"), "v10.3+ version string missing")
     for marker in ("tv:default", "tv:kids", "tv:bbc", "movie:default", "movie:kids"):
         require(marker in inbox, f"Typed DMM route missing: {marker}")
     require("media_type_override" in router_source and "Combined-season video detected" in router_source, "Manual media-type override or combined-season guard missing")
@@ -226,7 +226,7 @@ def main() -> int:
     require("arrnexus:appearance" in base, "early appearance preference application missing from document head")
     for marker in ('html[data-appearance="light"]', '--ink:#111113', '--surface-0:#fafafa', '.nx-sidebar', '.nx-topbar', 'Dashboard: remove the old navy surfaces'):
         require(marker in css, f"v10.3 appearance contract missing: {marker}")
-    require("arrnexus-static-v10.3" in sw, "v10.3 service-worker cache marker missing")
+    require("arrnexus-static-v10.3" in sw or "arrnexus-static-v10.4" in sw, "v10.3+ service-worker cache marker missing")
 
     require("Version 10.3" in readme and "Archive Rescue" in readme and "Advanced TV Recovery" in readme, "README missing v10.3 workflows")
     for text in ("Archive Rescue", "Advanced TV Recovery", "Trakt Device OAuth", "Check all unchecked"):

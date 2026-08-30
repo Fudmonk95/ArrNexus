@@ -429,3 +429,12 @@ html[data-appearance] code{color:color-mix(in srgb,var(--accent-purple) 70%,var(
 .v103-rescue-grid,.v103-split-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}.v103-rescue-card,.v103-split-card{border:1px solid var(--border);border-radius:15px;padding:16px;display:grid;gap:13px}.v103-rescue-card h3,.v103-split-card h3{margin:2px 0}.v103-rescue-actions{display:flex;justify-content:space-between;align-items:center;gap:8px}.v103-mini-results{display:grid;gap:7px}.v103-mini-results a{display:flex;justify-content:space-between;gap:12px;padding:9px;border:1px solid var(--border);border-radius:9px}.v103-mini-results small{color:var(--ink-muted)}
 .tag.language-recheck_required,.language-recheck_required{color:var(--amber)!important;border-color:color-mix(in srgb,var(--amber) 45%,var(--border))!important;background:color-mix(in srgb,var(--amber) 8%,var(--surface-1))!important}
 @media(max-width:900px){.v103-trakt-connect,.v103-device-code{align-items:flex-start;flex-direction:column}.v103-bulkbar>select{margin-left:0}.v103-language-actions{width:100%}}
+
+/* v10.4 — Media identity, series packs and review-first archive recovery */
+.v104-import-dialog{width:min(720px,calc(100vw - 28px));max-height:85vh;overflow:auto;border:1px solid var(--border-strong);border-radius:18px;background:var(--surface-1);color:var(--ink);padding:24px;box-shadow:0 30px 90px rgba(0,0,0,.45)}
+.v104-import-dialog::backdrop{background:rgba(0,0,0,.68);backdrop-filter:blur(5px)}
+.v104-import-dialog h3{margin-top:0}.v104-import-dialog .mini-list>div{gap:12px;align-items:flex-start}.v104-import-dialog .mini-list strong{overflow-wrap:anywhere;text-align:right}
+.v104-series-sources{margin-top:10px;border-top:1px solid var(--border);padding-top:8px}.v104-series-sources summary{cursor:pointer;color:var(--muted)}
+.v104-identity-panel .lookup-card{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:8px 0}.v104-identity-panel .lookup-card>div{min-width:0}
+html[data-appearance="light"] .v104-import-dialog{background:#fff;color:#111113;border-color:#d8d8dc}
+@media(max-width:640px){.v104-import-dialog{padding:16px}.v104-identity-panel .lookup-card{align-items:flex-start;flex-direction:column}.v104-import-dialog .mini-list strong{text-align:left}}

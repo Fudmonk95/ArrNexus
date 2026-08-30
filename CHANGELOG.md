@@ -1,5 +1,22 @@
 # Changelog
 
+## 10.4.0-beta — Archived Media Recovery, Identity Resolution & Language Safety
+
+- Fixed Language Guard false rejections for old/archive media whose audio tags are `und`, blank, mixed or unknown; uncertain metadata is Manual review and is never destructive-safe.
+- Added fingerprint-bound administrator **Mark this source as English** overrides for verified old encodes; overrides expire automatically when source media changes.
+- Made Real-Debrid rejected-source cleanup opt-in by default for fresh installs while retaining exact-match/dependency/current-policy safety.
+- Reworked DMM TV grouping to be series-first: multiple season/source packs for the same Sonarr series are shown under one show card with season/source detail.
+- Added **Archived Media Recovery**: scan DMM `__all__` for first-volume RAR/multipart sets, inspect contents before extraction, classify media/password/nested/non-media archives, ignore unwanted archives and extract only explicit administrator selections.
+- Added archive safety gates for path traversal, archive-created symlinks, nested-only archives, password protection, source fingerprint changes, extraction-size ceilings and free-space margin.
+- Added a DUMB-visible recovered-media root (default `/mnt/debrid/arrnexus-extracted`) so Sonarr/Jellyfin can resolve symlink targets from extracted RAR media.
+- Added product-wide **TMDb media identity** settings/search and fingerprint-bound source identity overrides for ambiguous names such as `season-4_202405.rar`.
+- Added source identity confidence and pre-import canonical filename previews.
+- Added **Review naming & import** on Item Review so an administrator can correct title/type/year before the actual Arr match/import job.
+- TMDb/source identity now feeds the real routing/import pipeline, not only display metadata.
+- Added 7zip/unrar support to the Docker image for RAR recovery. A container rebuild is required before RAR inspection/extraction can work on installations whose existing image lacks an extractor.
+- Updated Help Centre, User Guide, Documentation Audit and service-worker cache for v10.4.
+- Added v10.4 validation while retaining v7 → v10.3 regression coverage.
+
 ## 10.3.0-beta — Archive Rescue & Advanced Media Recovery
 
 - Added **Archive Rescue**: scan monitored Sonarr gaps, search Prowlarr's Internet Archive indexer, inspect real `.torrent` manifests and hand selected files to Real-Debrid.

@@ -6,15 +6,17 @@ from typing import Any
 
 from .arr import RadarrClient, SonarrClient, LidarrClient, poster_url, ArrError
 from .config import settings
-from .paths import movie_roots, tv_roots, lidarr_root
+from .paths import movie_roots, tv_roots, lidarr_root, source_root
 from .instances import discover_instances, get_instance, ArrInstance
 from .scanner import ScanItem, inspect_item, normalize_title, invalidate_scan_cache
+from .namespace import is_within_logical
 from .routing import decide_movie, decide_tv, RouteDecision
 from .importer import import_movie_source, import_tv_source, ImportErrorSafe
 from .language_guard import inspect_source_languages, load_language_policy
 from .library import invalidate_library_cache
 from . import realdebrid as rd
 from .db import log_import, add_activity, learn_exact_route, track_request, request_map, set_item_state
+from . import media_identity
 
 
 class LanguageRejectedSafe(ImportErrorSafe):
@@ -79,7 +81,7 @@ async def existing_match_any(item: ScanItem) -> tuple[dict | None, ArrInstance |
         for entry in entries:
             if normalize_title(entry.get("title", "")) != target:
                 continue
-            if item.year_guess and entry.get("year") and int(entry.get("year")) != int(item.year_guess):
+            if item.media_type == "movie" and item.year_guess and entry.get("year") and int(entry.get("year")) != int(item.year_guess):
                 continue
             return entry, inst, client
     return None, None, None
@@ -132,10 +134,11 @@ async def route_item(item: ScanItem) -> dict:
 
 async def import_one(source_path: str, destination_key: str | None = None, candidate_index: int = -1, media_type_override: str | None = None) -> dict:
     detected_item = inspect_item(source_path)
+    resolved_item, identity = media_identity.apply_to_item(detected_item)
     override = str(media_type_override or "").strip().lower()
     if override not in {"movie", "tv"}:
         override = ""
-    item = replace(detected_item, media_type=override) if override and override != detected_item.media_type else detected_item
+    item = replace(resolved_item, media_type=override) if override and override != resolved_item.media_type else resolved_item
     if item.media_type == "tv" and bool(getattr(item, "combined_season", False)):
         seasons = ", ".join(str(x) for x in (getattr(item, "combined_season_numbers", None) or item.season_numbers or [])) or "unknown"
         raise ImportErrorSafe(f"Combined-season video detected (season {seasons}). Use Advanced TV Recovery to analyse/split it before Sonarr import.")
@@ -196,7 +199,13 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
             reason += "; English replacement search queued in Arr"
 
         cleanup = {"ok": False, "deleted": False, "reason": "Source retained for manual review" if manual_review else "Rejected-source cleanup disabled"}
-        if policy.remove_rejected_debrid and not manual_review and bool(language.get("destructive_safe")):
+        original_provider_source = is_within_logical(source_path, source_root())
+        if policy.remove_rejected_debrid and not original_provider_source:
+            cleanup = {
+                "ok": False, "deleted": False,
+                "reason": "Provider cleanup is not applicable to ArrNexus recovered media; the original archive/provider source is retained",
+            }
+        elif policy.remove_rejected_debrid and not manual_review and bool(language.get("destructive_safe")):
             try:
                 cleanup = await rd.delete_source_torrent_exact(source_path, item.size_bytes)
             except Exception as exc:
@@ -266,6 +275,7 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
         "item": item.dict(),
         "detected_media_type": detected_item.media_type,
         "media_type_override": override,
+        "identity_override": identity,
         "destination_key": actual_destination_key,
         "destination_path": dest_dir,
         "created": created,

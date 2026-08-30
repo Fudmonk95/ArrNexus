@@ -2,8 +2,8 @@
 
 This file is generated from `app/main.py` routes and the same `app/help_catalog.py` mapping used by the contextual Help button.
 
-- Application routes/actions audited: **149**
-- Help topics: **47**
+- Application routes/actions audited: **156**
+- Help topics: **48**
 - Primary private pages receive a contextual Help link from the application shell.
 - Public/auth/bootstrap pages are documented in the Help Centre and user guide even when they do not use the private shell.
 
@@ -29,6 +29,8 @@ This file is generated from `app/main.py` routes and the same `app/help_catalog.
 | GET | `/inbox` | `inbox` | `dmm-inbox` |
 | GET | `/item` | `item_detail` | `item-review` |
 | POST | `/item/language-check` | `item_language_check` | `item-review` |
+| POST | `/item/language-override` | `item_language_override` | `item-review` |
+| POST | `/item/identity` | `item_identity_save` | `item-review` |
 | POST | `/item/state` | `item_state` | `item-review` |
 | POST | `/inbox/language-scan` | `inbox_language_scan` | `dmm-inbox` |
 | POST | `/inbox/language-delete` | `inbox_language_delete` | `dmm-inbox` |
@@ -138,6 +140,11 @@ This file is generated from `app/main.py` routes and the same `app/help_catalog.
 | GET | `/tv-recovery/analyse` | `tv_recovery_analyse` | `tv-recovery` |
 | POST | `/tv-recovery/staging` | `tv_recovery_staging` | `tv-recovery` |
 | POST | `/tv-recovery/split` | `tv_recovery_split` | `tv-recovery` |
+| GET | `/maintenance/archives` | `archived_media_page` | `archived-media` |
+| POST | `/maintenance/archives/settings` | `archived_media_settings` | `archived-media` |
+| POST | `/maintenance/archives/ignore` | `archived_media_ignore` | `archived-media` |
+| POST | `/maintenance/archives/identity` | `archived_media_identity` | `archived-media` |
+| POST | `/maintenance/archives/extract` | `archived_media_extract` | `archived-media` |
 | GET | `/archive-rescue` | `archive_rescue_page` | `archive-rescue` |
 | GET | `/archive-rescue/release/{token}` | `archive_rescue_release` | `archive-rescue` |
 | POST | `/archive-rescue/send-rd` | `archive_rescue_send_rd` | `archive-rescue` |

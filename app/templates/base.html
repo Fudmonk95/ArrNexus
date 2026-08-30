@@ -9,8 +9,8 @@
   <script>(function(){try{var a=localStorage.getItem('arrnexus:appearance');document.documentElement.dataset.appearance=a==='light'?'light':'dark';}catch(e){document.documentElement.dataset.appearance='dark';}})();</script>
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/arrnexus-icon-v9.png" type="image/png">
-  <link rel="stylesheet" href="/static/app.css?v=10.3">
-  <script defer src="/static/app.js?v=10.3"></script>
+  <link rel="stylesheet" href="/static/app.css?v=10.4">
+  <script defer src="/static/app.js?v=10.4"></script>
 </head>
 <body class="nx-body">
 <div class="nx-progress" id="nxProgress" aria-hidden="true"></div>
@@ -58,6 +58,7 @@
           <a class="{{ 'active' if request.url.path.startswith('/libraries') or request.url.path.startswith('/browser') }}" href="/libraries" data-nav><span class="nx-nav-icon">▤</span><span>Libraries</span></a>
           {% if request_is_admin(request) %}<a class="{{ 'active' if request.url.path.startswith('/lists') }}" href="/lists" data-nav><span class="nx-nav-icon">☰</span><span>Lists & Watchlists</span></a>{% endif %}
           {% if request_is_admin(request) %}<a class="{{ 'active' if request.url.path.startswith('/archive-rescue') or request.url.path.startswith('/tv-recovery') }}" href="/archive-rescue" data-nav><span class="nx-nav-icon">⌁</span><span>Archive Rescue</span></a>{% endif %}
+          {% if request_is_admin(request) %}<a class="{{ 'active' if request.url.path.startswith('/maintenance/archives') }}" href="/maintenance/archives" data-no-soft-nav><span class="nx-nav-icon">▦</span><span>Archived Media</span></a>{% endif %}
           <a class="{{ 'active' if request.url.path.startswith('/jobs') }}" href="/jobs" data-nav><span class="nx-nav-icon">⇄</span><span>Import Jobs</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/rules') }}" href="/rules" data-nav><span class="nx-nav-icon">⌘</span><span>Routing Rules</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/self-healing') }}" href="/self-healing" data-nav><span class="nx-nav-icon">✚</span><span>Self-Healing</span></a>

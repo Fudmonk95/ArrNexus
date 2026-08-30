@@ -31,6 +31,7 @@ ENGLISH_CODES = {
 }
 SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".vtt", ".sub"}
 ENGLISH_NAME_RE = re.compile(r"(?i)(?:^|[._\-\s])(eng|english|en(?:[-_.](?:us|gb|uk|ca|au))?)(?:$|[._\-\s])")
+UNKNOWN_LANGUAGE_CODES = {"", "und", "unk", "unknown", "zxx", "mul", "mis"}
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,7 @@ class LanguagePolicy:
     require_default_english_audio: bool = False
     unknown_is_failure: bool = True
     auto_upgrade_search: bool = True
-    remove_rejected_debrid: bool = True
+    remove_rejected_debrid: bool = False
     max_files: int = 300
     probe_timeout_seconds: int = 20
 
@@ -67,7 +68,7 @@ def load_language_policy() -> LanguagePolicy:
         require_default_english_audio=_bool_setting("language.require_default_english_audio", False),
         unknown_is_failure=_bool_setting("language.unknown_is_failure", True),
         auto_upgrade_search=_bool_setting("language.auto_upgrade_search", True),
-        remove_rejected_debrid=_bool_setting("language.remove_rejected_debrid", True),
+        remove_rejected_debrid=_bool_setting("language.remove_rejected_debrid", False),
         max_files=max_files,
         probe_timeout_seconds=timeout,
     )
@@ -81,7 +82,7 @@ def save_language_policy(
     require_default_english_audio: bool,
     unknown_is_failure: bool,
     auto_upgrade_search: bool,
-    remove_rejected_debrid: bool = True,
+    remove_rejected_debrid: bool = False,
     max_files: int = 300,
     probe_timeout_seconds: int = 20,
 ) -> None:
@@ -116,7 +117,19 @@ def is_english(value: Any) -> bool:
 
 def _stream_language(stream: dict) -> str:
     tags = stream.get("tags") or {}
-    return _normalise_language(tags.get("language") or tags.get("LANGUAGE") or "")
+    raw = _normalise_language(tags.get("language") or tags.get("LANGUAGE") or "")
+    title = str(tags.get("title") or tags.get("TITLE") or "").strip()
+    # Old scene/archive media frequently uses `und` or leaves the language tag
+    # blank even when the track title says English. Treat a clear English track
+    # title as positive evidence, otherwise preserve unknown metadata as unknown.
+    if raw in UNKNOWN_LANGUAGE_CODES and ENGLISH_NAME_RE.search(title):
+        return "eng"
+    return raw
+
+
+def _stream_language_unknown(stream: dict) -> bool:
+    lang = _stream_language(stream)
+    return lang in UNKNOWN_LANGUAGE_CODES
 
 
 def _stream_default(stream: dict) -> bool:
@@ -128,65 +141,68 @@ def _stream_default(stream: dict) -> bool:
 
 
 def evaluate_probe_payload(payload: dict, policy: LanguagePolicy | None = None, *, external_english_subtitles: bool = False) -> dict:
-    """Evaluate one ffprobe JSON payload.  Kept pure for offline validation."""
+    """Evaluate one ffprobe JSON payload without treating unknown tags as non-English."""
     policy = policy or load_language_policy()
     streams = payload.get("streams") or []
     audio = [s for s in streams if str(s.get("codec_type") or "").lower() == "audio"]
     subs = [s for s in streams if str(s.get("codec_type") or "").lower() == "subtitle"]
-    audio_languages = sorted({x for x in (_stream_language(s) for s in audio) if x})
-    subtitle_languages = sorted({x for x in (_stream_language(s) for s in subs) if x})
+
+    audio_languages = sorted({x for x in (_stream_language(s) for s in audio) if x and x not in UNKNOWN_LANGUAGE_CODES})
+    subtitle_languages = sorted({x for x in (_stream_language(s) for s in subs) if x and x not in UNKNOWN_LANGUAGE_CODES})
+    audio_unknown = any(_stream_language_unknown(s) for s in audio)
+    subtitle_unknown = any(_stream_language_unknown(s) for s in subs)
+
     english_audio = any(is_english(x) for x in audio_languages)
     english_subtitles = external_english_subtitles or any(is_english(x) for x in subtitle_languages)
-    default_english_audio = any(is_english(_stream_language(s)) and _stream_default(s) for s in audio)
+    default_audio = [s for s in audio if _stream_default(s)]
+    default_english_audio = any(is_english(_stream_language(s)) for s in default_audio)
+    default_audio_unknown = bool(default_audio) and any(_stream_language_unknown(s) for s in default_audio)
 
     missing: list[str] = []
+    metadata_unknown = False
+
     if policy.require_english_audio and not english_audio:
         missing.append("English audio")
+        # No audio at all is a confirmed absence. An unlabelled/undefined audio
+        # stream is not evidence of a foreign-language source.
+        if audio and (audio_unknown or not audio_languages):
+            metadata_unknown = True
     if policy.require_default_english_audio and not default_english_audio:
         missing.append("default English audio")
+        if default_audio_unknown or (default_audio and not any(_stream_language(s) not in UNKNOWN_LANGUAGE_CODES for s in default_audio)):
+            metadata_unknown = True
     if policy.require_english_subtitles and not english_subtitles:
         missing.append("English subtitles")
+        if not subs or subtitle_unknown or not subtitle_languages:
+            metadata_unknown = True
 
-    unknown_audio = bool(audio) and not any(_stream_language(s) for s in audio)
-    unknown_subs = bool(subs) and not any(_stream_language(s) for s in subs)
-    metadata_unknown = (policy.require_english_audio and unknown_audio) or (
-        policy.require_english_subtitles and not external_english_subtitles and (not subs or unknown_subs)
-    )
-
-    # Unknown tags are not evidence that a stream is non-English. They may
-    # still block an import, but they are a Manual-review state and can never
-    # authorize destructive provider cleanup.
     if metadata_unknown:
         status = "unknown"
-        if "language metadata is unknown" not in missing:
-            missing.append("language metadata is unknown")
+        missing.append("language metadata is unknown")
     elif missing:
         status = "fail"
     else:
         status = "pass"
 
-    confirmed_policy_failure = False
-    if status == "fail":
-        if policy.require_english_audio and audio_languages and not english_audio:
-            confirmed_policy_failure = True
-        if policy.require_default_english_audio and audio_languages and not default_english_audio:
-            confirmed_policy_failure = True
-        if policy.require_english_subtitles and subtitle_languages and not english_subtitles:
-            confirmed_policy_failure = True
-
+    # Destructive-safe means the required stream metadata was explicit enough
+    # to prove a policy failure. Any unknown/mixed/unlabelled stream blocks it.
+    confirmed_policy_failure = status == "fail"
+    compliant = status == "pass" or (status == "unknown" and not policy.unknown_is_failure)
     return {
         "status": status,
-        "compliant": status == "pass",
+        "compliant": compliant,
         "destructive_safe": bool(confirmed_policy_failure and not metadata_unknown),
         "english_audio": english_audio,
         "english_subtitles": english_subtitles,
         "default_english_audio": default_english_audio,
         "audio_languages": audio_languages,
         "subtitle_languages": subtitle_languages,
+        "audio_unknown": bool(audio_unknown),
+        "subtitle_unknown": bool(subtitle_unknown),
         "audio_streams": len(audio),
         "subtitle_streams": len(subs),
         "external_english_subtitles": bool(external_english_subtitles),
-        "missing": missing,
+        "missing": sorted(set(missing)),
     }
 
 
@@ -242,6 +258,25 @@ def _cache_key(source_path: str, fingerprint: str, policy: LanguagePolicy) -> st
     return f"language:v7:{ident}:{fp}:{_policy_fingerprint(policy)}"
 
 
+def _override_key(source_path: str, fingerprint: str) -> str:
+    ident = hashlib.sha256(source_path.encode("utf-8", errors="replace")).hexdigest()[:24]
+    return f"language_override:v104:{ident}:{(fingerprint or 'nofingerprint')[:32]}"
+
+
+def language_override(source_path: str, fingerprint: str) -> dict | None:
+    row = cache_get(_override_key(source_path, fingerprint))
+    if isinstance(row, dict) and row.get("english") is True:
+        return row
+    return None
+
+
+def set_language_override(source_path: str, fingerprint: str, *, english: bool, actor: str = "administrator") -> None:
+    cache_set(_override_key(source_path, fingerprint), {
+        "english": bool(english),
+        "actor": actor,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+
 def cached_language_result(source_path: str, fingerprint: str = "") -> dict | None:
     policy = load_language_policy()
     row = cache_get(_cache_key(source_path, fingerprint, policy))
@@ -261,6 +296,17 @@ def inspect_source_languages(source_path: str, fingerprint: str = "", force: boo
             "status": "disabled", "compliant": True, "enabled": False,
             "summary": "Language Guard disabled", "files": [], "missing": [],
         }
+    override = language_override(source_path, fingerprint)
+    if override:
+        return {
+            "status": "pass", "compliant": True, "enabled": True,
+            "destructive_safe": False, "manual_override": True,
+            "summary": "English audio confirmed by administrator for this exact source fingerprint",
+            "files": [], "missing": [], "file_count": len(video_files(Path(source_path))),
+            "checked_count": 0, "truncated": False, "errors": [],
+            "checked_at": override.get("updated_at"),
+        }
+
     key = _cache_key(source_path, fingerprint, policy)
     if not force:
         cached = cache_get(key)
@@ -305,9 +351,11 @@ def inspect_source_languages(source_path: str, fingerprint: str = "", force: boo
     if truncated:
         missing.append(f"{len(files)-len(selected)} unverified file(s) above scan limit")
 
-    if failed or (truncated and policy.unknown_is_failure):
+    if failed:
         status = "fail"
     elif unknown or truncated:
+        # Strict unknown handling may still block import, but uncertainty is
+        # never represented as a confirmed language rejection.
         status = "unknown"
     else:
         status = "pass"
@@ -315,13 +363,14 @@ def inspect_source_languages(source_path: str, fingerprint: str = "", force: boo
     # decision.  It remains manual review even when unknown metadata is strict.
     if errors:
         status = "unknown"
-    compliant = status == "pass"
+    compliant = status == "pass" or (status == "unknown" and not policy.unknown_is_failure)
     destructive_safe = bool(status == "fail" and not errors and not truncated and failed and all(bool(r.get("destructive_safe")) for r in failed))
     if status == "pass":
         verified = "English audio" + (" + subtitles" if policy.require_english_subtitles else "")
         summary = f"{verified} verified on {len(rows)} file(s)"
     elif status == "unknown":
-        summary = f"Manual review required: language verification incomplete on {len(rows)} of {len(files)} file(s)"
+        action = "import allowed by current policy" if not policy.unknown_is_failure else "import blocked until reviewed"
+        summary = f"Manual review required: language verification incomplete on {len(rows)} of {len(files)} file(s); {action}"
     else:
         bits = ", ".join(missing) if missing else "language policy not met"
         summary = f"Language Guard blocked source: {bits}"
@@ -357,7 +406,9 @@ def result_badge(result: dict | None) -> tuple[str, str]:
         return "unchecked", "Language unchecked"
     status = str(result.get("status") or "unchecked")
     if status == "pass":
-        return "pass", "English ✓ · subs ✓"
+        if result.get("manual_override"):
+            return "pass", "English ✓ · admin confirmed"
+        return "pass", "English ✓" + (" · subs ✓" if result.get("english_subtitles") else "")
     if status == "fail":
         missing = [str(x).lower() for x in (result.get("missing") or [])]
         if result.get("errors") or any("probe failed" in x for x in missing):

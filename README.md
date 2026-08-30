@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.3.0--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.4.0--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -61,6 +61,40 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
 
 ---
+
+## 🆕 Version 10.4 — Archived Media Recovery, Identity Resolution & Language Safety
+
+v10.4 is a field-driven recovery release for the real cases v10.3 exposed: old English media with missing stream-language tags, TV seasons arriving as separate provider packs, RAR-packed Debrid media that never appears in the normal DMM video scan, and archive names too generic to identify safely.
+
+### Archived Media Recovery
+
+- Scan the DMM `__all__` tree for RAR and multipart RAR sets independently of the normal video scanner.
+- Review archive contents, volume count, classification, estimated output size and storage headroom before extraction.
+- Nothing is unpacked automatically. Passworded, unsafe, nested-only and non-media archives remain review-only.
+- Extract reviewed media to a DUMB-visible recovery root (default `/mnt/debrid/arrnexus-extracted`) so recovered files can be symlinked into Sonarr/Radarr libraries.
+- The original provider archive is retained.
+
+### TMDb identity & naming
+
+- Configure a product-wide TMDb API key from Archived Media Recovery.
+- Resolve ambiguous names such as `season-4_202405.rar` to the exact movie/TV identity before extraction.
+- Identity choices are bound to the exact source fingerprint.
+- Item Review includes a **Review naming & import** dialog for correcting title, type and year before import.
+- ArrNexus previews canonical filenames and sends the resolved identity into the real Radarr/Sonarr match/import path.
+
+### Language Guard safety
+
+- `und`, blank, mixed and unknown audio metadata is now **Manual review**, not proof that media is non-English.
+- Explicit non-English metadata with no English track remains a confirmed rejection.
+- Administrators can mark a known old encode as English for that exact source fingerprint.
+- Manual/unknown results can never authorize provider deletion.
+
+### Series-first DMM TV
+
+Multiple provider folders for the same show now collapse under one TV series card with season/source-pack detail instead of appearing as unrelated shows merely because their release folders use different years.
+
+> [!IMPORTANT]
+> RAR inspection/extraction adds an OS-level 7zip dependency. Native application update can install the v10.4 code, but an existing v10.3 container image must be rebuilt/redeployed once before Archived Media Recovery can actually inspect/extract RAR files.
 
 ## 🆕 Version 10.3 — Archive Rescue & Advanced Media Recovery
 
