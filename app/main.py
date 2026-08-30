@@ -101,10 +101,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.4.0-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.4.1-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "10.4.0-beta"
+APP_VERSION = "10.4.1-beta"
 
 
 @app.middleware("http")
@@ -3868,32 +3868,67 @@ async def tv_recovery_split(request: Request):
 
 # ===== ARRNEXUS V10.4 ARCHIVED MEDIA RECOVERY ===============================
 
-async def run_archive_extract_job(job_id: int):
+async def run_archive_verify_job(job_id: int):
     job, items = get_job(job_id)
     if not job:
         return
-    update_job(job_id, status="running", message="RAR extraction in progress")
+    update_job(job_id, status="running", message="RAR media verification in progress")
     completed = failed = 0
     for ji in items:
         iid = int(ji["id"])
         source_path = str(ji.get("source_path") or "")
         try:
-            update_job_item(iid, status="running", stage="inspect", message="Revalidating archive contents and free space")
+            update_job_item(iid, status="running", stage="verify", message="Testing video members only; support files and torrent padding are ignored")
             row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
             if not row:
                 raise RuntimeError("RAR source is no longer present in the DMM source tree")
-            update_job_item(iid, stage="extract", message="Extracting selected RAR to the DUMB-visible recovery root")
-            result = await asyncio.to_thread(archive_media.extract_archive, source_path, expected_fingerprint=str(row.get("fingerprint") or ""))
+            result = await asyncio.to_thread(archive_media.verify_archive_media, source_path, expected_fingerprint=str(row.get("fingerprint") or ""))
+            completed += 1
+            update_job_item(
+                iid, status="complete", stage="complete",
+                message=f"Verified {result.get('verified_count', 0)} media file(s); {result.get('failed_count', 0)} failed; {result.get('untested_count', 0)} unverified",
+            )
+            log_event("info", "archive_recovery", "verify_job_complete", f"Verified {Path(source_path).name}", {"job_id": job_id, "verified": result.get("verified_count", 0), "failed": result.get("failed_count", 0)})
+        except Exception as exc:
+            failed += 1
+            update_job_item(iid, status="error", stage="error", message=str(exc))
+            log_event("error", "archive_recovery", "verify_job_failed", str(exc), {"source": source_path, "job_id": job_id})
+        update_job(job_id, completed=completed, failed=failed, message=f"{completed} verified, {failed} failed")
+    update_job(job_id, status="complete_with_errors" if failed else "complete", completed=completed, failed=failed, message=f"Finished: {completed} archive(s) verified, {failed} failed")
+
+
+async def run_archive_extract_job(job_id: int):
+    job, items = get_job(job_id)
+    if not job:
+        return
+    selection = cache_get(f"archive_recovery:job_selection:{job_id}") or {}
+    selected_media = [str(x) for x in (selection.get("media_paths") or []) if str(x)] if isinstance(selection, dict) else []
+    update_job(job_id, status="running", message="Verified media recovery in progress")
+    completed = failed = 0
+    for ji in items:
+        iid = int(ji["id"])
+        source_path = str(ji.get("source_path") or "")
+        try:
+            update_job_item(iid, status="running", stage="inspect", message="Revalidating archive fingerprint, verification state and free space")
+            row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
+            if not row:
+                raise RuntimeError("RAR source is no longer present in the DMM source tree")
+            update_job_item(iid, stage="extract", message="Recovering selected verified video members only")
+            result = await asyncio.to_thread(
+                archive_media.extract_archive, source_path,
+                expected_fingerprint=str(row.get("fingerprint") or ""), selected_media=selected_media,
+            )
             completed += 1
             target = str(result.get("target") or "")
-            update_job_item(iid, status="complete", stage="complete", message=f"Extracted {result.get('videos', 0)} media file(s) → {target}")
-            log_event("info", "archive_recovery", "job_complete", f"Recovered {Path(source_path).name}", {"target": target, "job_id": job_id})
+            skipped = len(result.get("failed_after_extract") or [])
+            update_job_item(iid, status="complete", stage="complete", message=f"Recovered {result.get('recovered', 0)} verified media file(s); {skipped} skipped → {target}")
+            log_event("info", "archive_recovery", "job_complete", f"Recovered {Path(source_path).name}", {"target": target, "job_id": job_id, "recovered": result.get("recovered", 0), "skipped": skipped})
         except Exception as exc:
             failed += 1
             update_job_item(iid, status="error", stage="error", message=str(exc))
             log_event("error", "archive_recovery", "job_failed", str(exc), {"source": source_path, "job_id": job_id})
-        update_job(job_id, completed=completed, failed=failed, message=f"{completed} extracted, {failed} failed")
-    update_job(job_id, status="complete_with_errors" if failed else "complete", completed=completed, failed=failed, message=f"Finished: {completed} extracted, {failed} failed")
+        update_job(job_id, completed=completed, failed=failed, message=f"{completed} recovered, {failed} failed")
+    update_job(job_id, status="complete_with_errors" if failed else "complete", completed=completed, failed=failed, message=f"Finished: {completed} recovered, {failed} failed")
 
 
 @app.get("/maintenance/archives", response_class=HTMLResponse)
@@ -3977,8 +4012,8 @@ async def archived_media_identity(request: Request):
     return RedirectResponse("/maintenance/archives?inspect_path=" + quote(source_path) + "&notice=" + quote(f"Identity set to {identity['title']}"), status_code=303)
 
 
-@app.post("/maintenance/archives/extract")
-async def archived_media_extract(request: Request):
+@app.post("/maintenance/archives/verify")
+async def archived_media_verify(request: Request):
     require_admin(request)
     form = await request.form()
     source_path = str(form.get("source_path") or "").strip()
@@ -3987,7 +4022,30 @@ async def archived_media_extract(request: Request):
     row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
     if not row:
         raise HTTPException(404, "Archive source was not found")
-    jid = create_job("archive_extract", [{"source_path": source_path, "display_name": Path(source_path).name, "destination_key": "archive-recovery"}])
+    jid = create_job("archive_verify", [{"source_path": source_path, "display_name": Path(source_path).name, "destination_key": "media-only verification"}])
+    _launch(run_archive_verify_job(jid))
+    return RedirectResponse(f"/jobs/{jid}", status_code=303)
+
+
+@app.post("/maintenance/archives/extract")
+async def archived_media_extract(request: Request):
+    require_admin(request)
+    form = await request.form()
+    source_path = str(form.get("source_path") or "").strip()
+    selected_media = [str(x) for x in form.getlist("media_path") if str(x)]
+    if not is_within_logical(source_path, source_root()):
+        raise HTTPException(400, "Invalid archive source")
+    row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
+    if not row:
+        raise HTTPException(404, "Archive source was not found")
+    verification = row.get("verification") if isinstance(row, dict) else None
+    verified = {str(x.get("path") or "") for x in ((verification or {}).get("members") or []) if x.get("status") == "verified"}
+    if not selected_media:
+        raise HTTPException(400, "Select at least one verified media file to recover")
+    if any(x not in verified for x in selected_media):
+        raise HTTPException(400, "Recovery selection contains a failed or unverified media file")
+    jid = create_job("archive_extract", [{"source_path": source_path, "display_name": Path(source_path).name, "destination_key": "verified media only"}])
+    cache_set(f"archive_recovery:job_selection:{jid}", {"media_paths": selected_media, "fingerprint": str(row.get("fingerprint") or "")})
     _launch(run_archive_extract_job(jid))
     return RedirectResponse(f"/jobs/{jid}", status_code=303)
 

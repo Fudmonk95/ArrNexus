@@ -151,7 +151,7 @@ def main() -> int:
             main_app.templates.env.get_template(template.name)
         with TestClient(main_app.app) as client:
             health = client.get("/api/health")
-            require(health.status_code == 200 and health.json().get("version") == "10.4.0-beta", "v10.4 health/version")
+            require(health.status_code == 200 and health.json().get("version") in {"10.4.0-beta", "10.4.1-beta"}, "v10.4 health/version")
             setup = client.post("/setup", data={"username":"v104validator","email":"v104@example.invalid","display_name":"V10.4 Validator","password":"validation-password-123","confirm":"validation-password-123"}, follow_redirects=False)
             require(setup.status_code == 303, "v10.4 administrator setup")
             page = client.get("/maintenance/archives", follow_redirects=False)
@@ -177,8 +177,9 @@ def main() -> int:
     audit = (root/"docs"/"DOCUMENTATION_AUDIT.md").read_text(encoding="utf-8")
     readme = (root/"README.md").read_text(encoding="utf-8")
 
-    for marker in ('APP_VERSION = "10.4.0-beta"', '/maintenance/archives', 'run_archive_extract_job', 'media_identity.search_tmdb'):
+    for marker in ('/maintenance/archives', 'run_archive_extract_job', 'media_identity.search_tmdb'):
         require(marker in main_source, f"v10.4 main marker missing: {marker}")
+    require(('APP_VERSION = "10.4.0-beta"' in main_source) or ('APP_VERSION = "10.4.1-beta"' in main_source), "v10.4+ version marker missing")
     for marker in ('UNKNOWN_LANGUAGE_CODES', 'language_override:v104', 'status = "unknown"'):
         require(marker in (root/"app"/"language_guard.py").read_text(encoding="utf-8"), f"Language Guard v10.4 marker missing: {marker}")
     for marker in ('scan_archives', 'inspect_archive', 'extract_archive', 'path traversal', 'max_extract_bytes', 'identity_required'):
@@ -189,10 +190,10 @@ def main() -> int:
     require('original_provider_source = is_within_logical(source_path, source_root())' in router_source and 'Provider cleanup is not applicable to ArrNexus recovered media' in router_source, "Recovered RAR media can still fall into provider cleanup")
     require('Review naming & import' in item_tpl and 'Mark this source as English' in item_tpl and 'Pre-import naming preview' in item_tpl, "Item Review rename/language override workflow missing")
     require('source packs' in inbox_tpl and 'series_sources' in inbox_tpl, "Series-first TV Inbox grouping UI missing")
-    require('Resolve identity before extraction' in archive_tpl and 'TMDb API key' in archive_tpl, "Ambiguous-RAR/TMDb workflow missing")
+    require(('Resolve identity before extraction' in archive_tpl or 'Resolve identity before recovery' in archive_tpl) and 'TMDb API key' in archive_tpl, "Ambiguous-RAR/TMDb workflow missing")
     require('RAR extractor not installed in this container' in archive_tpl and 'extractor_state' in archive_source, "RAR extractor/rebuild diagnostic missing")
     require('p7zip-full' in docker or '7zip' in docker, "Container does not install a RAR extractor")
-    require('arrnexus-static-v10.4' in sw, "v10.4 service-worker cache marker missing")
+    require(('arrnexus-static-v10.4' in sw) or ('arrnexus-static-v10.4.1' in sw), "v10.4+ service-worker cache marker missing")
     require('Version 10.4' in readme and 'Archived Media Recovery' in readme, "README missing v10.4")
     require('/maintenance/archives' in audit and 'Archived Media Recovery' in guide, "Generated documentation missing v10.4 archive recovery")
     require((root/"docs"/"RELEASE_NOTES_v10.4.md").exists(), "v10.4 release notes missing")

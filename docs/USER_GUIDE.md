@@ -1222,42 +1222,48 @@ Language Guard uses ffprobe against actual stream metadata before a source is li
 
 ## Archived Media Recovery & RAR sources
 
-Archived Media Recovery scans the DMM __all__ tree for RAR/multipart RAR sets that the normal video scanner cannot see, then lets an administrator inspect and explicitly extract only reviewed media archives.
+Archived Media Recovery scans the DMM __all__ tree for RAR/multipart RAR sets that the normal video scanner cannot see. v10.4.1 verifies video members individually and can recover good media from a partially damaged archive without unpacking unrelated files.
 
 ### Before you start
 
 - The RAR source is visible under the configured DMM source root.
-- The v10.4 container includes a supported 7zip/unrar extractor.
-- The recovery root must be DUMB-visible so Sonarr/Jellyfin can resolve recovered media.
+- The v10.4+ container includes a supported 7zip/unrar extractor.
+- The recovered media source root must be DUMB-visible so Sonarr/Jellyfin can resolve recovered media; it is not the final library.
 
 ### Setup
 
 1. Open Archived Media from Library & automation or Maintenance.
-2. Configure the DUMB-visible recovery root, extraction size ceiling and optional TMDb API key.
+2. Configure the DUMB-visible recovered-media source root, per-job media size ceiling and optional TMDb API key.
 
 ### How to use it
 
 - Scan __all__ for archives.
-- Inspect an archive before extraction; ArrNexus lists contents, volume count, estimated output, free space and media classification.
-- For ambiguous names such as season-4_202405.rar, search TMDb and choose the exact movie/TV identity before extracting.
-- Extract only explicitly reviewed archives, then open the recovered source in Item Review for Language Guard and Sonarr/Radarr import.
+- Inspect an archive; torrent padding is hidden and useful partial catalogues are cached by exact source fingerprint.
+- For ambiguous names such as season-4_202405.rar, search TMDb and choose the exact movie/TV identity.
+- Run Verify media files as a background job. Only recognised video members are tested.
+- Return to the archive, choose the verified video members you want and recover them. Failed/unverified members cannot be selected.
+- Open the recovered source in Item Review for Language Guard, TV recovery and Sonarr/Radarr import.
 
 ### What working looks like
 
 - Multipart RAR sets appear once using their first volume.
-- Recovered files live under the configured DUMB-visible root and can be symlinked by ArrNexus.
+- A partial archive can still expose independently verified media members.
+- Only selected verified video files are persisted; XML, SQLite, artwork, nested archives and torrent padding are ignored.
+- Recovered files pass listed-size and ffprobe video validation before commit.
 - TMDb identity drives canonical title/filename previews without renaming the read-only provider source.
 
 ### If it does not work
 
 - Passworded archives and nested-only archives stay Manual review.
-- If no extractor is available, rebuild the v10.4 container because native-update application files cannot add OS packages to an already-running image.
-- If extraction is blocked for space, choose a larger DUMB-visible recovery root or free space.
+- A CRC/data-failed member stays disabled while other verified members remain recoverable.
+- If no extractor is available, rebuild the v10.4+ container image.
+- If recovery is blocked for space, choose a larger DUMB-visible recovered-media source root or free space.
 
 ### Safety / privacy
 
 - Nothing is extracted automatically during normal DMM scanning.
-- Path traversal, archive-created symlinks, unsafe paths and over-limit extraction plans are refused.
+- Only independently verified video members can be recovered.
+- Path traversal, archive-created symlinks, unsafe paths, source fingerprint changes and over-limit plans are refused.
 - The original provider archive is retained.
 
 ### Related guides

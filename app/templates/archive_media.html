@@ -3,7 +3,7 @@
 {% block content %}
 {% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
 {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-{% if extractor_state and not extractor_state.available %}<div class="alert warning"><strong>RAR extractor not installed in this container.</strong> Scanning still works, but archive inspection/extraction requires the v10.4 Docker image rebuild. <small>{{ extractor_state.error }}</small></div>{% endif %}
+{% if extractor_state and not extractor_state.available %}<div class="alert warning"><strong>RAR extractor not installed in this container.</strong> Scanning still works, but archive inspection/recovery requires the v10.4+ Docker image. <small>{{ extractor_state.error }}</small></div>{% endif %}
 
 <div class="panel">
   <div class="panelhead"><div><h2>RAR scanner</h2><p>Scan the DMM <code>__all__</code> source tree for RAR/multipart RAR sets. Nothing is extracted automatically.</p></div><a class="btn primary" href="/maintenance/archives?refresh=1" data-no-soft-nav>Scan __all__ for archives</a></div>
@@ -17,41 +17,85 @@
 
 <details class="panel" {% if not tmdb_configured %}open{% endif %}><summary><strong>Recovery & Metadata API settings</strong></summary>
 <form method="post" action="/maintenance/archives/settings" class="formgrid">
-  <label>Recovery root<input name="recovery_root" value="{{ recovery_root }}"><small>Must be DUMB-visible so Sonarr/Jellyfin can resolve recovered media.</small></label>
-  <label>Maximum extracted size (GB)<input type="number" min="1" max="2000" name="max_extract_gb" value="{{ max_extract_gb }}"></label>
+  <label>Recovered media source root<input name="recovery_root" value="{{ recovery_root }}"><small>Persistent source for recovered video files. Sonarr/Radarr library symlinks point back here; do not set this to the final media library.</small></label>
+  <label>Maximum recovered media per job (GB)<input type="number" min="1" max="2000" name="max_extract_gb" value="{{ max_extract_gb }}"><small>Safety ceiling for selected video files only.</small></label>
   <label>TMDb API key<input type="password" name="tmdb_api_key" placeholder="{{ 'Configured — leave blank to keep' if tmdb_configured else 'Required for title/identity resolver' }}"><small>The same product-wide key can also be reused by Lists.</small></label>
   <div class="formactions"><button class="btn primary" type="submit">Save recovery settings</button></div>
 </form></details>
 
-<div class="panel"><div class="panelhead"><div><h2>Detected archive sets</h2><p>Review contents before extraction. Passworded, unsafe or non-media archives are never automatically unpacked.</p></div></div>
+<div class="panel"><div class="panelhead"><div><h2>Detected archive sets</h2><p>Inspect first, verify video members, then recover only the files you choose. Metadata, artwork, nested archives and torrent padding are never extracted by this workflow.</p></div></div>
 <div class="tablewrap"><table><thead><tr><th>Archive</th><th>Volumes</th><th>Compressed</th><th>Identity</th><th>Status</th><th></th></tr></thead><tbody>
 {% for row in rows %}<tr>
 <td><strong>{{ row.name }}</strong><small class="block muted">{{ row.logical_path }}</small></td>
 <td>{{ row.volumes }}</td><td>{{ row.size|human_size }}</td>
 <td>{% if row.identity %}<strong>{{ row.identity.title }}</strong>{% if row.identity.year %} ({{ row.identity.year }}){% endif %}<small class="block muted">TMDb · {{ row.identity.media_type|upper }}</small>{% else %}<span class="tag amber">Unresolved</span>{% endif %}</td>
-<td>{% if row.extracted %}<span class="tag green">Extracted</span><small class="block muted">{{ row.extracted.videos }} media file(s)</small>{% elif row.ignored %}<span class="tag mutedtag">Ignored</span>{% else %}<span class="tag blue">Review required</span>{% endif %}</td>
-<td><div class="card-actions"><a class="btn small" href="/maintenance/archives?inspect_path={{ row.logical_path|urlencode }}" data-no-soft-nav>Inspect</a>{% if row.extracted and row.extracted.target %}<a class="btn small primary" href="/item?path={{ row.extracted.target|urlencode }}" data-no-soft-nav>Review extracted media</a>{% endif %}<form method="post" action="/maintenance/archives/ignore" class="inline"><input type="hidden" name="source_path" value="{{ row.logical_path }}"><input type="hidden" name="fingerprint" value="{{ row.fingerprint }}"><button class="btn small" name="ignored" value="{{ '0' if row.ignored else '1' }}">{{ 'Restore' if row.ignored else 'Ignore' }}</button></form></div></td>
+<td>
+{% if row.extracted %}<span class="tag green">Recovered</span><small class="block muted">{{ row.extracted.videos }} media file(s) available</small>
+{% elif row.verification %}<span class="tag {{ 'green' if row.verification.verified_count else 'amber' }}">{{ row.verification.verified_count }} verified</span><small class="block muted">{{ row.verification.failed_count }} failed · {{ row.verification.untested_count }} unverified</small>
+{% elif row.ignored %}<span class="tag mutedtag">Ignored</span>
+{% else %}<span class="tag blue">Review required</span>{% endif %}
+</td>
+<td><div class="card-actions"><a class="btn small" href="/maintenance/archives?inspect_path={{ row.logical_path|urlencode }}" data-no-soft-nav>Inspect</a>{% if row.extracted and row.extracted.target %}<a class="btn small primary" href="/item?path={{ row.extracted.target|urlencode }}" data-no-soft-nav>Review recovered media</a>{% endif %}<form method="post" action="/maintenance/archives/ignore" class="inline"><input type="hidden" name="source_path" value="{{ row.logical_path }}"><input type="hidden" name="fingerprint" value="{{ row.fingerprint }}"><button class="btn small" name="ignored" value="{{ '0' if row.ignored else '1' }}">{{ 'Restore' if row.ignored else 'Ignore' }}</button></form></div></td>
 </tr>{% else %}<tr><td colspan="6" class="empty">No first-volume RAR files found. If RD is complete but an item is missing from DMM Inbox, this scan is the place to check for archived payloads.</td></tr>{% endfor %}
 </tbody></table></div></div>
 
 {% if inspection %}
-<div class="panel"><div class="panelhead"><div><h2>{{ inspection.name }}</h2><p>Inspection only — the source has not been changed.</p></div><div class="tags"><span class="tag">{{ inspection.volumes }} volume{{ '' if inspection.volumes==1 else 's' }}</span><span class="tag {{ 'green' if inspection.classification=='media' else 'amber' }}">{{ inspection.classification|replace('_',' ') }}</span></div></div>
-{% if inspection.password_protected %}<div class="alert warning"><strong>Password protected.</strong> ArrNexus will not attempt automatic extraction.</div>{% endif %}
-{% if not inspection.safe %}<div class="alert error"><strong>Unsafe archive paths detected.</strong> Extraction is blocked.</div>{% endif %}
-<div class="stats-grid four"><div class="stat"><span>Entries</span><strong>{{ inspection.entry_count or 0 }}</strong></div><div class="stat"><span>Media files</span><strong>{{ inspection.media_count or 0 }}</strong></div><div class="stat"><span>Nested archives</span><strong>{{ inspection.nested_count or 0 }}</strong></div><div class="stat"><span>Estimated output</span><strong>{{ inspection.unpacked_size|human_size }}</strong></div></div>
-{% if storage %}<div class="alert {{ 'success' if storage.enough else 'error' }}">Recovery storage: <strong>{{ storage.free|human_size }} free</strong> · estimated output {{ storage.required|human_size }} · {{ 'enough space' if storage.enough else 'insufficient safety margin' }}.</div>{% endif %}
+<div class="panel">
+  <div class="panelhead"><div><h2>{{ inspection.name }}</h2><p>Inspection only — the provider archive has not been changed. {% if inspection.cached %}This listing came from the fingerprint cache.{% else %}First inspection took {{ inspection.inspection_seconds }}s and is now cached until the archive changes.{% endif %}</p></div><div class="tags"><span class="tag">{{ inspection.volumes }} volume{{ '' if inspection.volumes==1 else 's' }}</span><span class="tag {{ 'green' if inspection.health=='clean' else 'amber' if inspection.health=='partial' else 'red' }}">{{ inspection.health }} archive</span></div></div>
 
-<div class="grid-2">
-<div><h3>Media identity & naming</h3>
-{% if inspection.identity %}<div class="alert success"><strong>{{ inspection.identity.title }}</strong>{% if inspection.identity.year %} ({{ inspection.identity.year }}){% endif %} · {{ inspection.identity.media_type|upper }} · TMDb {{ inspection.identity.tmdb_id }}<br><small>Recovered files will use this canonical title where episode/season tokens can be proven.</small></div>{% else %}<div class="alert warning"><strong>Identity unresolved.</strong> Generic archive names such as <code>season-4_202405.rar</code> are not safe to guess. Search TMDb and choose the exact show/movie before extraction.</div>{% endif %}
-<form method="get" action="/maintenance/archives" class="formgrid"><input type="hidden" name="inspect_path" value="{{ inspection.logical_path }}"><label>Search TMDb<input name="identity_q" value="{{ identity_q }}" placeholder="e.g. The Queen's Nose"></label><label>Type<select name="identity_type"><option value="tv" {{ 'selected' if identity_type!='movie' }}>TV</option><option value="movie" {{ 'selected' if identity_type=='movie' }}>Movie</option></select></label><div class="formactions"><button class="btn" type="submit">Search identity</button></div></form>
-{% for candidate in identity_results %}<form method="post" action="/maintenance/archives/identity" class="lookup-card"><input type="hidden" name="source_path" value="{{ inspection.logical_path }}"><input type="hidden" name="media_type" value="{{ candidate.media_type }}"><input type="hidden" name="title" value="{{ candidate.title }}"><input type="hidden" name="year" value="{{ candidate.year or '' }}"><input type="hidden" name="tmdb_id" value="{{ candidate.tmdb_id or '' }}"><input type="hidden" name="poster" value="{{ candidate.poster }}"><input type="hidden" name="overview" value="{{ candidate.overview }}"><input type="hidden" name="confidence" value="{{ candidate.confidence }}"><div><strong>{{ candidate.title }}</strong> {% if candidate.year %}({{ candidate.year }}){% endif %}<small class="block muted">TMDb {{ candidate.tmdb_id }} · match confidence {{ candidate.confidence }}%</small></div><button class="btn small primary" type="submit">Use this identity</button></form>{% else %}{% if identity_q %}<p class="muted">No TMDb candidates returned.</p>{% endif %}{% endfor %}
-</div>
-<div><h3>Archive contents</h3><div class="tablewrap"><table><thead><tr><th>Path</th><th>Size</th></tr></thead><tbody>{% for entry in inspection.entries[:100] %}<tr><td>{{ entry.path }}</td><td>{{ entry.size|human_size }}</td></tr>{% else %}<tr><td colspan="2" class="empty">No readable entries.</td></tr>{% endfor %}</tbody></table></div></div>
-</div>
+  {% if inspection.password_protected %}<div class="alert warning"><strong>Password protected.</strong> ArrNexus will not attempt automatic recovery.</div>{% endif %}
+  {% if not inspection.safe %}<div class="alert error"><strong>Unsafe archive paths detected.</strong> Recovery is blocked.</div>{% endif %}
+  {% if inspection.health == 'partial' %}<div class="alert warning"><strong>Archive-level errors were detected, but a usable media catalogue was recovered.</strong> ArrNexus will not trust the archive as a whole. Verify each video member and recover only the members that independently pass.</div>{% endif %}
+  {% if inspection.issues %}<div class="alert warning"><strong>7-Zip report:</strong><ul>{% for issue in inspection.issues %}<li>{{ issue }}</li>{% endfor %}</ul></div>{% endif %}
 
-{% if inspection.identity_required and not inspection.identity %}<div class="alert warning"><strong>Resolve identity before extraction.</strong> This archive name is too generic to name safely.</div>{% endif %}
-<div class="inline-actions">{% if inspection.safe and not inspection.password_protected and inspection.classification == 'media' and storage and storage.enough and (inspection.identity or not inspection.identity_required) %}<form method="post" action="/maintenance/archives/extract" onsubmit="return confirm('Extract this reviewed archive into the ArrNexus recovery root? The original provider archive will be retained.')"><input type="hidden" name="source_path" value="{{ inspection.logical_path }}"><button class="btn primary" type="submit">Extract reviewed archive</button></form>{% endif %}<a class="btn" href="/maintenance/archives">Back to archive list</a></div>
+  <div class="stats-grid four">
+    <div class="stat"><span>Video files</span><strong>{{ inspection.media_count or 0 }}</strong><small>only these are eligible</small></div>
+    <div class="stat"><span>Media output</span><strong>{{ inspection.media_size|human_size }}</strong><small>non-media excluded</small></div>
+    <div class="stat"><span>Padding hidden</span><strong>{{ inspection.padding_count or 0 }}</strong><small>torrent transport artefacts</small></div>
+    <div class="stat"><span>Support files ignored</span><strong>{{ inspection.non_media_count or 0 }}</strong><small>XML, DB, artwork, etc.</small></div>
+  </div>
+  {% if storage %}<div class="alert {{ 'success' if storage.enough else 'error' }}">Recovered media storage: <strong>{{ storage.free|human_size }} free</strong> · listed video size {{ storage.required|human_size }} · {{ 'enough space for the full media set' if storage.enough else 'insufficient safety margin for the full media set' }}.</div>{% endif %}
+
+  <div class="grid-2">
+    <div><h3>Media identity & naming</h3>
+    {% if inspection.identity %}<div class="alert success"><strong>{{ inspection.identity.title }}</strong>{% if inspection.identity.year %} ({{ inspection.identity.year }}){% endif %} · {{ inspection.identity.media_type|upper }} · TMDb {{ inspection.identity.tmdb_id }}<br><small>Every recovered member inherits this show/movie identity while season/episode tokens come from the member filename.</small></div>{% else %}<div class="alert warning"><strong>Identity unresolved.</strong> Generic archive names such as <code>season-4_202405.rar</code> are not safe to guess. Search TMDb and choose the exact show/movie before recovery.</div>{% endif %}
+    <form method="get" action="/maintenance/archives" class="formgrid"><input type="hidden" name="inspect_path" value="{{ inspection.logical_path }}"><label>Search TMDb<input name="identity_q" value="{{ identity_q }}" placeholder="e.g. The Queen's Nose"></label><label>Type<select name="identity_type"><option value="tv" {{ 'selected' if identity_type!='movie' }}>TV</option><option value="movie" {{ 'selected' if identity_type=='movie' }}>Movie</option></select></label><div class="formactions"><button class="btn" type="submit">Search identity</button></div></form>
+    {% for candidate in identity_results %}<form method="post" action="/maintenance/archives/identity" class="lookup-card"><input type="hidden" name="source_path" value="{{ inspection.logical_path }}"><input type="hidden" name="media_type" value="{{ candidate.media_type }}"><input type="hidden" name="title" value="{{ candidate.title }}"><input type="hidden" name="year" value="{{ candidate.year or '' }}"><input type="hidden" name="tmdb_id" value="{{ candidate.tmdb_id or '' }}"><input type="hidden" name="poster" value="{{ candidate.poster }}"><input type="hidden" name="overview" value="{{ candidate.overview }}"><input type="hidden" name="confidence" value="{{ candidate.confidence }}"><div><strong>{{ candidate.title }}</strong> {% if candidate.year %}({{ candidate.year }}){% endif %}<small class="block muted">TMDb {{ candidate.tmdb_id }} · match confidence {{ candidate.confidence }}%</small></div><button class="btn small primary" type="submit">Use this identity</button></form>{% else %}{% if identity_q %}<p class="muted">No TMDb candidates returned.</p>{% endif %}{% endfor %}
+    </div>
+
+    <div><h3>Media-only archive catalogue</h3><div class="tablewrap"><table><thead><tr><th>Video member</th><th>Size</th><th>Verification</th></tr></thead><tbody>
+    {% set verification = inspection.verification %}
+    {% set states = {} %}
+    {% if verification %}{% for member in verification.members %}{% set _ = states.update({member.path: member}) %}{% endfor %}{% endif %}
+    {% for entry in inspection.media %}{% set state = states.get(entry.path) %}<tr><td><strong>{{ entry.path }}</strong></td><td>{{ entry.size|human_size }}</td><td>{% if state and state.status == 'verified' %}<span class="tag green">Verified</span>{% elif state and state.status == 'failed' %}<span class="tag red">Failed</span><small class="block muted">{{ state.error }}</small>{% elif state %}<span class="tag amber">Unverified</span>{% else %}<span class="tag mutedtag">Not tested</span>{% endif %}</td></tr>{% else %}<tr><td colspan="3" class="empty">No recognised video members.</td></tr>{% endfor %}
+    </tbody></table></div></div>
+  </div>
+
+  {% if inspection.identity_required and not inspection.identity %}<div class="alert warning"><strong>Resolve identity before recovery.</strong> This archive name is too generic to name safely.</div>{% endif %}
+
+  {% if inspection.classification == 'media' and inspection.safe and not inspection.password_protected %}
+    {% if not inspection.verification %}
+      <div class="alert"><strong>Next: verify the video members.</strong> This runs as a background job because cloud-backed RAR verification may take several minutes or longer. It tests video members only and does not extract anything.</div>
+      <form method="post" action="/maintenance/archives/verify"><input type="hidden" name="source_path" value="{{ inspection.logical_path }}"><button class="btn primary" type="submit">Verify media files</button></form>
+    {% else %}
+      <div class="alert {{ 'success' if inspection.verification.verified_count else 'warning' }}"><strong>{{ inspection.verification.verified_count }} verified media file(s)</strong> · {{ inspection.verification.failed_count }} failed · {{ inspection.verification.untested_count }} unverified · test took {{ inspection.verification.seconds }}s. Archive exit code {{ inspection.verification.exit_code }} does not override per-file results.</div>
+      {% if inspection.verification.verified_count and (inspection.identity or not inspection.identity_required) %}
+      <form method="post" action="/maintenance/archives/extract" onsubmit="return confirm('Recover only the selected verified video files? The original provider RAR will be retained and support/padding files will not be extracted.')">
+        <input type="hidden" name="source_path" value="{{ inspection.logical_path }}">
+        <div class="tablewrap"><table><thead><tr><th>Recover</th><th>Verified video</th><th>Size</th></tr></thead><tbody>
+        {% for member in inspection.verification.members %}
+          {% if member.status == 'verified' %}<tr><td><input type="checkbox" name="media_path" value="{{ member.path }}" checked aria-label="Recover {{ member.path }}"></td><td><strong>{{ member.path }}</strong></td><td>{{ member.size|human_size }}</td></tr>
+          {% elif member.status == 'failed' %}<tr><td><input type="checkbox" disabled aria-label="Failed {{ member.path }}"></td><td><strong>{{ member.path }}</strong><small class="block muted">{{ member.error }}</small></td><td>{{ member.size|human_size }}</td></tr>{% endif %}
+        {% endfor %}
+        </tbody></table></div>
+        <div class="formactions"><button class="btn primary" type="submit">Recover selected verified media</button></div>
+      </form>
+      {% endif %}
+      <form method="post" action="/maintenance/archives/verify" class="inline"><input type="hidden" name="source_path" value="{{ inspection.logical_path }}"><button class="btn" type="submit">Re-verify media</button></form>
+    {% endif %}
+  {% endif %}
+
+  <div class="inline-actions"><a class="btn" href="/maintenance/archives">Back to archive list</a></div>
 </div>
 {% endif %}
 {% endblock %}

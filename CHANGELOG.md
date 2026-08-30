@@ -1,5 +1,17 @@
 # Changelog
 
+## 10.4.1-beta — Selective RAR Recovery Hotfix
+
+- Changed Archived Media Recovery from whole-archive pass/fail to **member-level video verification and partial recovery**.
+- Added background **Verify media files** jobs so large/cloud-backed RAR integrity checks no longer block the browser request.
+- Archive inspection now preserves useful media catalogues when 7-Zip reports structural errors, while keeping extraction disabled until individual video members are verified.
+- Added exact per-file parsing for CRC/data errors; failed or unverified members cannot be selected for recovery.
+- Recovery now extracts **only selected verified video files**; XML, SQLite, artwork, torrent padding, nested archives and unrelated support files are never unpacked by the normal workflow.
+- Added post-recovery size checks and `ffprobe` video-stream validation before files are committed to the persistent recovered-media root.
+- Added fingerprint-cached archive listings and filtered torrent padding from the normal UI/error output.
+- Clarified **Recovered media source root** semantics: it stores persistent recovered bytes and must not be set to the final Sonarr/Radarr library.
+- Preserved the original provider RAR in all recovery outcomes.
+
 ## 10.4.0-beta — Archived Media Recovery, Identity Resolution & Language Safety
 
 - Fixed Language Guard false rejections for old/archive media whose audio tags are `und`, blank, mixed or unknown; uncertain metadata is Manual review and is never destructive-safe.

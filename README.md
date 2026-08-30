@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.4.0--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.4.1--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -61,6 +61,27 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
 
 ---
+
+## 🛠️ Version 10.4.1 — Selective RAR Recovery Hotfix
+
+v10.4.1 hardens Archived Media Recovery using the real-world Queen's Nose archive failure found during field testing. A damaged member no longer condemns every good video in the RAR, and support/padding files are never extracted by the normal recovery path.
+
+### Media-only recovery
+
+- Archive inspection hides torrent padding and separates video members from XML, SQLite, artwork, nested archives and other support files.
+- Verification runs as a background job and tests only recognised video members.
+- Recovery is per-file: verified members can be recovered even when the archive itself reports structural warnings/errors.
+- Failed CRC/data-error members are disabled and cannot be selected for recovery.
+- Administrators choose exactly which verified video files to recover.
+- Each produced file must match the archive-listed size when available and pass `ffprobe` with a real video stream before ArrNexus commits it to persistent recovery storage.
+- The original provider RAR is always retained.
+
+### Faster, clearer inspection
+
+- A useful RAR catalogue is preserved even when 7-Zip exits non-zero but can still enumerate safe media members.
+- Successful/partial listings are cached by exact source fingerprint, so reopening the same archive does not repeatedly re-read cloud-backed headers.
+- 7-Zip warnings/errors are shown separately from the media list instead of dumping raw padding records into a red exception banner.
+- The recovery-root wording now makes clear that it is the persistent source for recovered video bytes; Sonarr/Radarr library symlinks point back to it.
 
 ## 🆕 Version 10.4 — Archived Media Recovery, Identity Resolution & Language Safety
 

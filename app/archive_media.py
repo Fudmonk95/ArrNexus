@@ -1,9 +1,17 @@
 from __future__ import annotations
 
-"""Review-first RAR discovery and recovery for DMM-visible media sources."""
+"""Review-first, media-only RAR recovery for DMM-visible media sources.
+
+v10.4.1 deliberately treats archive health and member health separately.  A
+structurally imperfect RAR may still contain independently recoverable video
+members.  Only explicitly verified video members are eligible for extraction;
+metadata, artwork, torrent padding and nested archives are never unpacked by the
+normal recovery workflow.
+"""
 
 from pathlib import Path
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -14,12 +22,16 @@ from typing import Any
 from .db import cache_get, cache_set, setting_get, setting_set, log_event, add_activity
 from .namespace import view_path, logical_from_view, is_within_logical
 from .paths import source_root, dumb_root
-from .scanner import VIDEO_EXTS, inspect_item, episode_identity, season_hints
+from .scanner import VIDEO_EXTS, inspect_item
 from . import media_identity
 
 ARCHIVE_EXTS = {".rar"}
 NESTED_ARCHIVE_EXTS = {".rar", ".zip", ".7z", ".tar", ".gz", ".bz2", ".xz"}
 _SCAN_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
+
+# Torrent creators commonly add zero-value padding members so torrent pieces
+# align efficiently.  These are transport artefacts, not useful archive data.
+_PADDING_RE = re.compile(r"^\.*_+padding_file(?:/|$)", re.I)
 
 
 def extraction_root() -> str:
@@ -37,9 +49,9 @@ def max_extract_bytes() -> int:
 def save_settings(*, root: str, max_gb: int) -> None:
     root = str(root or "").strip()
     if not root.startswith("/"):
-        raise ValueError("Archive extraction root must be an absolute DUMB-visible path")
+        raise ValueError("Recovered media source root must be an absolute DUMB-visible path")
     if not is_within_logical(root, dumb_root()):
-        raise ValueError(f"Archive extraction root must live under {dumb_root()} so Sonarr/Jellyfin can resolve recovered media")
+        raise ValueError(f"Recovered media source root must live under {dumb_root()} so Sonarr/Jellyfin can resolve recovered media")
     setting_set("archive_recovery.root", root)
     setting_set("archive_recovery.max_gb", str(max(1, min(2000, int(max_gb or 100)))))
 
@@ -53,7 +65,8 @@ def _first_volume(path: Path) -> bool:
 def _archive_fingerprint(actual: Path) -> str:
     h = hashlib.sha256(str(actual).encode())
     try:
-        st = actual.stat(); h.update(f"{st.st_size}:{int(st.st_mtime)}".encode())
+        st = actual.stat()
+        h.update(f"{st.st_size}:{int(st.st_mtime)}".encode())
     except OSError:
         pass
     return h.hexdigest()
@@ -75,6 +88,14 @@ def _volume_count(actual: Path) -> int:
 
 def _ignored_key(logical_path: str, fingerprint: str) -> str:
     return f"archive_recovery:ignored:{hashlib.sha256(logical_path.encode()).hexdigest()[:20]}:{fingerprint[:24]}"
+
+
+def _inspection_key(fingerprint: str) -> str:
+    return f"archive_recovery:inspect:v1041:{fingerprint}"
+
+
+def _verification_key(fingerprint: str) -> str:
+    return f"archive_recovery:verify:v1041:{fingerprint}"
 
 
 def set_ignored(logical_path: str, fingerprint: str, ignored: bool = True) -> None:
@@ -104,11 +125,13 @@ def scan_archives(force: bool = False, limit: int = 500) -> list[dict[str, Any]]
                 continue
             logical = logical_from_view(actual)
             fp = _archive_fingerprint(actual)
+            verify = cache_get(_verification_key(fp))
             rows.append({
                 "logical_path": str(logical), "name": actual.name, "parent": str(logical.parent),
                 "fingerprint": fp, "size": int(actual.stat().st_size), "volumes": _volume_count(actual),
                 "ignored": is_ignored(str(logical), fp),
                 "identity": media_identity.get_identity(str(logical), fp),
+                "verification": verify if isinstance(verify, dict) else None,
                 "extracted": cache_get(f"archive_recovery:extracted:{fp}"),
             })
     except (OSError, PermissionError):
@@ -126,7 +149,7 @@ def _extractor() -> tuple[str, str]:
     unrar = shutil.which("unrar")
     if unrar:
         return "unrar", unrar
-    raise RuntimeError("No RAR extractor is installed. Rebuild the v10.4 container so 7zip/unrar is available.")
+    raise RuntimeError("No RAR extractor is installed. Rebuild the v10.4+ container so 7zip/unrar is available.")
 
 
 def extractor_state() -> dict[str, Any]:
@@ -137,9 +160,24 @@ def extractor_state() -> dict[str, Any]:
         return {"available": False, "kind": "", "path": "", "error": str(exc)}
 
 
+def _normal_member(value: str) -> str:
+    text = str(value or "").replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    return text
+
+
+def _is_padding_member(name: str) -> bool:
+    return bool(_PADDING_RE.match(_normal_member(name)))
+
+
+def _is_media_member(name: str) -> bool:
+    return Path(_normal_member(name)).suffix.lower() in VIDEO_EXTS
+
+
 def _safe_member(name: str) -> bool:
     clean = str(name or "").replace("\\", "/")
-    if not clean or clean.startswith("/") or re.match(r"^[A-Za-z]:/", clean):
+    if not clean or "\x00" in clean or "\n" in clean or "\r" in clean or clean.startswith("/") or re.match(r"^[A-Za-z]:/", clean):
         return False
     parts = [p for p in clean.split("/") if p not in {"", "."}]
     return ".." not in parts
@@ -148,20 +186,56 @@ def _safe_member(name: str) -> bool:
 def _parse_7z_listing(text: str, archive_path: str = "") -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     current: dict[str, str] = {}
+    archive_name = Path(archive_path).name if archive_path else ""
     for raw in (text or "").splitlines() + [""]:
         line = raw.strip("\r")
         if not line.strip():
             if current.get("Path"):
                 p = current.get("Path", "")
-                if p != archive_path and not (archive_path and Path(p).name == Path(archive_path).name and not rows):
-                    try: size = int(current.get("Size") or 0)
-                    except Exception: size = 0
-                    rows.append({"path": p, "size": size, "attributes": current.get("Attributes", "")})
+                # The first -slt record can describe the archive itself.
+                if p != archive_path and not (archive_name and Path(p).name == archive_name and not rows and "Type" in current):
+                    try:
+                        size = int(current.get("Size") or 0)
+                    except Exception:
+                        size = 0
+                    rows.append({
+                        "path": p,
+                        "size": size,
+                        "packed_size": int(current.get("Packed Size") or 0) if str(current.get("Packed Size") or "").isdigit() else 0,
+                        "attributes": current.get("Attributes", ""),
+                        "encrypted": str(current.get("Encrypted") or "-") not in {"", "-"},
+                        "crc": str(current.get("CRC") or ""),
+                    })
             current = {}
             continue
         if " = " in line:
-            key, value = line.split(" = ", 1); current[key.strip()] = value.strip()
+            key, value = line.split(" = ", 1)
+            current[key.strip()] = value.strip()
     return rows
+
+
+def _archive_issue_lines(stdout: str, stderr: str) -> list[str]:
+    """Extract useful 7-Zip warnings/errors without mistaking CRC metadata for errors."""
+    lines: list[str] = []
+    seen: set[str] = set()
+    for raw in ((stderr or "") + "\n" + (stdout or "")).splitlines():
+        line = " ".join(raw.strip().split())
+        lower = line.lower()
+        if not line:
+            continue
+        if lower.startswith("error:") or lower.startswith("errors:") or lower.startswith("warning:") or lower.startswith("warnings:"):
+            # Header-only lines are not useful by themselves.
+            if line.endswith(":"):
+                continue
+        elif not any(token in lower for token in (
+            "unexpected end of archive", "data after the end of archive", "crc failed", "data error", "headers error",
+            "cannot open", "wrong password", "password", "is not archive", "unexpected end of data",
+        )):
+            continue
+        if line not in seen:
+            lines.append(line)
+            seen.add(line)
+    return lines[:40]
 
 
 def identity_required_for_name(value: str) -> bool:
@@ -173,46 +247,215 @@ def identity_required_for_name(value: str) -> bool:
     return len(re.sub(r"[^a-z0-9]+", "", stem)) < 6
 
 
-def inspect_archive(logical_path: str) -> dict[str, Any]:
+def inspect_archive(logical_path: str, *, force: bool = False) -> dict[str, Any]:
+    """List an archive without extracting it.
+
+    A non-zero 7-Zip status no longer destroys a useful listing.  If media
+    members can be enumerated safely, the result is returned as ``partial`` and
+    those members can be independently verified before extraction.
+    """
     if not is_within_logical(logical_path, source_root()):
         raise RuntimeError("Archive is outside the configured DMM source root")
     actual = view_path(logical_path)
     if not actual.is_file() or actual.suffix.lower() != ".rar":
         raise RuntimeError("RAR source is not available")
     fp = _archive_fingerprint(actual)
+    if not force:
+        cached = cache_get(_inspection_key(fp))
+        if isinstance(cached, dict) and cached.get("fingerprint") == fp:
+            cached["identity"] = media_identity.get_identity(logical_path, fp)
+            cached["verification"] = cache_get(_verification_key(fp))
+            cached["cached"] = True
+            return cached
+
     kind, exe = _extractor()
+    started = time.monotonic()
     if kind == "7z":
-        proc = subprocess.run([exe, "l", "-slt", "-ba", str(actual)], capture_output=True, text=True, timeout=90, check=False)
+        proc = subprocess.run([exe, "l", "-slt", "-ba", str(actual)], capture_output=True, text=True, timeout=180, check=False)
         combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        if "password" in combined.lower() and proc.returncode != 0:
-            return {"logical_path": logical_path, "fingerprint": fp, "password_protected": True, "entries": [], "safe": False, "classification": "password"}
-        if proc.returncode != 0:
-            raise RuntimeError("RAR inspection failed: " + " ".join(combined.split())[:600])
         entries = _parse_7z_listing(proc.stdout or "", str(actual))
     else:
-        proc = subprocess.run([exe, "lb", "-c-", str(actual)], capture_output=True, text=True, timeout=90, check=False)
+        proc = subprocess.run([exe, "lb", "-c-", str(actual)], capture_output=True, text=True, timeout=180, check=False)
         combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        if proc.returncode != 0:
-            if "password" in combined.lower():
-                return {"logical_path": logical_path, "fingerprint": fp, "password_protected": True, "entries": [], "safe": False, "classification": "password"}
-            raise RuntimeError("RAR inspection failed: " + " ".join(combined.split())[:600])
-        entries = [{"path": x.strip(), "size": 0, "attributes": ""} for x in (proc.stdout or "").splitlines() if x.strip()]
+        entries = [{"path": x.strip(), "size": 0, "packed_size": 0, "attributes": "", "encrypted": False, "crc": ""} for x in (proc.stdout or "").splitlines() if x.strip()]
 
-    unsafe = [x for x in entries if not _safe_member(x.get("path", ""))]
-    media = [x for x in entries if Path(x.get("path", "")).suffix.lower() in VIDEO_EXTS]
-    nested = [x for x in entries if Path(x.get("path", "")).suffix.lower() in NESTED_ARCHIVE_EXTS]
-    unpacked = sum(max(0, int(x.get("size") or 0)) for x in entries)
-    classification = "media" if media else "nested" if nested else "non_media"
+    elapsed = round(time.monotonic() - started, 2)
+    password = "password" in combined.lower() and proc.returncode != 0
+    padding = [x for x in entries if _is_padding_member(x.get("path", ""))]
+    visible = [x for x in entries if not _is_padding_member(x.get("path", ""))]
+    unsafe = [x for x in visible if not _safe_member(x.get("path", ""))]
+    media = [x for x in visible if _is_media_member(x.get("path", ""))]
+    nested = [x for x in visible if Path(x.get("path", "")).suffix.lower() in NESTED_ARCHIVE_EXTS]
+    non_media = [x for x in visible if x not in media and x not in nested]
+    media_size = sum(max(0, int(x.get("size") or 0)) for x in media)
+    issues = _archive_issue_lines(proc.stdout or "", proc.stderr or "")
+
+    if password:
+        classification = "password"
+        health = "failed"
+    elif media:
+        classification = "media"
+        health = "clean" if proc.returncode == 0 and not issues else "partial"
+    elif nested:
+        classification = "nested"
+        health = "failed" if proc.returncode else "clean"
+    else:
+        classification = "non_media"
+        health = "failed" if proc.returncode else "clean"
+
+    # No member list at all is a genuine inspection failure.  A useful media
+    # listing with structural warnings is intentionally preserved for per-file
+    # verification (the Queen's Nose field case).
+    if proc.returncode != 0 and not entries and not password:
+        detail = "; ".join(issues) or "7-Zip returned no usable member listing"
+        raise RuntimeError(f"RAR inspection failed (exit {proc.returncode}): {detail}")
+
     identity = media_identity.get_identity(logical_path, fp)
     result = {
-        "logical_path": logical_path, "name": actual.name, "fingerprint": fp,
-        "entries": entries[:2000], "entry_count": len(entries), "media": media[:500], "media_count": len(media),
-        "nested_count": len(nested), "unpacked_size": unpacked, "safe": not unsafe,
-        "unsafe_entries": unsafe[:20], "password_protected": False, "classification": classification,
-        "volumes": _volume_count(actual), "identity": identity,
+        "logical_path": logical_path,
+        "name": actual.name,
+        "fingerprint": fp,
+        "entries": visible[:2000],
+        "entry_count": len(visible),
+        "archive_entry_count": len(entries),
+        "padding_count": len(padding),
+        "non_media_count": len(non_media),
+        "media": media[:1000],
+        "media_count": len(media),
+        "nested_count": len(nested),
+        # v10.4 templates used unpacked_size.  In v10.4.1 this deliberately
+        # means media-only output because non-media members are never extracted.
+        "unpacked_size": media_size,
+        "media_size": media_size,
+        "safe": not unsafe,
+        "unsafe_entries": unsafe[:20],
+        "password_protected": password,
+        "classification": classification,
+        "health": health,
+        "exit_code": int(proc.returncode),
+        "issues": issues,
+        "inspection_seconds": elapsed,
+        "volumes": _volume_count(actual),
+        "identity": identity,
         "identity_required": identity_required_for_name(actual.name),
+        "verification": cache_get(_verification_key(fp)),
+        "cached": False,
     }
-    cache_set(f"archive_recovery:inspect:{fp}", result)
+    cache_set(_inspection_key(fp), result)
+    return result
+
+
+def _parse_7z_test_output(stdout: str, stderr: str, media: list[dict[str, Any]], exit_code: int) -> dict[str, Any]:
+    """Convert 7-Zip test output into member-level verified/failed status."""
+    by_norm = {_normal_member(x.get("path", "")): dict(x) for x in media}
+    tested: set[str] = set()
+    failed: dict[str, str] = {}
+
+    for raw in (stdout or "").splitlines():
+        line = raw.strip()
+        if line.startswith("T "):
+            name = _normal_member(line[2:].strip())
+            if name in by_norm:
+                tested.add(name)
+
+    fail_patterns = (
+        re.compile(r"(?i)(?:ERROR:\s*)?CRC Failed\s*:\s*(.+)$"),
+        re.compile(r"(?i)(?:ERROR:\s*)?Data Error\s*:\s*(.+)$"),
+        re.compile(r"(?i)Unexpected end of data\s*:\s*(.+)$"),
+    )
+    for raw in ((stderr or "") + "\n" + (stdout or "")).splitlines():
+        line = raw.strip()
+        for pattern in fail_patterns:
+            m = pattern.search(line)
+            if not m:
+                continue
+            name = _normal_member(m.group(1).strip())
+            # 7-Zip sometimes prefixes paths.  Match exact normalized member or
+            # an unambiguous suffix.
+            match = name if name in by_norm else next((key for key in by_norm if key.endswith("/" + name) or key == name), "")
+            if match:
+                failed[match] = line
+            break
+
+    if int(exit_code) == 0:
+        verified = set(by_norm) - set(failed)
+    else:
+        # With a structurally damaged archive, only members explicitly reached
+        # by 7-Zip's test pass can be trusted.  This is the safety boundary that
+        # permits partial recovery without blessing untested tail members.
+        verified = tested - set(failed)
+
+    members: list[dict[str, Any]] = []
+    for key, row in by_norm.items():
+        item = dict(row)
+        if key in failed:
+            item.update({"status": "failed", "error": failed[key]})
+        elif key in verified:
+            item.update({"status": "verified", "error": ""})
+        else:
+            item.update({"status": "untested", "error": "Not independently verified"})
+        members.append(item)
+
+    return {
+        "members": members,
+        "verified_count": sum(1 for x in members if x["status"] == "verified"),
+        "failed_count": sum(1 for x in members if x["status"] == "failed"),
+        "untested_count": sum(1 for x in members if x["status"] == "untested"),
+        "issues": _archive_issue_lines(stdout, stderr),
+        "exit_code": int(exit_code),
+    }
+
+
+def verify_archive_media(logical_path: str, *, expected_fingerprint: str = "") -> dict[str, Any]:
+    """Test video members only and cache per-file recovery eligibility."""
+    plan = inspect_archive(logical_path)
+    if expected_fingerprint and plan.get("fingerprint") != expected_fingerprint:
+        raise RuntimeError("RAR source changed after preview; inspect it again")
+    if plan.get("password_protected"):
+        raise RuntimeError("Password-protected RAR requires manual review")
+    if not plan.get("safe"):
+        raise RuntimeError("RAR contains unsafe paths and cannot be verified automatically")
+    media = list(plan.get("media") or [])
+    if not media:
+        raise RuntimeError("RAR contains no recognised video media")
+
+    actual = view_path(logical_path)
+    kind, exe = _extractor()
+    started = time.monotonic()
+    if kind == "7z":
+        # Supplying exact member paths after the archive means XML, SQLite,
+        # artwork, padding and nested archives are never read as recovery items.
+        cmd = [exe, "t", "-bb1", "-spd", str(actual)] + [str(x.get("path") or "") for x in media]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60 * 60 * 6, check=False)
+        parsed = _parse_7z_test_output(proc.stdout or "", proc.stderr or "", media, proc.returncode)
+    else:
+        # unrar output is less structured.  Only a completely clean run can
+        # verify all requested media; otherwise fail closed to untested.
+        cmd = [exe, "t", "-c-", str(actual)] + [str(x.get("path") or "") for x in media]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60 * 60 * 6, check=False)
+        members = []
+        for row in media:
+            members.append({**row, "status": "verified" if proc.returncode == 0 else "untested", "error": "" if proc.returncode == 0 else "unrar did not return a clean verification result"})
+        parsed = {
+            "members": members,
+            "verified_count": sum(1 for x in members if x["status"] == "verified"),
+            "failed_count": 0,
+            "untested_count": sum(1 for x in members if x["status"] == "untested"),
+            "issues": _archive_issue_lines(proc.stdout or "", proc.stderr or ""),
+            "exit_code": int(proc.returncode),
+        }
+
+    result = {
+        "logical_path": logical_path,
+        "fingerprint": plan["fingerprint"],
+        "tested_at": time.time(),
+        "seconds": round(time.monotonic() - started, 2),
+        **parsed,
+    }
+    cache_set(_verification_key(plan["fingerprint"]), result)
+    log_event("info", "archive_recovery", "verified", f"Verified media in {Path(logical_path).name}", {
+        "verified": result["verified_count"], "failed": result["failed_count"], "untested": result["untested_count"], "exit_code": result["exit_code"],
+    })
     return result
 
 
@@ -226,7 +469,7 @@ def _target_logical(logical_path: str, fingerprint: str, identity: dict[str, Any
 def storage_state(required_bytes: int = 0) -> dict[str, Any]:
     root = Path(extraction_root())
     if not is_within_logical(root, dumb_root()):
-        raise RuntimeError("Configured extraction root is outside the DUMB-visible filesystem")
+        raise RuntimeError("Configured recovered media source root is outside the DUMB-visible filesystem")
     actual = view_path(root)
     actual.mkdir(parents=True, exist_ok=True)
     usage = shutil.disk_usage(actual)
@@ -236,7 +479,7 @@ def storage_state(required_bytes: int = 0) -> dict[str, Any]:
 def _post_extract_rename(actual_root: Path, identity: dict[str, Any] | None) -> list[dict[str, str]]:
     if not identity:
         return []
-    changes = []
+    changes: list[dict[str, str]] = []
     fallback_seasons: list[int] = []
     for file in sorted(actual_root.rglob("*")):
         if not file.is_file() or file.suffix.lower() not in VIDEO_EXTS:
@@ -247,11 +490,52 @@ def _post_extract_rename(actual_root: Path, identity: dict[str, Any] | None) -> 
         target = file.with_name(new_name)
         if target.exists():
             continue
-        file.rename(target); changes.append({"from": file.name, "to": target.name})
+        file.rename(target)
+        changes.append({"from": file.name, "to": target.name})
     return changes
 
 
-def extract_archive(logical_path: str, *, expected_fingerprint: str = "") -> dict[str, Any]:
+def _ffprobe_media(path: Path) -> tuple[bool, str]:
+    exe = shutil.which("ffprobe")
+    if not exe:
+        return False, "ffprobe is not installed"
+    try:
+        proc = subprocess.run(
+            [exe, "-v", "error", "-show_entries", "stream=codec_type:format=duration", "-of", "json", str(path)],
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "ffprobe timed out"
+    if proc.returncode != 0:
+        return False, "ffprobe could not read the recovered file"
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except Exception:
+        return False, "ffprobe returned invalid metadata"
+    if not any(str(x.get("codec_type") or "") == "video" for x in payload.get("streams") or []):
+        return False, "No video stream was found"
+    return True, ""
+
+
+def _unique_target(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem, suffix = path.stem, path.suffix
+    for n in range(2, 1000):
+        candidate = path.with_name(f"{stem} (recovered {n}){suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"Could not choose a unique recovered filename for {path.name}")
+
+
+def extract_archive(logical_path: str, *, expected_fingerprint: str = "", selected_media: list[str] | None = None) -> dict[str, Any]:
+    """Extract only explicitly verified video members.
+
+    Archive-level exit codes are not used as the final success criterion for a
+    partial recovery.  Every produced file must match the listed size (when
+    available) and pass ffprobe before it is committed to persistent recovery
+    storage.
+    """
     plan = inspect_archive(logical_path)
     if expected_fingerprint and plan["fingerprint"] != expected_fingerprint:
         raise RuntimeError("RAR source changed after preview; scan/inspect it again")
@@ -260,15 +544,30 @@ def extract_archive(logical_path: str, *, expected_fingerprint: str = "") -> dic
     if not plan.get("safe"):
         raise RuntimeError("RAR contains unsafe paths and will not be extracted")
     if plan.get("classification") != "media":
-        raise RuntimeError("RAR does not directly contain recognised video media. Nested/non-media archives require manual review and are not recursively unpacked.")
+        raise RuntimeError("RAR does not directly contain recognised video media. Nested/non-media archives are not recursively unpacked.")
     if plan.get("identity_required") and not plan.get("identity"):
-        raise RuntimeError("This archive name is ambiguous. Resolve its movie/TV identity before extraction so recovered media is named safely.")
-    required = int(plan.get("unpacked_size") or 0)
+        raise RuntimeError("This archive name is ambiguous. Resolve its movie/TV identity before recovery so recovered media is named safely.")
+
+    verification = cache_get(_verification_key(plan["fingerprint"]))
+    if not isinstance(verification, dict) or verification.get("fingerprint") != plan["fingerprint"]:
+        raise RuntimeError("Verify the archive's media files before recovery")
+    verified_rows = {str(x.get("path") or ""): x for x in verification.get("members") or [] if x.get("status") == "verified"}
+    if not verified_rows:
+        raise RuntimeError("No independently verified media files are available for recovery")
+
+    requested = [str(x) for x in (selected_media or []) if str(x)]
+    if not requested:
+        requested = list(verified_rows)
+    unknown = [x for x in requested if x not in verified_rows]
+    if unknown:
+        raise RuntimeError("Recovery selection contains unverified or failed media: " + ", ".join(unknown[:5]))
+
+    required = sum(max(0, int(verified_rows[x].get("size") or 0)) for x in requested)
     if required and required > max_extract_bytes():
-        raise RuntimeError(f"Archive expands beyond the configured {max_extract_bytes()/1024**3:.0f} GB safety limit")
+        raise RuntimeError(f"Selected media exceeds the configured {max_extract_bytes()/1024**3:.0f} GB recovery safety limit")
     space = storage_state(required)
     if not space["enough"]:
-        raise RuntimeError("Not enough free space in the archive recovery root")
+        raise RuntimeError("Not enough free space in the recovered media source root")
 
     actual_archive = view_path(logical_path)
     identity = plan.get("identity")
@@ -281,32 +580,95 @@ def extract_archive(logical_path: str, *, expected_fingerprint: str = "") -> dic
 
     kind, exe = _extractor()
     if kind == "7z":
-        cmd = [exe, "x", "-y", f"-o{partial}", str(actual_archive)]
+        cmd = [exe, "x", "-y", "-spd", f"-o{partial}", str(actual_archive)] + requested
     else:
-        cmd = [exe, "x", "-o+", str(actual_archive), str(partial) + os.sep]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60 * 60 * 4, check=False)
-    if proc.returncode != 0:
-        raise RuntimeError("RAR extraction failed: " + " ".join(((proc.stderr or proc.stdout) or "unknown error").split())[:700])
+        cmd = [exe, "x", "-o+", str(actual_archive)] + requested + [str(partial) + os.sep]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60 * 60 * 6, check=False)
+    extract_issues = _archive_issue_lines(proc.stdout or "", proc.stderr or "")
 
     resolved = partial.resolve()
     for p in partial.rglob("*"):
         if p.is_symlink():
-            shutil.rmtree(partial, ignore_errors=True); raise RuntimeError("RAR created a symlink; extraction was discarded")
+            shutil.rmtree(partial, ignore_errors=True)
+            raise RuntimeError("RAR created a symlink; recovery was discarded")
         try:
             p.resolve().relative_to(resolved)
         except ValueError:
-            shutil.rmtree(partial, ignore_errors=True); raise RuntimeError("RAR attempted path traversal; extraction was discarded")
+            shutil.rmtree(partial, ignore_errors=True)
+            raise RuntimeError("RAR attempted path traversal; recovery was discarded")
+
+    # Validate exactly the requested media outputs.  A global 7-Zip exit 2 can
+    # coexist with good independent members, so commit only members that prove
+    # themselves here.
+    good_files: list[Path] = []
+    failed_after_extract: list[dict[str, str]] = []
+    for member in requested:
+        row = verified_rows[member]
+        candidate = partial.joinpath(*Path(_normal_member(member)).parts)
+        if not candidate.is_file():
+            failed_after_extract.append({"path": member, "error": "7-Zip did not produce this file"})
+            continue
+        expected_size = int(row.get("size") or 0)
+        if expected_size and candidate.stat().st_size != expected_size:
+            failed_after_extract.append({"path": member, "error": f"Recovered size {candidate.stat().st_size} does not match expected {expected_size}"})
+            candidate.unlink(missing_ok=True)
+            continue
+        ok, reason = _ffprobe_media(candidate)
+        if not ok:
+            failed_after_extract.append({"path": member, "error": reason})
+            candidate.unlink(missing_ok=True)
+            continue
+        good_files.append(candidate)
+
+    # Never persist transport/support members even if a future extractor emits
+    # extras unexpectedly.
+    for p in list(partial.rglob("*")):
+        if p.is_file() and p not in good_files:
+            p.unlink(missing_ok=True)
+
+    if not good_files:
+        shutil.rmtree(partial, ignore_errors=True)
+        detail = "; ".join(x["error"] for x in failed_after_extract[:3]) or "; ".join(extract_issues[:3]) or f"7-Zip exit {proc.returncode}"
+        raise RuntimeError("RAR recovery produced no valid media files: " + detail)
 
     renamed = _post_extract_rename(partial, identity)
-    videos = [p for p in partial.rglob("*") if p.is_file() and p.suffix.lower() in VIDEO_EXTS]
-    if not videos:
-        raise RuntimeError("Extraction completed but no recognised video files were produced")
-    if target_actual.exists():
-        shutil.rmtree(target_actual, ignore_errors=True)
-    partial.rename(target_actual)
+    good_files = [p for p in partial.rglob("*") if p.is_file() and p.suffix.lower() in VIDEO_EXTS]
+    target_actual.mkdir(parents=True, exist_ok=True)
+    committed: list[str] = []
+    for file in good_files:
+        rel = file.relative_to(partial)
+        dest = target_actual / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists() and dest.stat().st_size == file.stat().st_size:
+            file.unlink(missing_ok=True)
+            committed.append(str(dest.relative_to(target_actual)))
+            continue
+        dest = _unique_target(dest)
+        shutil.move(str(file), str(dest))
+        committed.append(str(dest.relative_to(target_actual)))
+    shutil.rmtree(partial, ignore_errors=True)
+
     item = inspect_item(target_logical)
-    log_event("info", "archive_recovery", "extracted", f"Extracted {Path(logical_path).name}", {"target": str(target_logical), "videos": len(videos)})
-    add_activity("archive_recovery", (identity or {}).get("title") or Path(logical_path).stem, f"Extracted {len(videos)} media file(s)", str(target_logical))
-    result = {"ok": True, "source": logical_path, "target": str(target_logical), "videos": len(videos), "renamed": renamed, "item": item.dict(), "identity": identity}
+    total_videos = len([p for p in target_actual.rglob("*") if p.is_file() and p.suffix.lower() in VIDEO_EXTS])
+    log_event("info", "archive_recovery", "extracted", f"Recovered media from {Path(logical_path).name}", {
+        "target": str(target_logical), "recovered": len(committed), "videos": total_videos, "skipped": len(failed_after_extract), "7z_exit": proc.returncode,
+    })
+    add_activity("archive_recovery", (identity or {}).get("title") or Path(logical_path).stem, f"Recovered {len(committed)} verified media file(s)", str(target_logical))
+    result = {
+        "ok": True,
+        "source": logical_path,
+        "target": str(target_logical),
+        "videos": total_videos,
+        "recovered": len(committed),
+        "committed": committed,
+        "failed_after_extract": failed_after_extract,
+        "archive_exit_code": int(proc.returncode),
+        "archive_issues": extract_issues,
+        "renamed": renamed,
+        "item": item.dict(),
+        "identity": identity,
+        "source_retained": True,
+        "media_only": True,
+    }
     cache_set(f"archive_recovery:extracted:{plan['fingerprint']}", result)
     return result
