@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import os
-from .scanner import video_files, episode_season
+from .scanner import video_files, episode_season, EPISODE_RE
 from .namespace import view_path, logical_from_view
 from .config import settings
 
@@ -35,7 +35,12 @@ def ensure_logical_dir(path: Path):
     view_path(path).mkdir(parents=True, exist_ok=True)
 
 
-def import_movie_source(source: str, destination_dir: str) -> list[str]:
+def _safe_media_name(value: str) -> str:
+    # Keep normal punctuation but avoid path separators/control characters.
+    return "".join(ch for ch in value if ch not in "\\/:*?\"<>|" and ord(ch) >= 32).strip().rstrip(".")
+
+
+def import_movie_source(source: str, destination_dir: str, canonical_title: str = "", year: int | None = None) -> list[str]:
     src = Path(source)
     dest = Path(destination_dir)
     files = video_files(src)
@@ -43,26 +48,39 @@ def import_movie_source(source: str, destination_dir: str) -> list[str]:
         raise ImportErrorSafe("No video files found")
     ensure_logical_dir(dest)
     created = []
-    for f in files:
-        out = dest / f.name
+    base = _safe_media_name(canonical_title or dest.name)
+    if year and f"({year})" not in base:
+        base = f"{base} ({year})"
+    for idx, f in enumerate(files, start=1):
+        suffix = f.suffix.lower() or f.suffix
+        clean = f"{base}{suffix}" if len(files) == 1 else f"{base} - Part {idx:02d}{suffix}"
+        out = dest / clean
         result = make_symlink(f, out)
         if result in {"created", "exists"}:
             created.append(str(out))
     return created
 
 
-def import_tv_source(source: str, series_path: str) -> list[str]:
+def import_tv_source(source: str, series_path: str, canonical_title: str = "") -> list[str]:
     src = Path(source)
     series = Path(series_path)
     files = video_files(src)
     if not files:
         raise ImportErrorSafe("No video files found")
     created = []
-    for f in files:
+    show = _safe_media_name(canonical_title or series.name)
+    used = set()
+    for idx, f in enumerate(files, start=1):
         season = episode_season(f.name)
         if season is None:
             raise ImportErrorSafe(f"Cannot determine season from: {f.name}")
-        dest = series / f"Season {season:02d}" / f.name
+        m = EPISODE_RE.search(f.name)
+        token = m.group(0).upper().replace("X", "x") if m else f"S{season:02d}E{idx:02d}"
+        clean = f"{show} - {token}{f.suffix.lower()}"
+        if clean.lower() in used:
+            clean = f"{show} - {token} - {idx:02d}{f.suffix.lower()}"
+        used.add(clean.lower())
+        dest = series / f"Season {season:02d}" / clean
         result = make_symlink(f, dest)
         if result in {"created", "exists"}:
             created.append(str(dest))

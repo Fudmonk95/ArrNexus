@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block heading %}Profile{% endblock %}
+{% block content %}
+{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+<div class="profile-layout">
+  <section class="panel profile-summary"><div class="profile-avatar">{{ (user.display_name or user.username)[:2]|upper }}</div><h2>{{ user.display_name or user.username }}</h2><p>{{ user.email or 'No email configured' }}</p><div class="tags"><span class="tag green">{{ user.role }}</span><span class="tag blue">{{ user.theme }}</span></div></section>
+  <section class="panel"><div class="panelhead"><div><h2>Account & appearance</h2><p>Your email can also be used on the login screen. Theme and dashboard layout are saved per profile.</p></div></div>
+    <form method="post" class="formgrid">
+      <div class="grid-2 form-columns"><label>Username<input name="username" required value="{{ user.username }}"></label><label>Email address<input type="email" name="email" value="{{ user.email or '' }}" placeholder="you@example.com"></label></div>
+      <label>Display name<input name="display_name" value="{{ user.display_name or user.username }}"></label>
+      <div class="grid-2 form-columns"><label>Theme<select name="theme" onchange="previewTheme(this.value)">{% for key,label in themes %}<option value="{{ key }}" {{ 'selected' if user.theme==key }}>{{ label }}</option>{% endfor %}</select></label><label>Dashboard layout<select name="dashboard_layout"><option value="default" {{ 'selected' if user.dashboard_layout=='default' }}>Balanced</option><option value="compact" {{ 'selected' if user.dashboard_layout=='compact' }}>Compact operations</option><option value="visual" {{ 'selected' if user.dashboard_layout=='visual' }}>Visual / charts first</option></select></label></div>
+      <label>New password <small>Leave blank to keep your current password.</small><input type="password" name="password" autocomplete="new-password"></label>
+      <div class="formactions"><button class="btn primary">Save profile</button></div>
+    </form>
+  </section>
+</div>
+<div class="panel"><h2>Theme gallery</h2><p>These are ArrNexus themes, inspired by familiar media apps without copying their interfaces.</p><div class="theme-grid">{% for key,label in themes %}<div class="theme-swatch theme-{{ key }}"><span></span><strong>{{ label }}</strong><small>{{ key }}</small></div>{% endfor %}</div></div>
+{% endblock %}

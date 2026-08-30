@@ -1,6 +1,12 @@
 from __future__ import annotations
 import json
 import sqlite3
+import os
+import hashlib
+import hmac
+import base64
+import time
+import secrets
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from .config import settings
@@ -89,6 +95,49 @@ CREATE TABLE IF NOT EXISTS metadata_cache (
     payload TEXT NOT NULL,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    secret INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    email TEXT UNIQUE,
+    display_name TEXT,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'admin',
+    theme TEXT NOT NULL DEFAULT 'nexus',
+    dashboard_layout TEXT NOT NULL DEFAULT 'default',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    media_type TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    year INTEGER,
+    destination_key TEXT,
+    arr_instance TEXT,
+    arr_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'requested',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(media_type, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS password_resets (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    expires_at REAL NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 """
 
 
@@ -122,6 +171,7 @@ def init_db():
         conn.executescript(SCHEMA)
         _migrate(conn)
         conn.commit()
+    ensure_user(settings.username, settings.password)
 
 
 @contextmanager
@@ -357,3 +407,189 @@ def cache_set(key: str, payload):
             """,
             (key, json.dumps(payload), _utcnow()),
         )
+
+
+# ---- v2 settings, users and request tracking ---------------------------------
+
+def _hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    rounds = 240_000
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds)
+    return f"pbkdf2_sha256${rounds}${base64.b64encode(salt).decode()}${base64.b64encode(digest).decode()}"
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    try:
+        alg, rounds, salt64, digest64 = stored.split("$", 3)
+        if alg != "pbkdf2_sha256":
+            return False
+        salt = base64.b64decode(salt64)
+        expected = base64.b64decode(digest64)
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(rounds))
+        return hmac.compare_digest(actual, expected)
+    except Exception:
+        return False
+
+
+def ensure_user(username: str, password: str):
+    username = (username or "admin").strip() or "admin"
+    with db() as conn:
+        row = conn.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+        if not row:
+            conn.execute(
+                "INSERT INTO users(username,display_name,password_hash,role,theme) VALUES(?,?,?,?,?)",
+                (username, username, _hash_password(password or "change-me"), "admin", "nexus"),
+            )
+
+
+def authenticate_user(identity: str, password: str):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE lower(username)=lower(?) OR lower(COALESCE(email,''))=lower(?) LIMIT 1",
+            (identity.strip(), identity.strip()),
+        ).fetchone()
+    if row and _verify_password(password, row["password_hash"]):
+        return dict(row)
+    return None
+
+
+def get_user(user_id: int):
+    with db() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id=?", (int(user_id),)).fetchone()
+    return dict(row) if row else None
+
+
+def update_user(user_id: int, username: str, email: str, display_name: str, theme: str, dashboard_layout: str, password: str = ""):
+    with db() as conn:
+        if password:
+            conn.execute(
+                "UPDATE users SET username=?,email=?,display_name=?,theme=?,dashboard_layout=?,password_hash=?,updated_at=? WHERE id=?",
+                (username.strip(), email.strip() or None, display_name.strip(), theme, dashboard_layout, _hash_password(password), _utcnow(), int(user_id)),
+            )
+        else:
+            conn.execute(
+                "UPDATE users SET username=?,email=?,display_name=?,theme=?,dashboard_layout=?,updated_at=? WHERE id=?",
+                (username.strip(), email.strip() or None, display_name.strip(), theme, dashboard_layout, _utcnow(), int(user_id)),
+            )
+
+
+def setting_get(key: str, default: str = "") -> str:
+    # Connection objects are constructed while the module imports, before the
+    # FastAPI startup hook creates a brand-new database. Fresh installs must
+    # therefore gracefully fall back to .env until app_settings exists.
+    try:
+        with db() as conn:
+            row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+        return row[0] if row else default
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return default
+        raise
+
+
+def setting_set(key: str, value: str, secret: bool = False):
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO app_settings(key,value,secret,updated_at) VALUES(?,?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,secret=excluded.secret,updated_at=excluded.updated_at",
+            (key, value or "", int(bool(secret)), _utcnow()),
+        )
+
+
+def setting_delete(key: str):
+    with db() as conn:
+        conn.execute("DELETE FROM app_settings WHERE key=?", (key,))
+
+
+def all_settings(mask_secrets: bool = True) -> dict[str, str]:
+    with db() as conn:
+        rows = conn.execute("SELECT key,value,secret FROM app_settings").fetchall()
+    out = {}
+    for r in rows:
+        out[r["key"]] = "********" if mask_secrets and r["secret"] and r["value"] else r["value"]
+    return out
+
+
+def track_request(media_type: str, external_id: str, title: str, year=None, destination_key="", arr_instance="", arr_id=None, status="requested"):
+    if not external_id:
+        return
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO requests(media_type,external_id,title,year,destination_key,arr_instance,arr_id,status,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(media_type,external_id) DO UPDATE SET title=excluded.title,year=excluded.year,destination_key=excluded.destination_key,
+               arr_instance=excluded.arr_instance,arr_id=excluded.arr_id,status=excluded.status,updated_at=excluded.updated_at""",
+            (media_type, str(external_id), title, year, destination_key, arr_instance, arr_id, status, _utcnow()),
+        )
+
+
+def request_map(media_type: str) -> dict[str, dict]:
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM requests WHERE media_type=?", (media_type,)).fetchall()
+    return {str(r["external_id"]): dict(r) for r in rows}
+
+
+def activity_by_day(days: int = 7):
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT substr(created_at,1,10) day, count(*) count FROM activity WHERE created_at >= datetime('now', ?) GROUP BY substr(created_at,1,10) ORDER BY day",
+            (f'-{int(days)-1} days',),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_users():
+    with db() as conn:
+        rows = conn.execute("SELECT id,username,email,display_name,role,theme,dashboard_layout,created_at,updated_at FROM users ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_user(username: str, email: str, display_name: str, password: str, role: str = "user") -> int:
+    username = (username or "").strip()
+    if not username or not password:
+        raise ValueError("Username and password are required")
+    role = role if role in {"admin", "user"} else "user"
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO users(username,email,display_name,password_hash,role,theme,dashboard_layout) VALUES(?,?,?,?,?,?,?)",
+            (username, (email or "").strip() or None, (display_name or username).strip(), _hash_password(password), role, "nexus", "default"),
+        )
+        return int(cur.lastrowid)
+
+
+def delete_user(user_id: int, protect_user_id: int | None = None):
+    if protect_user_id and int(user_id) == int(protect_user_id):
+        raise ValueError("You cannot delete the account you are currently using")
+    with db() as conn:
+        admins = conn.execute("SELECT count(*) FROM users WHERE role='admin'").fetchone()[0]
+        row = conn.execute("SELECT role FROM users WHERE id=?", (int(user_id),)).fetchone()
+        if row and row[0] == "admin" and admins <= 1:
+            raise ValueError("At least one administrator must remain")
+        conn.execute("DELETE FROM users WHERE id=?", (int(user_id),))
+
+
+def create_password_reset(email: str, ttl_seconds: int = 1800) -> str | None:
+    identity = (email or "").strip().lower()
+    if not identity:
+        return None
+    with db() as conn:
+        row = conn.execute("SELECT id FROM users WHERE lower(COALESCE(email,''))=? LIMIT 1", (identity,)).fetchone()
+        if not row:
+            return None
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        conn.execute("UPDATE password_resets SET used=1 WHERE user_id=? AND used=0", (int(row["id"]),))
+        conn.execute("INSERT INTO password_resets(token_hash,user_id,expires_at,used) VALUES(?,?,?,0)", (token_hash, int(row["id"]), time.time()+ttl_seconds))
+        return token
+
+
+def consume_password_reset(token: str, new_password: str) -> bool:
+    if not token or len(new_password or "") < 8:
+        return False
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with db() as conn:
+        row = conn.execute("SELECT user_id,expires_at,used FROM password_resets WHERE token_hash=?", (token_hash,)).fetchone()
+        if not row or row["used"] or float(row["expires_at"]) < time.time():
+            return False
+        conn.execute("UPDATE users SET password_hash=?,updated_at=? WHERE id=?", (_hash_password(new_password), _utcnow(), int(row["user_id"])))
+        conn.execute("UPDATE password_resets SET used=1 WHERE token_hash=?", (token_hash,))
+        return True

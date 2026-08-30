@@ -3,8 +3,8 @@
 {% block content %}
 <div class="detail-layout">
   <div class="panel poster-detail">
-    {% if poster %}<img src="{{ poster }}" alt="" class="detail-poster">{% else %}<div class="detail-poster poster-fallback">{{ item.title_guess[:2]|upper }}</div>{% endif %}
-    <div><span class="tag {{ item.media_type }}">{{ item.media_type }}</span><h2>{{ item.title_guess }}{% if item.year_guess %} ({{ item.year_guess }}){% endif %}</h2><p>{{ item.name }}</p>
+    {% if poster %}<img src="{{ poster }}" alt="" class="detail-poster">{% else %}<div class="detail-poster poster-fallback">{{ display_title[:2]|upper }}</div>{% endif %}
+    <div><span class="tag {{ item.media_type }}">{{ item.media_type }}</span><h2>{{ display_title }}{% if display_year %} ({{ display_year }}){% endif %}</h2><p>{{ item.name }}</p>
     <div class="tags"><span class="tag rd">Real-Debrid</span><span class="tag">{{ item.video_count }} video{{ '' if item.video_count==1 else 's' }}</span><span class="tag">{{ item.size_bytes|human_size }}</span>{% if item.quality %}<span class="tag">{{ item.quality }}p</span>{% endif %}{% if upgrade %}<span class="tag amber">Upgrade from {{ existing_resolution }}p</span>{% endif %}</div>
     </div>
   </div>

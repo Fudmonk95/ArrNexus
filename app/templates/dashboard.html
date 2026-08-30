@@ -1,30 +1,20 @@
 {% extends 'base.html' %}
-{% block heading %}Dashboard{% endblock %}
+{% block heading %}Control Centre{% endblock %}
 {% block content %}
-<div class="stats-grid five">
-  <div class="stat"><span>DMM items</span><strong>{{ source_count }}</strong><small>{{ source_root }}</small></div>
-  <div class="stat"><span>Movies detected</span><strong>{{ movie_count }}</strong><small>source scan</small></div>
-  <div class="stat"><span>TV detected</span><strong>{{ tv_count }}</strong><small>episode-pattern detection</small></div>
-  <div class="stat"><span>Imported</span><strong>{{ imported_count }}</strong><small>router history</small></div>
-  <div class="stat"><span>Recent jobs</span><strong>{{ jobs|length }}</strong><small><a href="/jobs">view progress</a></small></div>
+<div class="dashboard-hero panel"><div><span class="eyebrow">ARRNEXUS STATUS</span><h2>{{ waiting_count }} waiting · {{ imported_count }} imported</h2><p>Your Debrid, Usenet, Arr and Jellyfin workflow in one operational view.</p></div><div class="dashboard-ring" style="--imported:{{ ((imported_count / source_count * 100) if source_count else 0)|round|int }}"><div><strong>{{ ((imported_count / source_count * 100) if source_count else 0)|round|int }}%</strong><span>routed</span></div></div></div>
+<div class="stats-grid six">
+  <a class="stat" href="/inbox?status=waiting"><span>Waiting</span><strong>{{ waiting_count }}</strong><small>needs review/import</small></a>
+  <a class="stat" href="/inbox?status=imported"><span>Imported</span><strong>{{ imported_count }}</strong><small>managed or linked</small></a>
+  <a class="stat" href="/inbox?status=duplicate"><span>DMM source</span><strong>{{ source_count }}</strong><small>{{ movie_count }} movies · {{ tv_count }} TV</small></a>
+  <a class="stat" href="/queue"><span>Active queue</span><strong>{{ queue_counts.radarr + queue_counts.sonarr + queue_counts.lidarr }}</strong><small>R {{ queue_counts.radarr }} · S {{ queue_counts.sonarr }} · L {{ queue_counts.lidarr }}</small></a>
+  <a class="stat" href="/jobs"><span>Import jobs</span><strong>{{ jobs|length }}</strong><small>recent jobs</small></a>
+  <a class="stat" href="/debrid"><span>Real-Debrid</span><strong class="small-strong">{{ 'Linked' if rd_connected else 'Offline' }}</strong><small>{{ rd_user.username if rd_user and not rd_user.error else 'connect in Debrid / DMM' }}</small></a>
 </div>
-
-<div class="panel">
-  <div class="panelhead"><div><h2>DUMB namespace</h2><p>The container follows the live Radarr mount namespace automatically.</p></div></div>
-  {% if namespace.ok %}<div class="statusline"><span class="dot ok"></span><strong>Connected</strong><span>Radarr PID {{ namespace.pid }} · {{ namespace.dumb_root }} · source {{ 'available' if namespace.source_exists else 'missing' }}</span></div>
-  {% else %}<div class="alert error">{{ namespace.error }}</div>{% endif %}
+<div class="dashboard-grid">
+  <section class="panel chart-panel"><div class="panelhead"><div><h2>Activity · 7 days</h2><p>Imports, searches, repairs, settings and routing activity.</p></div></div><div class="bar-chart">{% set maxc = activity_max %}{% for d in activity_days %}<div class="bar-col"><span class="bar-value">{{ d.count }}</span><div class="bar-track"><div class="bar-fill" style="height:{{ ((d.count/maxc)*100)|round|int }}%"></div></div><small>{{ d.day[5:] }}</small></div>{% else %}<div class="empty">Activity will appear here as you use ArrNexus.</div>{% endfor %}</div></section>
+  <section class="panel"><div class="panelhead"><div><h2>Service health</h2><p>Live API checks.</p></div><a class="btn small" href="/arrs">Connections</a></div><div class="service-list">{% for name,s in statuses.items() %}<div class="service"><span class="dot {{ 'ok' if s.ok else 'bad' }}"></span><strong>{{ name|capitalize }}</strong><span>{{ s.version if s.ok else s.error }}</span></div>{% endfor %}</div><div class="namespace-strip {{ 'good' if namespace.ok else 'bad' }}"><strong>DUMB namespace</strong><span>{% if namespace.ok %}PID {{ namespace.pid }} · source {{ 'online' if namespace.source_exists else 'missing' }}{% else %}{{ namespace.error }}{% endif %}</span></div></section>
+  <section class="panel"><div class="panelhead"><div><h2>Routing split</h2><p>Completed imports by destination.</p></div></div><div class="route-bars">{% set maxd=dest_max %}{% for name,count in dest_counts %}<div><div class="route-bar-label"><span>{{ name }}</span><strong>{{ count }}</strong></div><div class="hbar"><i style="width:{{ ((count/maxd)*100)|round|int }}%"></i></div></div>{% else %}<div class="empty">No completed imports yet.</div>{% endfor %}</div></section>
+  <section class="panel"><div class="panelhead"><div><h2>Recent activity</h2><p>What ArrNexus has been doing.</p></div></div><div class="activity-list">{% for a in activity %}<div class="activity"><span class="tag">{{ a.kind }}</span><div><strong>{{ a.title }}</strong><small>{{ a.detail }}</small></div><time>{{ a.created_at }}</time></div>{% else %}<div class="empty">No activity yet.</div>{% endfor %}</div></section>
 </div>
-
-<div class="grid-2">
-  <div class="panel"><h2>Service health</h2><div class="service-list">
-    {% for name,s in statuses.items() %}<div class="service"><span class="dot {{ 'ok' if s.ok else 'bad' }}"></span><strong>{{ name|capitalize }}</strong><span>{{ s.version if s.ok else s.error }}</span></div>{% endfor %}
-  </div></div>
-  <div class="panel"><div class="panelhead"><div><h2>Recent activity</h2><p>Imports, routing, music and repairs.</p></div></div>
-    <div class="activity-list">{% for a in activity %}<div class="activity"><span class="tag">{{ a.kind }}</span><div><strong>{{ a.title }}</strong><small>{{ a.detail }}</small></div><time>{{ a.created_at }}</time></div>{% else %}<div class="empty">No activity yet.</div>{% endfor %}</div>
-  </div>
-</div>
-
-<div class="panel"><div class="panelhead"><div><h2>Waiting in DMM</h2><p>Source items remain in Real-Debrid; imports are tracked separately.</p></div><a class="btn" href="/inbox">Open inbox</a></div>
-  <div class="tablewrap"><table><thead><tr><th>Name</th><th>Type</th><th>Videos</th><th>Quality</th></tr></thead><tbody>{% for i in items %}<tr><td>{{ i.title_guess }}{% if i.year_guess %} ({{ i.year_guess }}){% endif %}</td><td><span class="tag {{ i.media_type }}">{{ i.media_type }}</span></td><td>{{ i.video_count }}</td><td>{{ i.quality ~ 'p' if i.quality else 'Unknown' }}</td></tr>{% else %}<tr><td colspan="4" class="empty">No DMM items detected.</td></tr>{% endfor %}</tbody></table></div>
-</div>
+<div class="panel"><div class="panelhead"><div><h2>Quick actions</h2><p>Jump straight into the common workflows.</p></div></div><div class="quick-actions"><a href="/discover">Discover movie / TV</a><a href="/debrid">Search torrents / RD</a><a href="/music">Discover music</a><a href="/inbox?status=waiting">Route DMM inbox</a><a href="/maintenance">Scan symlinks</a><a href="/rules">Tune routing rules</a></div></div>
 {% endblock %}

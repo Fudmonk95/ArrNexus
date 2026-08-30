@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block heading %}Settings{% endblock %}
+{% block content %}
+{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
+<div class="settings-grid">
+<section class="panel"><div class="panelhead"><div><h2>General</h2><p>Branding and email groundwork for a distributable ArrNexus install.</p></div></div>
+<form method="post" action="/settings/general" class="formgrid">
+<label>Application name<input name="app_title" value="{{ app_title }}"></label>
+<h3>Email / SMTP</h3><p class="muted">Your profile email already works as a login identity. SMTP powers email password-reset links; email can also be used directly as a login identity.</p>
+<div class="grid-2 form-columns"><label>SMTP host<input name="smtp_host" value="{{ smtp.host }}" placeholder="smtp.example.com"></label><label>Port<input name="smtp_port" value="{{ smtp.port or '587' }}"></label></div>
+<div class="grid-2 form-columns"><label>Username<input name="smtp_username" value="{{ smtp.username }}"></label><label>Password<input type="password" name="smtp_password" placeholder="{{ '•••••••• configured' if app_setting('smtp.password') else 'Optional' }}"></label></div>
+<label>From address<input type="email" name="smtp_from" value="{{ smtp.from_address }}" placeholder="arrnexus@example.com"></label><label class="check"><input type="checkbox" name="smtp_starttls" value="true" {{ "checked" if smtp.starttls != "false" }}> Use STARTTLS (recommended for port 587)</label>
+<div class="formactions"><button class="btn primary">Save settings</button></div></form></section>
+<section class="panel"><div class="panelhead"><div><h2>Integrations</h2><p>Quick status of the major control-plane integrations.</p></div></div>
+<div class="settings-links"><a href="/arrs"><span>Arr / Prowlarr / Jellyfin</span><strong>Manage connections →</strong></a><a href="/debrid"><span>Real-Debrid</span><strong>{{ 'Connected' if rd_connected else 'Connect account' }} →</strong></a><a href="/rules"><span>Routing rules</span><strong>Edit automation →</strong></a><a href="/profile"><span>Profile & themes</span><strong>Personalise →</strong></a></div></section>
+</div>
+<section class="panel"><div class="panelhead"><div><h2>User accounts</h2><p>Create separate logins for family/admin users. Each account gets its own theme and dashboard layout; either username or email can be used to sign in.</p></div></div>
+<div class="tablewrap"><table><thead><tr><th>User</th><th>Email</th><th>Role</th><th>Theme</th><th></th></tr></thead><tbody>{% for u in users %}<tr><td><strong>{{ u.display_name or u.username }}</strong><small class="block muted">{{ u.username }}</small></td><td>{{ u.email or '—' }}</td><td><span class="tag {{ 'green' if u.role=='admin' else '' }}">{{ u.role }}</span></td><td>{{ u.theme }}</td><td>{% if u.id != request.session.get('user_id') %}<form method="post" action="/settings/users/delete/{{ u.id }}" onsubmit="return confirm('Remove this ArrNexus user?')"><button class="btn small ghost">Remove</button></form>{% else %}<span class="muted">Current user</span>{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+<h3>Add user</h3><form method="post" action="/settings/users/add" class="rule-form user-create"><input name="username" placeholder="Username" required><input type="email" name="email" placeholder="Email address"><input name="display_name" placeholder="Display name"><input type="password" name="password" placeholder="Temporary password" required><select name="role"><option value="user">User</option><option value="admin">Administrator</option></select><button class="btn primary">Create user</button></form>
+</section>
+<div class="panel note"><strong>Security note</strong><p>API keys and Real-Debrid OAuth credentials are never displayed back in the UI. Keep the ArrNexus data directory and <code>.env</code> private and do not publish them with the GitHub repository.</p></div>
+{% endblock %}

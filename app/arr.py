@@ -3,6 +3,7 @@ import copy
 import httpx
 from typing import Any
 from .config import settings
+from .connections import get_connection
 
 
 class ArrError(RuntimeError):
@@ -60,7 +61,8 @@ class ArrClient:
 
 class RadarrClient(ArrClient):
     def __init__(self, base_url: str | None = None, api_key: str | None = None, name: str = "Radarr"):
-        super().__init__(name, base_url or settings.radarr_url, api_key if api_key is not None else settings.radarr_api_key, "v3")
+        c = get_connection("radarr")
+        super().__init__(name, base_url or c.url, api_key if api_key is not None else c.api_key, "v3")
 
     async def movies(self):
         return await self.request("GET", "/api/v3/movie")
@@ -95,7 +97,8 @@ class RadarrClient(ArrClient):
 
 class SonarrClient(ArrClient):
     def __init__(self, base_url: str | None = None, api_key: str | None = None, name: str = "Sonarr"):
-        super().__init__(name, base_url or settings.sonarr_url, api_key if api_key is not None else settings.sonarr_api_key, "v3")
+        c = get_connection("sonarr")
+        super().__init__(name, base_url or c.url, api_key if api_key is not None else c.api_key, "v3")
 
     async def series(self):
         return await self.request("GET", "/api/v3/series")
@@ -128,7 +131,8 @@ class SonarrClient(ArrClient):
 
 class LidarrClient(ArrClient):
     def __init__(self, base_url: str | None = None, api_key: str | None = None, name: str = "Lidarr"):
-        super().__init__(name, base_url or settings.lidarr_url, api_key if api_key is not None else settings.lidarr_api_key, "v1")
+        c = get_connection("lidarr")
+        super().__init__(name, base_url or c.url, api_key if api_key is not None else c.api_key, "v1")
 
     async def artists(self):
         return await self.request("GET", "/api/v1/artist")
@@ -190,11 +194,44 @@ class LidarrClient(ArrClient):
 
 
 class ProwlarrClient(ArrClient):
-    def __init__(self):
-        super().__init__("Prowlarr", settings.prowlarr_url, settings.prowlarr_api_key, "v1")
+    def __init__(self, base_url: str | None = None, api_key: str | None = None, name: str = "Prowlarr"):
+        c = get_connection("prowlarr")
+        super().__init__(name, base_url or c.url, api_key if api_key is not None else c.api_key, "v1")
 
     async def indexers(self):
         return await self.request("GET", "/api/v1/indexer")
+
+    async def search(self, query: str, categories: list[int] | None = None, limit: int = 100):
+        params = {"query": query, "type": "search", "limit": limit, "offset": 0}
+        if categories:
+            params["categories"] = categories
+        return await self.request("GET", "/api/v1/search", params=params)
+
+    async def download_release(self, download_url: str) -> dict:
+        """Resolve a Prowlarr release URL through its download proxy.
+
+        Returns either a magnet URI or raw torrent bytes. Many indexers only
+        expose a Prowlarr download URL and redirect to the magnet at grab time.
+        """
+        if not self.api_key:
+            raise ArrError("Prowlarr API key is not configured")
+        if not download_url:
+            raise ArrError("Release does not contain a download URL")
+        url = download_url if download_url.startswith("http") else f"{self.base_url}/{download_url.lstrip('/')}"
+        async with httpx.AsyncClient(timeout=90.0, follow_redirects=True) as client:
+            r = await client.get(url, headers=self.headers)
+        if r.status_code >= 400:
+            raise ArrError(f"Prowlarr release download failed: {r.status_code} {r.text[:500]}")
+        final_url = str(r.url)
+        text = ""
+        ctype = (r.headers.get("content-type") or "").lower()
+        if "text" in ctype or "magnet" in ctype or len(r.content) < 4096:
+            try:
+                text = r.text.strip()
+            except Exception:
+                text = ""
+        magnet = final_url if final_url.startswith("magnet:") else text if text.startswith("magnet:") else ""
+        return {"magnet": magnet, "content": r.content, "content_type": ctype, "url": final_url}
 
 
 def pick_named_id(items: list[dict], preferred_name: str) -> int:

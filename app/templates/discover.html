@@ -1,8 +1,39 @@
 {% extends 'base.html' %}
 {% block heading %}Discover Media{% endblock %}
 {% block content %}
-<div class="panel"><div class="panelhead"><div><h2>DMM-style discovery without another account</h2><p>Search Radarr/Sonarr metadata, add to the correct specialist Arr, then let Prowlarr + Decypharr/InfiniDysk handle the actual search/download path.</p></div></div>
-<form class="searchbar" method="get" action="/discover"><select name="media_type"><option value="movie" {{ 'selected' if media_type=='movie' }}>Movies</option><option value="tv" {{ 'selected' if media_type=='tv' }}>TV shows</option></select><input name="q" value="{{ q }}" placeholder="Search movies or TV shows"><button class="btn primary">Search</button></form>
-{% if request.query_params.get('notice') %}<div class="alert success">{{ request.query_params.get('notice') }}</div>{% endif %}{% if request.query_params.get('error') or error %}<div class="alert error">{{ request.query_params.get('error') or error }}</div>{% endif %}</div>
-<div class="poster-grid discover-grid">{% for x in results %}<article class="media-card"><div class="poster-wrap">{% set p=(x.images|selectattr('coverType','equalto','poster')|list) %}{% if p %}<img src="{{ p[0].remoteUrl or p[0].url }}" alt="" loading="lazy">{% else %}<div class="poster-fallback">{{ x.title[:2]|upper }}</div>{% endif %}</div><div class="media-card-body"><h3>{{ x.title }}</h3><p>{{ x.year or x.firstAired or '' }}</p><div class="tags">{% for g in (x.genres or [])[:4] %}<span class="tag">{{ g }}</span>{% endfor %}</div><form method="post" action="/discover/add" class="formgrid"><input type="hidden" name="media_type" value="{{ media_type }}"><input type="hidden" name="candidate_json" value='{{ x|tojson|forceescape }}'><label>Route<select name="destination_key"><option value="auto">Auto route</option>{% for k in (movie_roots if media_type=='movie' else tv_roots) %}<option value="{{ k }}">{{ k }}</option>{% endfor %}</select></label><button class="btn primary" type="submit">Add + search now</button></form></div></article>{% else %}{% if q %}<div class="panel empty">No matches.</div>{% endif %}{% endfor %}</div>
+<div class="panel discover-hero">
+  <div class="panelhead"><div><h2>Search → Arr → Prowlarr → InfiniDysk / Decypharr</h2><p>This is metadata discovery. When Real-Debrid is connected, cards also show whether the title is already in your debrid account.</p></div>{% if rd_connected %}<span class="tag green">Real-Debrid connected</span>{% else %}<a class="btn small" href="/debrid">Connect Real-Debrid</a>{% endif %}</div>
+  <form class="searchbar" method="get">
+    <select name="media_type"><option value="movie" {{ 'selected' if media_type=='movie' }}>Movies</option><option value="tv" {{ 'selected' if media_type=='tv' }}>TV shows</option></select>
+    <input type="search" name="q" value="{{ q }}" placeholder="Search title…" autofocus>
+    <button class="btn primary">Search</button>
+  </form><div class="discover-secondary"><span>Want actual torrent releases rather than metadata?</span><a class="btn small" href="/debrid?release_q={{ q|urlencode }}&protocol=torrent">Search Prowlarr → Real-Debrid</a></div>
+  {% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+</div>
+
+{% if results %}<div class="poster-grid discover-grid">
+{% for r in results %}
+<article class="media-card panel">
+  <div class="poster-wrap">
+    {% set p = r.images|selectattr('coverType','equalto','poster')|list %}
+    {% if p and (p[0].remoteUrl or p[0].url) %}<img src="{{ p[0].remoteUrl or p[0].url }}" alt="{{ r.title }} poster" loading="lazy">{% else %}<div class="poster-fallback">{{ r.title[:2]|upper }}</div>{% endif %}
+    <div class="poster-badges">
+      {% if r.arrnexus_request %}<span class="tag green">Requested</span>{% else %}<span class="tag">Available to request</span>{% endif %}
+      {% if r.arrnexus_in_rd %}<span class="tag rd">In Real-Debrid</span>{% endif %}
+    </div>
+  </div>
+  <div class="media-card-body">
+    <h3>{{ r.title }}</h3><p>{{ r.year or '' }}</p>
+    <div class="tags">{% for g in (r.genres or [])[:3] %}<span class="tag">{{ g }}</span>{% endfor %}</div>
+    {% if r.arrnexus_request %}<div class="request-state"><strong>Already requested</strong><small>{{ r.arrnexus_request.instance or r.arrnexus_request.arr_instance or 'Arr' }}{% if r.arrnexus_request.destination %} · {{ r.arrnexus_request.destination }}{% endif %}</small></div>{% endif %}
+    <form method="post" action="/discover/add" class="formgrid compact-form">
+      <input type="hidden" name="media_type" value="{{ media_type }}"><input type="hidden" name="query" value="{{ q }}"><input type="hidden" name="candidate_json" value='{{ r|tojson|forceescape }}'>
+      <label>Route<select name="destination_key"><option value="auto">Auto route</option>{% if media_type=='movie' %}{% for k,v in movie_roots.items() %}<option value="{{ k }}">{{ k|capitalize }}</option>{% endfor %}{% else %}{% for k,v in tv_roots.items() %}<option value="{{ k }}">{{ k|capitalize }}</option>{% endfor %}{% endif %}</select></label>
+      <button class="btn primary" type="submit">{{ 'Search again' if r.arrnexus_request else 'Add + search now' }}</button>
+    </form>
+  </div>
+</article>
+{% endfor %}
+</div>{% elif q and not error %}<div class="panel empty">No metadata matches found.</div>{% endif %}
 {% endblock %}

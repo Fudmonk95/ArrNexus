@@ -1,100 +1,134 @@
-# DMM Arr Router v1.0 — Media Control Hub
+# ArrNexus v2.0
 
-A self-hosted control layer for DUMB-style media stacks. It reads Decypharr's Real-Debrid library through the live Arr mount namespace, routes content to specialist Radarr/Sonarr instances, creates safe symlinks, manages Lidarr music discovery/search, and provides maintenance/queue/history tools in one web UI.
+ArrNexus is a self-hosted control layer for DUMB-style Radarr/Sonarr/Lidarr stacks that combine Usenet and debrid media. It provides one UI for discovery, Real-Debrid/DMM-style library management, routing, symlink imports, queue visibility, music discovery and application settings.
 
-## Main features
+## What v2.0 adds
 
-- Poster-based DMM inbox with search/filter and imported/linked/ignored badges
-- Multi-select bulk import with a live progress/job page
-- Auto-discovery of DUMB Radarr/Sonarr/Lidarr processes and specialist instances
-- Automatic routing to default/Kids/Christmas/Halloween/Easter and Netflix/Disney+/Amazon/Apple/BBC libraries
-- Learned routing from manual overrides plus editable rules
-- Duplicate detection, source-vs-library resolution comparison and upgrade badge
-- Imported items stay visible and receive an **Imported** badge
-- Safe undo removes only symlinks created by this Router; it never removes Real-Debrid source media
-- Broken symlink scanner and conservative exact-filename repair
-- Orphan/unowned DMM source detector
-- Unified Radarr/Sonarr/Lidarr queue
-- Provider counts/badges for Real-Debrid and Usenet symlinks
-- Recent activity timeline
-- Optional Jellyfin presence badges (requires Jellyfin API key)
-- Dark/light theme, poster-grid/table modes, responsive mobile layout
-- Discover page: movie/TV lookup -> route to specialist Arr -> queue Arr search. This uses the user's existing Prowlarr + Decypharr/InfiniDysk setup and does not require a second Real-Debrid login.
-- Music Hub using **MusicBrainz** and **ListenBrainz** public endpoints; no Spotify/Apple/Amazon account connection required
-- Add artists to Lidarr and queue artist/album Usenet searches
-- Optional external search links for Spotify, Apple Music, Amazon Music and Beatport
-- Optional iTunes catalog enrichment is available but disabled by default
+- **ArrNexus branding** and a redesigned dashboard with activity/routing charts.
+- **Discover request state**: search results stay on screen after `Add + search now` and show `Requested` when the title already exists in an Arr or the ArrNexus request database.
+- **Real-Debrid device OAuth**: connect an RD account in the UI without pasting an API token.
+- **Debrid / DMM page**: view the same Real-Debrid torrent library that DMM reads.
+- **Prowlarr release search → Real-Debrid**: search configured torrent indexers and submit a chosen torrent/magnet directly to Real-Debrid. Decypharr can then expose it under `__all__` for routing.
+- **DMM Inbox cleanup**: metadata-first display names, removal of common `www/indexer` release prefixes, canonical symlink filenames and duplicate RD torrents grouped into one title.
+- **Inbox states**: Waiting, Imported, Duplicates, Upgrades and Ignored tabs.
+- **Bulk routing**: select many entries and choose Auto, Default, Kids, Christmas, Halloween, Easter, Netflix, Disney+, Amazon, Apple TV+ or BBC as applicable.
+- **Connection manager**: Radarr/Sonarr/Lidarr discovered instances, Prowlarr and Jellyfin can be edited from the UI. Saved UI values override `.env` values.
+- **Unified queue diagnostics**: each Arr instance shows its connection state so an empty queue is no longer silently caused by a bad API key.
+- **Music Hub**: provider tabs for native public sources (MusicBrainz, ListenBrainz, Apple/iTunes Search, Audius) plus account-free launchers for Spotify, Amazon Music, Beatport, Bandcamp, Last.fm and Discogs.
+- **Lidarr actions**: artist results can be added to Lidarr and searched; existing Lidarr albums can be monitored and searched through the configured Usenet workflow.
+- **Profiles**: username or email login, display name, password changes, per-profile dashboard layout and theme.
+- **Email password reset**: configure SMTP in Settings and users can request 30-minute, one-time reset links from the login screen.
+- **Multiple users**: administrators can create additional username/email accounts in Settings.
+- **Themes**: ArrNexus, Radarr Gold, Sonarr Blue, Lidarr Green, Prowlarr Purple, Jellyfin Violet, Music Green, OLED, Nord, Dracula, Clean Light and Cyber.
+- Existing features remain: safe symlink-only imports, progress jobs, duplicate/quality detection, routing rules and learned corrections, broken-link scan/repair, orphan detection, undo, provider badges, Jellyfin status and activity history.
 
-## Why `pid: host` is required
+## DMM and Real-Debrid: important distinction
 
-In DUMB, `/mnt/debrid` is mounted inside the Arr mount namespace, not the normal Debian namespace. This app discovers the live Radarr PID and reads the DUMB filesystem through:
+ArrNexus does **not** depend on a private or undocumented debridmediamanager.com API. Instead it connects directly to the user's Real-Debrid account using Real-Debrid's official open-source device OAuth workflow.
 
-`/proc/<radarr-pid>/root/mnt/debrid`
+That means DMM and ArrNexus can see the same Real-Debrid torrent library when they are connected to the same account. A movie requested through Radarr will not appear in the RD/DMM library merely because it was added to Radarr; it appears after a torrent is actually grabbed and submitted to Real-Debrid/Decypharr. ArrNexus therefore shows separate **Requested** and **In Real-Debrid** states.
 
-Symlinks are still written with normal DUMB-visible targets such as `/mnt/debrid/decypharr/__all__/...`, never with `/proc/<pid>/...` paths.
+## DUMB mount namespace
 
-The container uses `SYS_PTRACE` instead of `privileged: true`.
+On DUMB installations the host may not have `/mnt/debrid` in its normal mount namespace. ArrNexus follows the live Radarr namespace through `/proc/<pid>/root/mnt/debrid`.
 
-## Upgrade from v0.2
+The Compose file therefore requires:
 
-1. Keep your existing `.env` and `data/router.db` safe.
-2. Extract v1.0 to a new directory.
-3. Copy your existing `.env` into the v1.0 directory.
-4. Add these optional variables if wanted:
-
-```env
-JELLYFIN_URL=http://192.168.137.10:8096
-JELLYFIN_API_KEY=
-ENABLE_ITUNES_SEARCH=false
+```yaml
+pid: host
+cap_add:
+  - SYS_PTRACE
 ```
 
-5. Copy the old `data/router.db` into the new `data/` directory. v1.0 migrates the v0.2 imports table automatically and preserves history.
-6. Rebuild:
+This is intentionally narrower than running the web application with `privileged: true`.
 
-```bash
-docker compose down
-docker compose up -d --build
-docker compose logs --tail=100 dmm-arr-router
-```
-
-Open `http://<docker-host>:8484`.
-
-## Fresh install
+## First installation
 
 ```bash
 cp .env.example .env
 nano .env
+
+docker compose config
 docker compose up -d --build
+docker compose ps
 ```
 
-Required API keys:
+Default UI: `http://<docker-host>:8484`
 
-- Radarr
-- Sonarr
-- Lidarr
-- Prowlarr
+Set a strong `APP_PASSWORD` and `SESSION_SECRET` before first start. Main Arr/Prowlarr/Jellyfin URLs and API keys can be placed in `.env` initially and then changed through **Connections** in the UI.
 
-Jellyfin is optional.
+## Upgrading from DMM Arr Router v1.0
 
-## Music discovery without user accounts
+Stop v1.0, extract ArrNexus, then copy the existing `.env` and data directory into the new folder before starting it. The SQLite database is migrated automatically and retains import/activity history.
 
-The default Music Hub deliberately avoids requiring personal Spotify, Apple, Amazon or Beatport credentials:
+Example when the old directory is `/opt/dmm-arr-router/dmm-arr-router-v1.0`:
 
-- **MusicBrainz** — public artist/release metadata
-- **Cover Art Archive** — release-group cover images where available
-- **ListenBrainz** — public sitewide trending statistics
-- **Lidarr** — actual add/monitor/search/download workflow through the user's own NZB indexers
+```bash
+cd /opt/dmm-arr-router/dmm-arr-router-v1.0
+docker compose down
 
-External Spotify/Apple/Amazon/Beatport buttons are just search links. No account tokens are stored by this app.
+cd /opt/dmm-arr-router
+unzip /home/<user>/arrnexus-v2.0.zip
 
-## Safety behaviour
+cp dmm-arr-router-v1.0/.env arrnexus-v2.0/.env
+mkdir -p arrnexus-v2.0/data
+cp -a dmm-arr-router-v1.0/data/. arrnexus-v2.0/data/
 
-- Source content under Decypharr `__all__` is never moved or deleted.
-- Undo only removes symlinks recorded as created/verified by this Router.
-- Broken-link repair only acts when exactly one DMM source file has the same filename.
-- Existing Arr ownership wins over a new routing suggestion to avoid duplicate movies/series across specialist instances.
-- Bulk jobs continue after a per-item failure and show the error on the progress page.
+cd arrnexus-v2.0
+docker compose config
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail=100 arrnexus
+```
 
-## Optional Jellyfin key
+The UI remains on port `8484` unless `APP_PORT` is changed.
 
-Create a Jellyfin API key and set `JELLYFIN_API_KEY` if you want exact `Detected in Jellyfin` badges. All import/routing features work without it.
+## Real-Debrid connection
+
+Open **Debrid / DMM → Connect Real-Debrid**. ArrNexus displays a device code, opens the official Real-Debrid device authorization page and polls until authorization completes. OAuth client credentials, access tokens and refresh tokens stay in the local SQLite settings database and are never rendered back into the UI.
+
+For a distributable/public installation, protect the `data/` directory and never commit `.env`, `router.db`, API keys or OAuth credentials to Git.
+
+## Music discovery sources
+
+### Native, no personal streaming account
+
+- **MusicBrainz** — artist/release metadata.
+- **ListenBrainz** — public sitewide trending statistics.
+- **Apple/iTunes Search** — public catalog/artwork search; no Apple account connection.
+- **Audius** — public read-only track search and trending discovery.
+
+### Catalog launchers
+
+Spotify, Amazon Music, Beatport, Bandcamp, Last.fm and Discogs are intentionally treated as optional external catalog/search tabs where a stable unrestricted no-account API is not appropriate. ArrNexus never asks users to supply their personal credentials for these services.
+
+Regardless of discovery source, the action path is:
+
+`Discovery → Lidarr → Prowlarr/indexers → Usenet download client → Lidarr library`
+
+ArrNexus does not download or copy audio from Spotify/Apple/Amazon/Beatport.
+
+## Safe import model
+
+ArrNexus never moves or deletes a Decypharr Real-Debrid source when importing it. It creates recorded symlinks into the selected Arr library and asks the Arr to rescan. Undo removes only symlinks recorded as created by ArrNexus.
+
+Movie links use canonical names such as:
+
+```text
+Movie Title (2024)/Movie Title (2024).mkv
+```
+
+TV links use canonical episode names where an `SxxExx` identifier is available:
+
+```text
+Series Title/Season 01/Series Title - S01E03.mkv
+```
+
+## Publishing to GitHub
+
+Before publishing:
+
+- commit `.env.example`, never `.env`;
+- exclude `data/`, `router.db`, logs and credentials;
+- use a project-specific `MUSIC_USER_AGENT` with a project/contact URL;
+- document that ArrNexus expects the user to have legitimate access to all configured services and media.

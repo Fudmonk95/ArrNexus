@@ -1,3 +1,39 @@
 {% extends 'base.html' %}
-{% block heading %}Arr Instances{% endblock %}
-{% block content %}<div class="card-grid">{% for row in rows %}<div class="panel"><div class="panelhead"><div><h2>{{ row.instance.service|capitalize }} / {{ row.instance.instance }}</h2><p>PID {{ row.instance.pid }} · :{{ row.instance.port }}</p></div><span class="dot {{ 'ok' if row.ok else 'bad' }}"></span></div>{% if row.ok %}<div class="tags"><span class="tag">{{ row.status.version }}</span>{% if row.instance.destination_key %}<span class="tag blue">{{ row.instance.destination_key }}</span>{% endif %}</div><h3>Roots</h3><div class="mini-list">{% for x in row.roots %}<div><code>{{ x.path }}</code><span>{{ x.freeSpace|default('') }}</span></div>{% endfor %}</div><h3>Tags</h3><div class="tags">{% for t in row.tags %}<span class="tag">{{ t.label }}</span>{% else %}<span class="muted">No tags</span>{% endfor %}</div>{% else %}<div class="alert error">{{ row.error }}</div>{% endif %}</div>{% endfor %}</div>{% endblock %}
+{% block heading %}Connections{% endblock %}
+{% block content %}
+{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
+<div class="hero compact-hero">
+  <div><span class="eyebrow">ARRNEXUS CONNECTION MANAGER</span><h2>Everything connected in one place</h2><p>Edit URLs and API keys here. Values saved in the UI override the original <code>.env</code>, so you do not have to rebuild the stack when a key or port changes.</p></div>
+</div>
+<div class="connection-grid">
+{% for row in rows %}
+  {% if row.kind == 'arr' %}
+    {% set svc=row.instance.service %}{% set inst=row.instance.instance %}
+  {% else %}
+    {% set svc=row.service %}{% set inst=row.instance_name %}
+  {% endif %}
+  <section class="panel connection-card">
+    <div class="panelhead">
+      <div><div class="service-title"><span class="service-logo {{ svc }}">{{ svc[:1]|upper }}</span><div><h2>{{ svc|capitalize }}{% if inst != 'main' %} / {{ inst }}{% endif %}</h2><p>{% if row.kind == 'arr' %}PID {{ row.instance.pid }} · port {{ row.instance.port }}{% else %}External service{% endif %}</p></div></div></div>
+      <span class="connection-state {{ 'online' if row.ok else 'offline' }}">{{ 'Connected' if row.ok else 'Needs attention' }}</span>
+    </div>
+    {% if not row.ok and row.error %}<div class="alert error">{{ row.error }}</div>{% endif %}
+    {% if row.ok and row.status %}<div class="connection-meta"><span>Version</span><strong>{{ row.status.version or row.status.ServerVersion or 'Connected' }}</strong></div>{% endif %}
+    <form method="post" action="/settings/connection" class="formgrid connection-form">
+      <input type="hidden" name="service" value="{{ svc }}"><input type="hidden" name="instance" value="{{ inst }}">
+      <label>URL<input name="url" value="{{ row.url }}" placeholder="http://host:port" required></label>
+      <label>API key<div class="secret-input"><input type="password" name="api_key" placeholder="{{ '••••••••••••••••  configured' if row.has_key else 'Paste API key' }}" autocomplete="off"><button class="btn small" type="button" data-reveal>Show</button></div><small>{{ 'A key is currently configured. Leave blank to keep it.' if row.has_key else 'No API key is available for this connection.' }}</small></label>
+      <div class="formactions"><button class="btn primary" type="submit">Save & reconnect</button></div>
+    </form>
+    {% if row.kind == 'arr' and row.instance.destination_key %}<div class="tags"><span class="tag blue">route: {{ row.instance.destination_key }}</span><span class="tag">{{ row.instance.data_dir }}</span></div>{% endif %}
+    {% if row.kind == 'arr' and row.ok %}
+      <details class="connection-details"><summary>Roots & tags</summary>
+        <h3>Roots</h3><div class="mini-list">{% for x in row.roots %}<div><code>{{ x.path }}</code></div>{% else %}<span class="muted">No roots returned</span>{% endfor %}</div>
+        <h3>Tags</h3><div class="tags">{% for t in row.tags %}<span class="tag">{{ t.label }}</span>{% else %}<span class="muted">No tags</span>{% endfor %}</div>
+      </details>
+    {% endif %}
+  </section>
+{% endfor %}
+</div>
+<div class="panel note"><strong>Why this fixes the empty Download Queue</strong><p>ArrNexus now uses the same saved connection overrides for Dashboard, Discover, Music, queue aggregation and discovered DUMB instances. The main <code>nzbdav</code> instances also fall back to the working main Radarr/Sonarr/Lidarr credentials.</p></div>
+{% endblock %}

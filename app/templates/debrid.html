@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block heading %}Debrid / DMM{% endblock %}
+{% block content %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
+{% if not connected %}
+<div class="hero debrid-hero"><div><span class="eyebrow">REAL-DEBRID · DMM COMPANION</span><h2>Connect the account DMM already uses</h2><p>ArrNexus connects directly to Real-Debrid with its official device OAuth flow. There is no separate DMM API dependency and no API token to paste.</p><form method="post" action="/debrid/connect"><button class="btn primary">Connect Real-Debrid</button></form></div></div>
+{% else %}
+<div class="stats-grid four">
+ <div class="stat"><span>Real-Debrid</span><strong class="small-strong">{{ user.username or 'Connected' }}</strong><small>{{ user.type or user.premium or 'account linked' }}</small></div>
+ <div class="stat"><span>RD library</span><strong>{{ torrents|length }}</strong><small>loaded torrents</small></div>
+ <div class="stat"><span>Direct search</span><strong>Prowlarr</strong><small>torrent releases → Real-Debrid</small></div>
+ <div class="stat"><span>DMM Inbox</span><strong><a href="/inbox">Open</a></strong><small>route completed RD media</small></div>
+</div>
+<div class="panel"><div class="panelhead"><div><h2>DMM-style release search</h2><p>This searches your own Prowlarr indexers. Torrent results can be sent directly to the connected Real-Debrid account; Decypharr will then expose completed media in the DMM Inbox.</p></div></div>
+<form class="searchbar debrid-search" method="get" action="/debrid"><select name="protocol"><option value="torrent" {{ 'selected' if protocol=='torrent' }}>Torrents / Real-Debrid</option><option value="usenet" {{ 'selected' if protocol=='usenet' }}>Usenet results</option><option value="all" {{ 'selected' if protocol=='all' }}>All protocols</option></select><input name="release_q" value="{{ release_q }}" placeholder="Search releases across Prowlarr"><button class="btn primary">Search releases</button></form>
+{% if release_q %}<div class="release-results">{% for r in releases %}<div class="release-row"><div class="release-main"><strong>{{ r.title }}</strong><div class="tags"><span class="tag {{ 'usenet' if r.protocol=='usenet' else 'rd' }}">{{ r.protocol or '?' }}</span><span class="tag">{{ r.indexer or r.indexerName or 'Indexer' }}</span>{% if r.size %}<span class="tag">{{ r.size|human_size }}</span>{% endif %}{% if r.seeders is not none %}<span class="tag">{{ r.seeders }} seeders</span>{% endif %}</div></div><div class="release-actions">{% if r.protocol=='torrent' %}<form method="post" action="/debrid/add-release"><input type="hidden" name="release_json" value='{{ r|tojson|forceescape }}'><input type="hidden" name="return_query" value="{{ release_q }}"><button class="btn primary small">Add to Real-Debrid</button></form>{% else %}<span class="muted">Use Lidarr/Radarr/Sonarr for NZB grab</span>{% endif %}</div></div>{% else %}<div class="empty">No releases returned by Prowlarr.</div>{% endfor %}</div>{% endif %}
+</div>
+<div class="panel"><div class="panelhead"><div><h2>Real-Debrid library</h2><p>The same account-level torrent library DMM sees.</p></div><form method="post" action="/debrid/disconnect"><button class="btn small ghost">Disconnect</button></form></div>
+<form class="searchbar library-search" method="get"><input type="hidden" name="release_q" value="{{ release_q }}"><input name="q" value="{{ q }}" placeholder="Filter RD library"><button class="btn">Filter</button></form>
+<div class="tablewrap"><table><thead><tr><th>Name</th><th>Status</th><th>Size</th><th>Added</th><th>Progress</th></tr></thead><tbody>{% for t in torrents %}<tr><td><strong>{{ t.filename or t.original_filename or 'Unnamed torrent' }}</strong><small class="block muted">{{ t.hash or '' }}</small></td><td><span class="tag {{ 'green' if t.status=='downloaded' else 'amber' }}">{{ t.status }}</span></td><td>{{ t.bytes|default(0)|human_size }}</td><td>{{ t.added or '' }}</td><td>{{ t.progress|default(0) }}%</td></tr>{% else %}<tr><td colspan="5" class="empty">No Real-Debrid torrents found.</td></tr>{% endfor %}</tbody></table></div>
+</div>
+{% endif %}
+{% endblock %}

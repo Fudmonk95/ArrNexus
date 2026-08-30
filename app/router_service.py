@@ -9,7 +9,7 @@ from .instances import discover_instances, get_instance, ArrInstance
 from .scanner import ScanItem, inspect_item, normalize_title
 from .routing import decide_movie, decide_tv, RouteDecision
 from .importer import import_movie_source, import_tv_source, ImportErrorSafe
-from .db import log_import, add_activity, learn_exact_route
+from .db import log_import, add_activity, learn_exact_route, track_request, request_map
 
 
 def _client_for_instance(inst: ArrInstance):
@@ -142,11 +142,11 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
 
     if service == "radarr":
         dest_dir = arr_item.get("path") or f"{root}/{arr_item['title']} ({arr_item.get('year', '')})"
-        created = import_movie_source(source_path, dest_dir)
+        created = import_movie_source(source_path, dest_dir, arr_item.get("title", item.title_guess), arr_item.get("year") or item.year_guess)
         await client.rescan(int(arr_item["id"]))
     else:
         dest_dir = arr_item.get("path") or f"{root}/{arr_item['title']}"
-        created = import_tv_source(source_path, dest_dir)
+        created = import_tv_source(source_path, dest_dir, arr_item.get("title", item.title_guess))
         await client.rescan(int(arr_item["id"]))
 
     # User overrides teach the router an exact-title preference.
@@ -185,8 +185,38 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
 
 async def discover_lookup(term: str, media_type: str) -> list[dict]:
     if media_type == "movie":
-        return (await RadarrClient().lookup(term))[:30]
-    return (await SonarrClient().lookup(term))[:30]
+        results = (await RadarrClient().lookup(term))[:30]
+        id_key = "tmdbId"
+    else:
+        results = (await SonarrClient().lookup(term))[:30]
+        id_key = "tvdbId"
+
+    # Mark anything already owned by any discovered Arr instance. This keeps
+    # Discover useful after a request instead of presenting the same Add button.
+    owned = {}
+    service = "radarr" if media_type == "movie" else "sonarr"
+    for client, inst in await _all_instances(service):
+        try:
+            rows = await (client.movies() if service == "radarr" else client.series())
+        except Exception:
+            continue
+        for row in rows or []:
+            ext = row.get(id_key)
+            if ext:
+                owned[str(ext)] = {
+                    "instance": inst.instance if inst else "main",
+                    "destination": inst.destination_key if inst else "default",
+                    "arr_id": row.get("id"),
+                    "has_file": bool(row.get("hasFile") or row.get("statistics", {}).get("episodeFileCount")),
+                }
+    tracked = request_map(media_type)
+    for candidate in results:
+        ext = candidate.get(id_key)
+        state = owned.get(str(ext)) if ext else None
+        if not state and ext:
+            state = tracked.get(str(ext))
+        candidate["arrnexus_request"] = state or None
+    return results
 
 
 async def discover_add(candidate: dict, media_type: str, destination_key: str = "auto", search: bool = True) -> dict:
@@ -195,13 +225,14 @@ async def discover_add(candidate: dict, media_type: str, destination_key: str = 
         key = decision.key if destination_key == "auto" else destination_key
         root = settings.movie_roots[key]
         client, inst = client_for_destination("radarr", key)
-        # Avoid duplicate title in destination instance.
         existing = [x for x in await client.movies() if x.get("tmdbId") and x.get("tmdbId") == candidate.get("tmdbId")]
         movie = existing[0] if existing else await client.add_movie(candidate, root, search=False)
         if search:
             await client.search(int(movie["id"]))
-        add_activity("discover", movie.get("title", "Movie"), f"Added to Radarr/{inst.instance if inst else 'main'} and search queued")
-        return {"item": movie, "destination": key, "instance": inst.instance if inst else "main"}
+        inst_name = inst.instance if inst else "main"
+        track_request("movie", str(movie.get("tmdbId") or candidate.get("tmdbId") or ""), movie.get("title", candidate.get("title", "Movie")), movie.get("year"), key, inst_name, movie.get("id"), "requested")
+        add_activity("discover", movie.get("title", "Movie"), f"Added to Radarr/{inst_name} and search queued")
+        return {"item": movie, "destination": key, "instance": inst_name}
     decision = decide_tv(candidate.get("title", ""), candidate)
     key = decision.key if destination_key == "auto" else destination_key
     root = settings.tv_roots[key]
@@ -211,8 +242,10 @@ async def discover_add(candidate: dict, media_type: str, destination_key: str = 
     series = existing[0] if existing else await client.add_series(candidate, root, search=False)
     if search:
         await client.search(int(series["id"]))
-    add_activity("discover", series.get("title", "Series"), f"Added to Sonarr/{inst.instance if inst else 'main'} and search queued")
-    return {"item": series, "destination": key, "instance": inst.instance if inst else "main"}
+    inst_name = inst.instance if inst else "main"
+    track_request("tv", str(series.get("tvdbId") or tvdb or ""), series.get("title", candidate.get("title", "Series")), series.get("year"), key, inst_name, series.get("id"), "requested")
+    add_activity("discover", series.get("title", "Series"), f"Added to Sonarr/{inst_name} and search queued")
+    return {"item": series, "destination": key, "instance": inst_name}
 
 # Public alias used by dashboards/queue aggregation.
 client_for_instance = _client_for_instance

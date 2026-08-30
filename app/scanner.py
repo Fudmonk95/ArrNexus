@@ -66,8 +66,27 @@ def audio_files(path: Path | str) -> list[Path]:
     return media_files(path, AUDIO_EXTS)
 
 
+def _strip_release_prefix(value: str) -> str:
+    text = value.strip()
+    # Common DMM/RD torrent names include tracker/site prefixes such as
+    # "www.UIndex.org - Movie" or "www 1TamilMV ing - Movie". Those make
+    # metadata matching collapse to "www" and produce WW poster fallbacks.
+    low = text.lower()
+    if low.startswith("www"):
+        for marker in (" - ", " – ", " — ", " : "):
+            if marker in text:
+                prefix, rest = text.split(marker, 1)
+                if len(prefix) <= 48 and rest.strip():
+                    text = rest.strip()
+                    break
+    text = re.sub(r"^\s*\[[^\]]{1,40}\]\s*[-_:]*\s*", "", text)
+    text = re.sub(r"(?i)^\s*(?:torrentgalaxy|tgx|yts(?:\.mx)?|rarbg|eztv)\s*[-_:]+\s*", "", text)
+    return text
+
+
 def parse_title_year(name: str) -> tuple[str, int | None]:
-    cleaned = name.replace("_", " ").replace(".", " ")
+    raw = _strip_release_prefix(name)
+    cleaned = raw.replace("_", " ").replace(".", " ")
     m = YEAR_RE.search(cleaned)
     year = int(m.group(1)) if m else None
     if m:
@@ -75,8 +94,10 @@ def parse_title_year(name: str) -> tuple[str, int | None]:
     else:
         title = RELEASE_NOISE.sub("", cleaned)
     title = re.sub(r"[\[\](){}]+", " ", title)
+    # Strip residual release metadata after a clear separator.
+    title = re.split(r"\s[-–—]\s(?=(?:1080|720|2160|bluray|web|hdtv|x26|h26))", title, maxsplit=1, flags=re.I)[0]
     title = re.sub(r"\s+", " ", title).strip(" -._,")
-    return title or name, year
+    return title or raw or name, year
 
 
 def quality_from_name(value: str) -> int:

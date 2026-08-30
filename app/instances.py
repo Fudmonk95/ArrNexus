@@ -5,6 +5,7 @@ import re
 import xml.etree.ElementTree as ET
 from urllib.parse import urlsplit
 from .config import settings
+from .connections import get_connection, get_instance_override
 
 DATA_RE = re.compile(r"--data=(\S+)")
 PORT_RE = re.compile(r"--port=(\d+)")
@@ -82,8 +83,9 @@ def destination_for(service: str, instance: str) -> tuple[str | None, str | None
 
 
 def discover_instances() -> list[ArrInstance]:
-    host = settings.arr_host
-    scheme = urlsplit(settings.radarr_url).scheme or "http"
+    primary_radarr = get_connection("radarr")
+    host = urlsplit(primary_radarr.url).hostname or settings.arr_host
+    scheme = urlsplit(primary_radarr.url).scheme or "http"
     found: list[ArrInstance] = []
     for proc in Path("/proc").iterdir():
         if not proc.name.isdigit():
@@ -114,7 +116,19 @@ def discover_instances() -> list[ArrInstance]:
             # fallback to the known primary app ports
             port = {"radarr": 7878, "sonarr": 8989, "lidarr": 8686}[service]
         dest_key, root = destination_for(service, instance)
-        found.append(ArrInstance(service, instance, pid, data_dir, port, key, f"{scheme}://{host}:{port}", root, dest_key))
+        default_url = f"{scheme}://{host}:{port}"
+        # The DUMB mount namespace may expose config.xml but not always in a way
+        # a Docker process can parse. Prefer explicit UI overrides; for the main
+        # nzbdav instance fall back to the configured environment/API key.
+        override = get_instance_override(service, instance)
+        if override:
+            default_url = override.url or default_url
+            key = override.api_key or key
+        elif instance == "nzbdav":
+            primary = get_connection(service)
+            default_url = primary.url or default_url
+            key = key or primary.api_key
+        found.append(ArrInstance(service, instance, pid, data_dir, port, key, default_url, root, dest_key))
     # one row per service/instance, newest PID wins if duplicate process is shutting down
     dedup: dict[tuple[str, str], ArrInstance] = {}
     for item in sorted(found, key=lambda x: x.pid):
