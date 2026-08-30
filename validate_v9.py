@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
-"""ArrNexus v9.1.0-beta release validator.
+"""ArrNexus v9.0.0-beta release validator.
 
-Runs the retained v9 regression suite first (which itself runs v8 and v7), then checks
-v9.1's single visual identity, expanded public front door, safe public release
-export, onboarding/provider behaviour and performance architecture. No live user
-credentials are used.
+Runs the retained v8 regression suite first, then validates the v9 product
+front door, onboarding, provider registry, provider-neutral AIOStreams merge,
+branding assets and authorization boundaries against a fresh local database.
+No live user credentials are used.
 """
 from __future__ import annotations
 
 import compileall
-import io
 import os
 import subprocess
 import sys
 import tempfile
-import zipfile
 from pathlib import Path
 
 
@@ -23,9 +21,9 @@ def require(condition: bool, message: str):
         raise AssertionError(message)
 
 
-def run_v9(root: Path) -> None:
+def run_v8(root: Path) -> None:
     proc = subprocess.run(
-        [sys.executable, str(root / "validate_v9.py")],
+        [sys.executable, str(root / "validate_v8.py")],
         cwd=root,
         text=True,
         capture_output=True,
@@ -35,23 +33,23 @@ def run_v9(root: Path) -> None:
         print(proc.stdout.rstrip())
     if proc.stderr:
         print(proc.stderr.rstrip(), file=sys.stderr)
-    require(proc.returncode == 0, f"Retained v9 regression validator failed with exit code {proc.returncode}")
+    require(proc.returncode == 0, f"Retained v8 regression validator failed with exit code {proc.returncode}")
 
 
 def main() -> int:
     root = Path(__file__).resolve().parent
-    run_v9(root)
+    run_v8(root)
     require(compileall.compile_dir(root / "app", quiet=1), "Python compilation failed")
 
     logo = root / "app" / "static" / "arrnexus-logo-v9.png"
     icon = root / "app" / "static" / "arrnexus-icon-v9.png"
-    require(logo.is_file() and logo.stat().st_size > 10_000, "ArrNexus wordmark asset missing")
-    require(icon.is_file() and icon.stat().st_size > 10_000, "ArrNexus icon asset missing")
+    require(logo.is_file() and logo.stat().st_size > 10_000, "v9 ArrNexus wordmark asset missing")
+    require(icon.is_file() and icon.stat().st_size > 10_000, "v9 ArrNexus icon asset missing")
 
-    with tempfile.TemporaryDirectory(prefix="arrnexus-v91-validate-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="arrnexus-v9-validate-") as tmp:
         os.environ["DB_PATH"] = str(Path(tmp) / "router.db")
         os.environ["DB_DIR"] = tmp
-        os.environ["SESSION_SECRET"] = "validation-only-v91-session-secret"
+        os.environ["SESSION_SECRET"] = "validation-only-v9-session-secret"
         os.environ["RADARR_API_KEY"] = ""
         os.environ["SONARR_API_KEY"] = ""
         os.environ["LIDARR_API_KEY"] = ""
@@ -65,38 +63,16 @@ def main() -> int:
         from app.db import create_user, setting_get
         from app.providers import provider_credentials_for_aiostreams, provider_state
 
+        # All templates compile through the real app environment/custom filters.
         for template in sorted((root / "app" / "templates").glob("*.html")):
             main_app.templates.env.get_template(template.name)
 
         with TestClient(main_app.app) as client:
             landing = client.get("/", follow_redirects=False)
             require(landing.status_code == 200, "public landing page")
-            for text in (
-                "Your Media Stack", "One Control Plane", "DMM Inbox", "Quality Lab",
-                "AIOStreams Bridge", "Stack Readiness", "Download ZIP", "HOW IT WORKS",
-            ):
-                require(text in landing.text, f"expanded public landing content missing: {text}")
-            require("arrnexus-icon-v9.png" in landing.text, "brand asset not referenced on landing")
+            require("Your Media Stack" in landing.text and "One Control Plane" in landing.text, "v9 public product copy missing")
+            require("arrnexus-logo-v9" not in landing.text or "arrnexus-icon-v9" in landing.text, "v9 brand assets not referenced")
             require("1280 movies" not in landing.text, "public landing page leaked private dashboard data")
-
-            # The public download must be a source-only archive created from the
-            # running package, never a copy of persistent /data.
-            release = client.get("/download/latest", follow_redirects=False)
-            require(release.status_code == 200, "public release download")
-            require("application/zip" in release.headers.get("content-type", ""), "public release is not a zip")
-            with zipfile.ZipFile(io.BytesIO(release.content)) as zf:
-                names = zf.namelist()
-            require(any(n.endswith("/app/main.py") for n in names), "public release missing application source")
-            require(any(n.endswith("/validate.py") for n in names), "public release missing validator")
-            forbidden = [
-                n for n in names
-                if "/data/" in n or n.endswith("/.env") or n.endswith("/session_secret")
-                or n.endswith((".db", ".sqlite", ".sqlite3", ".pyc"))
-                or "/__pycache__/" in n or "/aiostreams_backups/" in n
-            ]
-            require(not forbidden, f"public release included runtime/private files: {forbidden[:3]}")
-            checksum = client.get("/download/latest.sha256")
-            require(checksum.status_code == 200 and "arrnexus-v9.1.0-beta.zip" in checksum.text, "public checksum endpoint")
 
             private = client.get("/dashboard", follow_redirects=False)
             require(private.status_code == 303 and private.headers.get("location") == "/setup", "unconfigured dashboard should route to setup")
@@ -104,9 +80,9 @@ def main() -> int:
             setup = client.post(
                 "/setup",
                 data={
-                    "username": "v91validator",
-                    "email": "v91@example.invalid",
-                    "display_name": "V9.1 Validator",
+                    "username": "v9validator",
+                    "email": "v9@example.invalid",
+                    "display_name": "V9 Validator",
                     "password": "validation-password-123",
                     "confirm": "validation-password-123",
                 },
@@ -137,6 +113,8 @@ def main() -> int:
             masked_page = client.get("/providers")
             require("validation-torbox-secret" not in masked_page.text, "provider page leaked secret")
 
+            # Provider-neutral merge: add TorBox, preserve unrelated config and
+            # preserve an already-populated remote Premiumize credential.
             original = {
                 "services": [
                     {"id": "premiumize", "enabled": True, "credentials": {"apiKey": "remote-premiumize-secret"}},
@@ -163,23 +141,19 @@ def main() -> int:
             safe = aio.safe_json(plan["config"])
             require("validation-torbox-secret" not in safe and "remote-premiumize-secret" not in safe, "provider merge preview leaked a secret")
 
-            profile = client.get("/profile")
-            require(profile.status_code == 200, "profile page")
-            require("Theme gallery" not in profile.text and "ArrNexus UI" in profile.text, "legacy theme switching still exposed")
-
             readiness = client.get("/readiness", follow_redirects=False)
             require(readiness.status_code == 200 and "Stack Readiness" in readiness.text, "stack readiness page")
 
             landing_after = client.get("/", follow_redirects=False)
-            require(landing_after.status_code == 200 and "Dashboard" in landing_after.text, "logged-in public landing CTA should expose dashboard")
+            require(landing_after.status_code == 200 and "Sign in" not in landing_after.text and "Dashboard" in landing_after.text, "logged-in public landing CTA should expose dashboard, not private data")
 
             finish = client.post("/onboarding/finish", follow_redirects=False)
             require(finish.status_code == 303 and finish.headers.get("location", "").startswith("/dashboard"), "onboarding finish")
             require(setting_get("setup.complete", "") == "true", "onboarding did not mark setup complete")
 
-            create_user("normalv91", "normalv91@example.invalid", "Normal", "validation-password-456", "user")
+            create_user("normalv9", "normalv9@example.invalid", "Normal", "validation-password-456", "user")
             client.get("/logout")
-            login = client.post("/login", data={"username": "normalv91", "password": "validation-password-456"}, follow_redirects=False)
+            login = client.post("/login", data={"username": "normalv9", "password": "validation-password-456"}, follow_redirects=False)
             require(login.status_code == 303 and login.headers.get("location") == "/dashboard", "login should enter private dashboard")
             for admin_url in ("/providers", "/readiness", "/onboarding"):
                 denied = client.get(admin_url, follow_redirects=False)
@@ -187,28 +161,18 @@ def main() -> int:
 
     main_source = (root / "app" / "main.py").read_text(encoding="utf-8")
     base = (root / "app" / "templates" / "base.html").read_text(encoding="utf-8")
-    landing_source = (root / "app" / "templates" / "landing.html").read_text(encoding="utf-8")
-    profile_source = (root / "app" / "templates" / "profile.html").read_text(encoding="utf-8")
-    css = (root / "app" / "static" / "app.css").read_text(encoding="utf-8")
-    js = (root / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    landing = (root / "app" / "templates" / "landing.html").read_text(encoding="utf-8")
     providers = (root / "app" / "providers.py").read_text(encoding="utf-8")
     aio_source = (root / "app" / "aiostreams.py").read_text(encoding="utf-8")
-    release_source = (root / "app" / "release_export.py").read_text(encoding="utf-8")
-
-    require('APP_VERSION = "9.1.0-beta"' in main_source, "v9.1 beta version string missing")
-    for route in ("/dashboard", "/onboarding", "/providers", "/readiness", "/download/latest"):
-        require(route in main_source, f"missing v9.1 route {route}")
-    require("data-theme" not in base, "private app still selects legacy themes")
-    require("Theme gallery" not in profile_source and "data-theme-choice" not in profile_source, "theme UI not removed")
-    require("ArrNexus v9.1 — one product-wide visual system" in css and "--bg:#050506" in css, "unified black v9.1 design system missing")
-    require("stale-while-revalidate" in js and "idlePrefetch" in js and "inflight" in js, "v9.1 soft-navigation performance layer missing")
-    require("_DASHBOARD_CACHE_TTL" in main_source and "dashboard_snapshot" in main_source and "asyncio.to_thread(scan_source)" in main_source, "dashboard stale-while-revalidate cache missing")
-    require("_EXCLUDED_DIRS" in release_source and '"data"' in release_source and '"session_secret"' in release_source, "safe public release exporter missing exclusions")
-    require("arrnexus-icon-v9.png" in base and "arrnexus-icon-v9.png" in landing_source, "brand icon not integrated")
+    require(any(v in main_source for v in ('APP_VERSION = "9.1.0-beta"', 'APP_VERSION = "9.0.0-beta"')), "v9/v9.1 beta version string missing")
+    for route in ("/dashboard", "/onboarding", "/providers", "/readiness"):
+        require(route in main_source, f"missing v9 route {route}")
+    require("arrnexus-icon-v9.png" in base and "arrnexus-icon-v9.png" in landing, "v9 brand icon not integrated")
+    require("Provider Registry" in landing or "provider" in landing.lower(), "provider-neutral public copy missing")
     require("provider_credentials_for_aiostreams" in providers and '"torbox"' in providers, "provider registry integration missing")
     require("provider_payload" in aio_source and "only fill missing remote" in aio_source, "provider-neutral AIOStreams safety merge missing")
 
-    print("PASS: ArrNexus v9.1.0-beta retains v7/v8/v9 functionality and adds one product-wide UI, faster stale-while-revalidate navigation, dashboard snapshots and safe public release downloads")
+    print("PASS: ArrNexus v9.0.0-beta retains v7/v8 regressions and adds branded public onboarding, provider-neutral acquisition, readiness scoring and safe multi-provider AIOStreams wiring")
     return 0
 
 

@@ -1,1 +1,30 @@
-{% extends 'base.html' %}{% block heading %}Profile & Appearance{% endblock %}{% block content %}{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}{% if error %}<div class="alert error">{{ error }}</div>{% endif %}<div class="profile-layout"><section class="panel profile-summary"><div class="profile-avatar">{{ (user.display_name or user.username)[:2]|upper }}</div><h2>{{ user.display_name or user.username }}</h2><p>{{ user.email or 'No email configured' }}</p><div class="tags"><span class="tag green">{{ user.role }}</span><span class="tag blue">{{ user.theme }}</span></div></section><section class="panel"><div class="panelhead"><div><h2>Account</h2><p>Appearance is saved to this profile, so different family users can have different layouts.</p></div></div><form method="post" class="formgrid" id="profileForm"><div class="grid-2"><label>Username<input name="username" value="{{ user.username }}" required></label><label>Email<input type="email" name="email" value="{{ user.email or '' }}"></label></div><label>Display name<input name="display_name" value="{{ user.display_name or user.username }}"></label><input type="hidden" id="themeInput" name="theme" value="{{ user.theme or 'nexus' }}"><label>Dashboard layout<select name="dashboard_layout"><option value="default" {{ 'selected' if user.dashboard_layout=='default' }}>Balanced</option><option value="compact" {{ 'selected' if user.dashboard_layout=='compact' }}>Compact operations</option><option value="visual" {{ 'selected' if user.dashboard_layout=='visual' }}>Visual / charts first</option></select></label><label>New password <small>Leave blank to keep current.</small><input type="password" name="password"></label><div class="formactions"><button class="btn primary">Save profile</button></div></form></section></div><section class="panel"><div class="panelhead"><div><h2>Theme gallery</h2><p>Click a theme to preview it instantly; save the profile to keep it.</p></div></div><div class="theme-grid">{% for key,label in themes %}<button type="button" class="theme-swatch theme-{{ key }} {{ 'selected' if user.theme==key }}" data-theme-choice="{{ key }}"><span></span><strong>{{ label }}</strong><small>{{ key }}</small></button>{% endfor %}</div></section>{% endblock %}
+{% extends 'base.html' %}
+{% block title %}Profile · ArrNexus{% endblock %}
+{% block heading %}Profile{% endblock %}
+{% block content %}
+{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+<div class="v91-page-lead">
+  <div><span class="v9-kicker">YOUR ARRNEXUS ACCOUNT</span><h2>Profile & preferences</h2><p>ArrNexus now uses one product-wide visual identity. Account preferences focus on how the control centre behaves, not on changing its brand.</p></div>
+  <div class="v91-account-badge"><span>{{ (user.display_name or user.username)[:2]|upper }}</span><div><strong>{{ user.display_name or user.username }}</strong><small>{{ user.role|capitalize }}</small></div></div>
+</div>
+<div class="profile-layout v91-profile-layout">
+  <section class="panel profile-summary v91-profile-summary">
+    <div class="profile-avatar">{{ (user.display_name or user.username)[:2]|upper }}</div>
+    <h2>{{ user.display_name or user.username }}</h2>
+    <p>{{ user.email or 'No email configured' }}</p>
+    <div class="tags"><span class="tag green">{{ user.role }}</span><span class="tag">ArrNexus UI</span></div>
+    <div class="v91-profile-note"><strong>One interface</strong><span>The black ArrNexus design is now shared by every profile and page.</span></div>
+  </section>
+  <section class="panel">
+    <div class="panelhead"><div><h2>Account</h2><p>Update your identity, dashboard density or password.</p></div></div>
+    <form method="post" class="formgrid" id="profileForm">
+      <div class="grid-2"><label>Username<input name="username" value="{{ user.username }}" required></label><label>Email<input type="email" name="email" value="{{ user.email or '' }}"></label></div>
+      <label>Display name<input name="display_name" value="{{ user.display_name or user.username }}"></label>
+      <label>Dashboard layout<select name="dashboard_layout"><option value="default" {{ 'selected' if user.dashboard_layout=='default' }}>Balanced</option><option value="compact" {{ 'selected' if user.dashboard_layout=='compact' }}>Compact operations</option><option value="visual" {{ 'selected' if user.dashboard_layout=='visual' }}>Visual / charts first</option></select></label>
+      <label>New password <small>Leave blank to keep the current password.</small><input type="password" name="password" autocomplete="new-password"></label>
+      <div class="formactions"><button class="btn primary">Save profile</button></div>
+    </form>
+  </section>
+</div>
+{% endblock %}

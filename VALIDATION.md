@@ -1,87 +1,95 @@
-# ArrNexus v9.0.0-beta Validation Report
+# ArrNexus v9.1.0-beta Validation Report
 
-Release target: **ArrNexus 9.0.0-beta**
+Release target: **ArrNexus 9.1.0-beta**
 
-This report records checks actually performed on the packaged v9 source. It does not claim live verification against the user's Debian/DUMB/Arr/provider environment.
+This report records deterministic/offline checks run against the release source. It does not claim live verification against a user's Debian/DUMB/Arr/provider environment.
 
-## Regression suites
+## Regression chain
 
-`validate.py` executes `validate_v8.py`, which executes the preserved `validate_v7.py`.
+`validate.py` executes `validate_v9.py`, which executes `validate_v8.py`, which executes the preserved `validate_v7.py`.
 
-Observed development-tree result:
+Expected result:
 
 ```text
 PASS: ArrNexus v7.0 Spotify personal library, native InfiniDysk telemetry, English Language Guard, Prowlarr indexer control, Sonarr TV search, strict connectors and performance caches
 PASS: ArrNexus v8 regression suite retained: v7 regressions + AIOStreams full-config preview/apply/backup/rollback/search integration
 PASS: ArrNexus v9.0.0-beta retains v7/v8 regressions and adds branded public onboarding, provider-neutral acquisition, readiness scoring and safe multi-provider AIOStreams wiring
+PASS: ArrNexus v9.1.0-beta retains v7/v8/v9 functionality and adds one product-wide UI, faster stale-while-revalidate navigation, dashboard snapshots and safe public release downloads
 ```
 
-## v9-specific deterministic checks
+## v9.1 deterministic checks
 
-- Public `/` landing page renders without authentication.
-- Private `/dashboard` redirects an unconfigured instance to `/setup`.
-- First administrator creation redirects to `/onboarding` and does not mark setup complete prematurely.
-- New landing, setup, login, onboarding, provider and readiness templates compile using the real Jinja environment.
-- ArrNexus v9 wordmark/icon files exist and are integrated into public/private UI and PWA assets.
-- Provider Registry renders representative Debrid and Usenet providers.
-- Provider secret values are masked and are not rendered back into the provider page.
-- TorBox provider credentials are available internally to the AIOStreams bridge after saving.
-- Provider-neutral AIOStreams merge enables a configured provider and preserves unrelated userData.
-- Existing AIOStreams provider credentials win over ArrNexus values rather than being blindly overwritten.
-- Provider-aware masked preview does not expose provider keys.
-- Stack Readiness page renders for administrators.
-- Setup completion is only recorded after the onboarding finish action.
-- Non-admin users are denied `/providers`, `/readiness` and `/onboarding`.
-- Login enters `/dashboard` rather than exposing private Dashboard data at the public root URL.
+- public landing page renders unauthenticated
+- landing page contains expanded product/feature/workflow/download content
+- public page does not expose private Dashboard counts
+- current-build public source ZIP endpoint returns a valid archive
+- public source archive includes application source + validator
+- public source archive excludes `/data`, `.env`, session secrets, databases, AIOStreams backups, bytecode and cache directories
+- SHA-256 endpoint is present
+- first administrator still enters guided onboarding
+- Provider Registry still masks secrets
+- provider-neutral AIOStreams merge still preserves existing remote provider credentials
+- profile no longer exposes theme switching
+- Stack Readiness authorization remains intact
+- non-admin users remain denied administrator-only provider/readiness/onboarding pages
+- base application shell no longer selects a per-profile theme
+- black v9.1 design-system markers are present
+- client soft-navigation includes stale-while-revalidate, in-flight de-duplication and idle prefetch
+- server Dashboard includes short-lived stale-while-revalidate snapshot caching
+- source/link/library filesystem calls are moved through worker threads on the Dashboard path
 
-## v8 AIOStreams regression checks retained
+## Retained v9/v8/v7 coverage
 
-The retained v8 suite continues to exercise a deterministic local HTTP AIOStreams implementation and verifies:
+The retained suites continue to cover:
 
-- public status vs authenticated User API verification
-- `encryptedPassword` reuse
-- full User API replacement semantics
-- full-config preservation
-- stale-preview refusal with zero PUTs
-- backup before Auto-Wire write
-- backup before rollback
+- public/private product split and guided onboarding
+- Provider Registry
+- Stack Readiness
+- AIOStreams stale-preview refusal / backup / apply / rollback / redaction
 - Prowlarr URL/API-key reuse
-- automatic torrent + Usenet Prowlarr source behavior
-- conservative NzbDAV credential handling
-- Real-Debrid masking
-- playback URL/header/Authorization/Cookie redaction
-- administrator-only AIOStreams routes
-
-## Release-engineering checks
-
-Completed before packaging:
-
-- Python module compilation: **PASS**
-- actual Jinja template compilation via the application environment: **PASS** (through `validate.py`)
-- JavaScript syntax validation with Node v22.16.0: **PASS**
-- fresh SQLite/admin setup via regression validators: **PASS**
-- real Uvicorn process from a separate clean source copy: **PASS**
-  - `GET /api/health` -> HTTP 200
-  - `GET /setup` -> HTTP 200
-  - `GET /` -> HTTP 200
-- public landing response contained ArrNexus branding and no authenticated library data: **PASS**
-
-The final package pass additionally removes bytecode/runtime artifacts, scans the staged package for secrets and private deployment literals, creates the ZIP, re-extracts that exact ZIP into another clean directory, and reruns `validate.py` plus the JavaScript syntax check there. The exact ZIP SHA-256 is recorded alongside the release artifact.
+- provider credential preservation
+- Spotify personal OAuth aggregation logic
+- Language Guard
+- native InfiniDysk telemetry
+- season-correct Sonarr search
+- Prowlarr management
+- strict connectors
+- namespace/source/link/library caches
 
 ## Docker status
 
-Docker is **not installed in the packaging environment**. Therefore `docker compose config` and `docker compose build` were **not run here and are not claimed as passed**. They must be run on the Debian deployment host before the beta is accepted.
+Docker availability is checked during release packaging. If Docker is unavailable in the packaging environment, `docker compose config` and image build are explicitly recorded as **not run**, not as passed.
 
-## Live checks still required before stable promotion
+## Live checks required before stable promotion
 
-- `docker compose config` on the Debian host
-- Docker image build/start
-- v8 persistent-data copy migration
-- existing Arr/DUMB/Jellyfin/InfiniDysk workflows
-- real mount namespace and mount registry
-- provider migration/credentials
-- live AIOStreams provider Auto-Wire preview/apply/rollback
-- real Spotify OAuth callback
-- real playback/client behavior where applicable
+- `docker compose config` on the target host
+- image build/start
+- v9.0 persistent-data copy
+- navigation responsiveness against the real Arr/DUMB namespace
+- existing Arr, DMM, Jellyfin, InfiniDysk and music workflows
+- Provider Registry migration/state
+- real AIOStreams preview/apply/rollback
+- real Spotify OAuth where configured
+- public source download endpoint from the deployed container
 
-Do not promote `9.0.0-beta` to stable until the live deployment checks pass.
+Do not promote `9.1.0-beta` to stable until live checks pass.
+
+## Packaging-environment results for this build
+
+Before the final ZIP was created:
+
+- Python compilation: **PASS**
+- real Jinja compilation through `validate.py`: **PASS**
+- JavaScript syntax (`node --check`, Node v22.16.0): **PASS**
+- v7 regression suite: **PASS**
+- v8 regression suite: **PASS**
+- v9 regression suite: **PASS**
+- v9.1 regression suite: **PASS**
+- clean-copy real Uvicorn start: **PASS**
+- `GET /api/health`: **HTTP 200**
+- `GET /setup`: **HTTP 200**
+- `GET /`: **HTTP 200**
+- public source release endpoint: **HTTP 200** and source/runtime exclusion inspection **PASS**
+- Docker executable in packaging environment: **NOT AVAILABLE**
+
+The final release process then stages a bytecode-free source tree, performs a secret/private-artifact scan, creates the versioned ZIP, extracts that exact ZIP into a separate directory and reruns the full validator and JavaScript check there.

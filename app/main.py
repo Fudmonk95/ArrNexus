@@ -1,7 +1,9 @@
 from __future__ import annotations
 import asyncio
+import copy
 import json
 import secrets
+import time
 import smtplib
 import io
 import re
@@ -74,6 +76,7 @@ from .language_guard import (
 )
 from .providers import list_provider_states, save_provider, provider_definition, categories as provider_categories, migrate_legacy_providers
 from .readiness import stack_readiness
+from .release_export import build_public_release
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title="ArrNexus")
@@ -82,10 +85,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "9.0.0-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "9.1.0-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "9.0.0-beta"
+APP_VERSION = "9.1.0-beta"
 
 BRAND_ICONS = {
     "radarr": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/radarr.png",
@@ -175,6 +178,15 @@ async def startup():
     except Exception:
         pass
 
+    # Build the first v9.1 dashboard snapshot in the background so opening the
+    # Control Centre does not have to fan out to every service on demand.
+    try:
+        dash = asyncio.create_task(_refresh_dashboard_snapshot())
+        RUNNING_TASKS.add(dash)
+        dash.add_done_callback(RUNNING_TASKS.discard)
+    except Exception:
+        pass
+
 
 def logged_in(request: Request):
     return bool(request.session.get("user_id") or request.session.get("auth"))
@@ -252,7 +264,7 @@ async def setup_create(request: Request, username: str = Form(...), email: str =
         setting_set("setup.stage", "administrator")
         log_event("info", "setup", "administrator_created", f"Administrator {username} created")
         request.session.clear(); request.session["auth"] = True; request.session["user_id"] = uid
-        request.session["theme"] = "nexus"; request.session["display_name"] = display_name or username; request.session["role"] = "admin"
+        request.session["theme"] = "arrnexus"; request.session["display_name"] = display_name or username; request.session["role"] = "admin"
         return RedirectResponse("/onboarding", status_code=303)
     except Exception as exc:
         return RedirectResponse(f"/setup?error={quote(str(exc))}", status_code=303)
@@ -331,7 +343,7 @@ async def login(request: Request, username: str = Form(...), password: str = For
     request.session.clear()
     request.session["auth"] = True
     request.session["user_id"] = int(user["id"])
-    request.session["theme"] = user.get("theme") or "nexus"
+    request.session["theme"] = "arrnexus"
     request.session["display_name"] = user.get("display_name") or user.get("username")
     request.session["role"] = user.get("role") or "user"
     return RedirectResponse("/dashboard", status_code=303)
@@ -585,77 +597,213 @@ async def public_landing(request: Request):
         "configured": user_count() > 0,
         "logged_in": logged_in(request),
         "version": APP_VERSION,
+        "release_filename": f"arrnexus-v{APP_VERSION}.zip",
     })
 
 
-@app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    require_auth(request)
+@app.get("/download/latest")
+async def public_release_download():
+    release = await asyncio.to_thread(build_public_release, BASE.parent, APP_VERSION)
+    return FileResponse(
+        release["path"],
+        media_type="application/zip",
+        filename=release["filename"],
+        headers={
+            "Cache-Control": "public, max-age=300",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.get("/download/latest.sha256")
+async def public_release_sha256():
+    release = await asyncio.to_thread(build_public_release, BASE.parent, APP_VERSION)
+    body = f"{release['sha256']}  {release['filename']}\n"
+    return Response(
+        body,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={release['filename']}.sha256", "Cache-Control": "public, max-age=300"},
+    )
+
+
+@app.get("/api/public/release")
+async def public_release_metadata():
+    release = await asyncio.to_thread(build_public_release, BASE.parent, APP_VERSION)
+    return {
+        "version": APP_VERSION,
+        "filename": release["filename"],
+        "sha256": release["sha256"],
+        "size": release["size"],
+        "files": release["files"],
+        "download": "/download/latest",
+        "checksum": "/download/latest.sha256",
+    }
+
+
+_DASHBOARD_CACHE_TTL = 25.0
+_DASHBOARD_CACHE_AT = 0.0
+_DASHBOARD_CACHE: dict | None = None
+_DASHBOARD_REFRESH_TASK: asyncio.Task | None = None
+_DASHBOARD_LOCK = asyncio.Lock()
+
+
+async def _build_dashboard_snapshot() -> dict:
+    """Build the expensive, user-independent dashboard state once.
+
+    v9.1 keeps this work off ordinary navigation. Filesystem inventories use
+    worker threads, service calls run concurrently, and the resulting snapshot
+    is reused for a short period by every authenticated profile.
+    """
     try:
-        items = scan_source()
+        items = await asyncio.to_thread(scan_source)
     except Exception as exc:
         items = []
-        log_event("warning","namespace","source_scan_unavailable",str(exc))
-    imports = successful_imports_by_source(); states = item_states()
-    try: links = build_source_link_index()
-    except Exception: links = {}
+        log_event("warning", "namespace", "source_scan_unavailable", str(exc))
+
+    imports = successful_imports_by_source()
+    states = item_states()
+    try:
+        links = await asyncio.to_thread(build_source_link_index)
+    except Exception:
+        links = {}
     imported = sum(1 for x in items if x.path in imports or x.path in links)
     ignored = sum(1 for x in items if (states.get(x.path) or {}).get("state") == "ignored")
     waiting = max(0, len(items) - imported - ignored)
+
     async def _jf_status():
         try:
-            js = await asyncio.wait_for(jellyfin_status(), timeout=4.0)
+            js = await asyncio.wait_for(jellyfin_status(), timeout=3.0)
             return {"ok": True, "version": js.get("Version") or js.get("version") or "Connected"}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
     rad_s, son_s, lid_s, pro_s, jf_s, see_s = await asyncio.gather(
-        arr_status(RadarrClient()), arr_status(SonarrClient()), arr_status(LidarrClient()),
-        arr_status(ProwlarrClient()), _jf_status(), arr_status(SeerrClient()),
+        arr_status(RadarrClient(), 3.0), arr_status(SonarrClient(), 3.0), arr_status(LidarrClient(), 3.0),
+        arr_status(ProwlarrClient(), 3.0), _jf_status(), arr_status(SeerrClient(), 3.0),
     )
     statuses = {"radarr": rad_s, "sonarr": son_s, "lidarr": lid_s, "prowlarr": pro_s, "jellyfin": jf_s, "seerr": see_s}
 
-    queue_counts = {"radarr":0,"sonarr":0,"lidarr":0}; library_movie_count=library_tv_count=0
-    route_inventory=[]
-    dashboard_instances=[i for i in discover_instances() if i.service in {"radarr","sonarr","lidarr"} and i.api_key]
+    queue_counts = {"radarr": 0, "sonarr": 0, "lidarr": 0}
+    library_movie_count = library_tv_count = 0
+    route_inventory = []
+    try:
+        discovered = await asyncio.to_thread(discover_instances)
+    except Exception:
+        discovered = []
+    dashboard_instances = [i for i in discovered if i.service in {"radarr", "sonarr", "lidarr"} and i.api_key]
 
     async def _load_dashboard_instance(inst):
         try:
-            c=client_for_instance(inst)
-            media_coro = c.movies() if inst.service=="radarr" else c.series() if inst.service=="sonarr" else c.artists()
-            rows, q = await asyncio.wait_for(asyncio.gather(media_coro, c.queue(200)), timeout=5.0)
-            rec=q.get("records",[]) if isinstance(q,dict) else (q or [])
+            c = client_for_instance(inst)
+            media_coro = c.movies() if inst.service == "radarr" else c.series() if inst.service == "sonarr" else c.artists()
+            rows, q = await asyncio.wait_for(asyncio.gather(media_coro, c.queue(200)), timeout=4.0)
+            rec = q.get("records", []) if isinstance(q, dict) else (q or [])
             return inst, rows or [], rec
         except Exception:
             return inst, [], []
 
     loaded = await asyncio.gather(*(_load_dashboard_instance(i) for i in dashboard_instances))
     for inst, rows, rec in loaded:
-        if inst.service=="radarr": library_movie_count += len(rows)
-        elif inst.service=="sonarr": library_tv_count += len(rows)
-        route_inventory.append({"service":inst.service,"instance":inst.instance,"route":inst.destination_key or "default","count":len(rows)})
-        queue_counts[inst.service] = queue_counts.get(inst.service,0) + len(rec)
-    dest_counts={}
+        if inst.service == "radarr":
+            library_movie_count += len(rows)
+        elif inst.service == "sonarr":
+            library_tv_count += len(rows)
+        route_inventory.append({"service": inst.service, "instance": inst.instance, "route": inst.destination_key or "default", "count": len(rows)})
+        queue_counts[inst.service] = queue_counts.get(inst.service, 0) + len(rec)
+
+    dest_counts = {}
     for row in recent_imports(5000):
-        if row["status"] in {"complete","linked"} and not row["undone"]:
-            key=f"{row['arr_name'] or row['media_type']}:{row['destination_key']}"; dest_counts[key]=dest_counts.get(key,0)+1
-    rd_user=None
+        if row["status"] in {"complete", "linked"} and not row["undone"]:
+            key = f"{row['arr_name'] or row['media_type']}:{row['destination_key']}"
+            dest_counts[key] = dest_counts.get(key, 0) + 1
+
+    rd_user = None
     if rd.connected():
-        try: rd_user=await asyncio.wait_for(rd.user(), timeout=4.0)
-        except Exception: rd_user={"error":"Connected, but account status could not be loaded"}
-    activity_days=activity_by_day(7); dest_top=sorted(dest_counts.items(),key=lambda x:x[1],reverse=True)[:10]
-    inv=inventory_roots(); scrape_rows=list_scrapes(200,"all"); scraping_count=sum(1 for x in scrape_rows if (x.get("status") or "") in {"searching","queued","running"})
-    active_jobs=[dict(x) for x in recent_jobs(20) if x["status"] in {"queued","running"}]
-    user=get_user(int(request.session.get("user_id") or 0)) or {}
-    return templates.TemplateResponse("dashboard.html",{
-        "request":request,"items":items[:10],"source_count":len(items),"movie_count":sum(1 for i in items if i.media_type=="movie"),"tv_count":sum(1 for i in items if i.media_type=="tv"),
-        "library_movie_count":library_movie_count,"library_tv_count":library_tv_count,"route_inventory":route_inventory,"libraries":inv,
-        "imported_count":imported,"waiting_count":waiting,"ignored_count":ignored,"statuses":statuses,"queue_counts":queue_counts,"scraping_count":scraping_count,"active_jobs":active_jobs,
-        "dest_counts":dest_top,"dest_max":max([x[1] for x in dest_top],default=1),"activity_days":activity_days,"activity_max":max([int(x.get("count") or 0) for x in activity_days],default=1),
-        "recent":recent_imports(8),"activity":recent_activity(12),"jobs":recent_jobs(6),"source_root":source_root(),"namespace":namespace_status(),"rd_connected":rd.connected(),"rd_user":rd_user,
-        "dashboard_layout":user.get("dashboard_layout") or "default",
+        try:
+            rd_user = await asyncio.wait_for(rd.user(), timeout=3.0)
+        except Exception:
+            rd_user = {"error": "Connected, but account status could not be loaded"}
+
+    activity_days = activity_by_day(7)
+    dest_top = sorted(dest_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+    try:
+        inv, ns = await asyncio.gather(
+            asyncio.to_thread(inventory_roots),
+            asyncio.to_thread(namespace_status),
+        )
+    except Exception:
+        inv, ns = [], {"ok": False, "error": "Namespace snapshot unavailable"}
+    scrape_rows = list_scrapes(200, "all")
+    scraping_count = sum(1 for x in scrape_rows if (x.get("status") or "") in {"searching", "queued", "running"})
+    active_jobs = [dict(x) for x in recent_jobs(20) if x["status"] in {"queued", "running"}]
+
+    return {
+        "items": items[:10], "source_count": len(items),
+        "movie_count": sum(1 for i in items if i.media_type == "movie"),
+        "tv_count": sum(1 for i in items if i.media_type == "tv"),
+        "library_movie_count": library_movie_count, "library_tv_count": library_tv_count,
+        "route_inventory": route_inventory, "libraries": inv,
+        "imported_count": imported, "waiting_count": waiting, "ignored_count": ignored,
+        "statuses": statuses, "queue_counts": queue_counts, "scraping_count": scraping_count,
+        "active_jobs": active_jobs, "dest_counts": dest_top,
+        "dest_max": max([x[1] for x in dest_top], default=1),
+        "activity_days": activity_days,
+        "activity_max": max([int(x.get("count") or 0) for x in activity_days], default=1),
+        "recent": recent_imports(8), "activity": recent_activity(12), "jobs": recent_jobs(6),
+        "source_root": source_root(), "namespace": ns,
+        "rd_connected": rd.connected(), "rd_user": rd_user,
+        "snapshot_built_at": time.time(),
+    }
+
+
+async def _refresh_dashboard_snapshot() -> dict:
+    global _DASHBOARD_CACHE_AT, _DASHBOARD_CACHE
+    data = await _build_dashboard_snapshot()
+    _DASHBOARD_CACHE = data
+    _DASHBOARD_CACHE_AT = time.monotonic()
+    return data
+
+
+async def dashboard_snapshot(force: bool = False) -> tuple[dict, int]:
+    """Return a fast stale-while-revalidate dashboard snapshot."""
+    global _DASHBOARD_REFRESH_TASK
+    now = time.monotonic()
+    if _DASHBOARD_CACHE is not None and not force:
+        age = max(0, int(time.time() - float(_DASHBOARD_CACHE.get("snapshot_built_at") or time.time())))
+        if now - _DASHBOARD_CACHE_AT >= _DASHBOARD_CACHE_TTL:
+            if _DASHBOARD_REFRESH_TASK is None or _DASHBOARD_REFRESH_TASK.done():
+                _DASHBOARD_REFRESH_TASK = asyncio.create_task(_refresh_dashboard_snapshot())
+                RUNNING_TASKS.add(_DASHBOARD_REFRESH_TASK)
+                _DASHBOARD_REFRESH_TASK.add_done_callback(RUNNING_TASKS.discard)
+        return copy.deepcopy(_DASHBOARD_CACHE), age
+
+    async with _DASHBOARD_LOCK:
+        if _DASHBOARD_CACHE is None or force:
+            data = await _refresh_dashboard_snapshot()
+        else:
+            data = _DASHBOARD_CACHE
+    age = max(0, int(time.time() - float(data.get("snapshot_built_at") or time.time())))
+    return copy.deepcopy(data), age
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard(request: Request):
+    user = current_user(request)
+    data, age = await dashboard_snapshot()
+    data.update({
+        "request": request,
+        "dashboard_layout": user.get("dashboard_layout") or "default",
         "readiness": stack_readiness() if user.get("role") == "admin" else None,
+        "snapshot_age": age,
     })
+    return templates.TemplateResponse("dashboard.html", data)
+
+
+@app.post("/api/dashboard/refresh")
+async def refresh_dashboard(request: Request):
+    require_auth(request)
+    _data, age = await dashboard_snapshot(force=True)
+    return {"ok": True, "age": age}
 
 
 @app.get("/inbox", response_class=HTMLResponse)
@@ -1103,12 +1251,6 @@ async def save_connection_route(request: Request, service: str = Form(...), inst
     return RedirectResponse(f"/arrs?notice={quote(f'{service.title()} / {instance} saved')}", status_code=303)
 
 
-THEMES = [
-    ("nexus","ArrNexus"),("radarr","Radarr Gold"),("sonarr","Sonarr Blue"),("lidarr","Lidarr Green"),
-    ("prowlarr","Prowlarr Purple"),("jellyfin","Jellyfin Violet"),("spotify","Music Green"),
-    ("oled","OLED Black"),("nord","Nord"),("dracula","Dracula"),("light","Clean Light"),("cyber","Cyber")
-]
-
 
 @app.get("/profile", response_class=HTMLResponse)
 async def profile_page(request: Request, notice: str = "", error: str = ""):
@@ -1118,17 +1260,16 @@ async def profile_page(request: Request, notice: str = "", error: str = ""):
     if not user:
         request.session.clear()
         return RedirectResponse("/setup" if user_count()==0 else "/login?notice="+quote("Please sign in again to open your profile"),status_code=303)
-    return templates.TemplateResponse("profile.html", {"request":request,"user":user,"themes":THEMES,"notice":notice,"error":error})
+    return templates.TemplateResponse("profile.html", {"request":request,"user":user,"notice":notice,"error":error})
 
 
 @app.post("/profile")
-async def profile_save(request: Request, username: str = Form(...), email: str = Form(""), display_name: str = Form(""), theme: str = Form("nexus"), dashboard_layout: str = Form("default"), password: str = Form("")):
+async def profile_save(request: Request, username: str = Form(...), email: str = Form(""), display_name: str = Form(""), dashboard_layout: str = Form("default"), password: str = Form("")):
     require_auth(request)
     uid = int(request.session.get("user_id") or 0)
-    if theme not in {x[0] for x in THEMES}: theme = "nexus"
     try:
-        update_user(uid, username, email, display_name or username, theme, dashboard_layout, password)
-        request.session["theme"] = theme
+        update_user(uid, username, email, display_name or username, "arrnexus", dashboard_layout, password)
+        request.session["theme"] = "arrnexus"
         request.session["display_name"] = display_name or username
         return RedirectResponse(f"/profile?notice={quote('Profile saved')}", status_code=303)
     except Exception as exc:
@@ -2673,7 +2814,7 @@ async def _aio_page_state(user_data: dict | None = None, user_error: str = "") -
 
 @app.get("/about", response_class=HTMLResponse)
 async def about_page(request: Request):
-    return templates.TemplateResponse("landing.html", {"request": request, "configured": user_count() > 0, "logged_in": logged_in(request), "version": APP_VERSION})
+    return templates.TemplateResponse("landing.html", {"request": request, "configured": user_count() > 0, "logged_in": logged_in(request), "version": APP_VERSION, "release_filename": f"arrnexus-v{APP_VERSION}.zip"})
 
 
 @app.get("/onboarding", response_class=HTMLResponse)

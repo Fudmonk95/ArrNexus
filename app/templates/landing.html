@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="nexus">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -9,26 +9,26 @@
   <meta name="theme-color" content="#050506">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/arrnexus-icon-v9.png" type="image/png">
-  <link rel="stylesheet" href="/static/app.css?v=9.0">
+  <link rel="stylesheet" href="/static/app.css?v=9.1">
 </head>
-<body class="v9-public">
+<body class="v9-public v91-public">
   <header class="v9-public-nav">
     <a href="/" class="v9-public-brand"><img src="/static/arrnexus-icon-v9.png" alt=""><strong>ArrNexus</strong></a>
     <nav>
-      <a href="#features">Features</a><a href="#integrations">Integrations</a><a href="#start">Getting started</a><a href="#changelog">What's new</a>
+      <a href="#about">About</a><a href="#features">Features</a><a href="#integrations">Integrations</a><a href="#workflow">How it works</a><a href="#download">Download</a>
     </nav>
     <a class="v9-nav-cta" href="{{ '/dashboard' if logged_in else ('/login' if configured else '/setup') }}">{{ 'Dashboard' if logged_in else ('Sign in' if configured else 'Start setup') }}</a>
   </header>
 
   <main class="v9-public-main">
-    <section class="v9-hero">
+    <section class="v9-hero v91-hero">
       <div class="v9-hero-copy">
         <span class="v9-chip">v{{ version }} · SELF-HOSTED · PRIVATE</span>
         <h1>Your Media Stack.<br><span>One Control Plane.</span></h1>
-        <p>ArrNexus sits above your media ecosystem — connecting Arr apps, Debrid, Usenet, Jellyfin, music, DUMB and AIOStreams into one intelligent control centre without replacing the tools that already work.</p>
+        <p>ArrNexus sits above your existing media ecosystem and connects specialist tools into one intelligent, non-destructive control centre. Keep Radarr, Sonarr, Lidarr, Prowlarr, Jellyfin, DUMB, Debrid, Usenet and AIOStreams doing what they do best — ArrNexus gives them shared routing, visibility, safety and automation.</p>
         <div class="v9-hero-actions">
           <a class="v9-primary" href="{{ '/dashboard' if logged_in else ('/login' if configured else '/setup') }}">{{ 'Open Dashboard' if logged_in else ('Sign in' if configured else 'Get started') }} →</a>
-          <a class="v9-secondary" href="#features">Explore features</a>
+          <a class="v9-secondary" href="#download">Download v{{ version }}</a>
         </div>
         <div class="v9-trust"><span>Self-hosted</span><i></i><span>Private by design</span><i></i><span>Provider-neutral</span><i></i><span>Non-destructive</span></div>
       </div>
@@ -39,36 +39,78 @@
       </div>
     </section>
 
+    <section id="about" class="v9-public-section v91-about-grid">
+      <div class="v9-section-head"><span>WHAT ARRNEXUS IS</span><h2>The intelligence layer above your stack.</h2><p>ArrNexus does not try to replace the mature applications already running your media server. It coordinates them: one place to understand what is connected, where media should go, how it should be acquired and what needs attention.</p></div>
+      <div class="v91-architecture">
+        <div class="v91-arch-node core"><img src="/static/arrnexus-icon-v9.png" alt=""><strong>ArrNexus</strong><small>Control · routing · safety · visibility</small></div>
+        <div class="v91-arch-row"><span>REQUESTS & DISCOVERY</span><b>Seerr · Discover · Music Hub</b></div>
+        <div class="v91-arch-row"><span>AUTOMATION</span><b>Radarr · Sonarr · Lidarr · Prowlarr</b></div>
+        <div class="v91-arch-row"><span>ACQUISITION</span><b>Debrid · Usenet · InfiniDysk · AIOStreams</b></div>
+        <div class="v91-arch-row"><span>LIBRARY & PLAYBACK</span><b>DUMB mounts · symlinks · Jellyfin</b></div>
+      </div>
+    </section>
+
     <section id="features" class="v9-public-section">
-      <div class="v9-section-head"><span>ARRNEXUS CONTROL LAYER</span><h2>One interface. The whole media workflow.</h2><p>Keep specialist applications doing what they do best while ArrNexus handles routing, visibility, safety and cross-service intelligence.</p></div>
-      <div class="v9-feature-grid">
-        <article><b>⌕</b><h3>Discover & acquire</h3><p>Search, compare and route movies, TV and music across Arr, Debrid and Usenet workflows.</p></article>
-        <article><b>⌁</b><h3>Smart routing</h3><p>Route default, kids, seasonal and provider-specific libraries with explainable decisions.</p></article>
-        <article><b>◎</b><h3>Provider neutral</h3><p>Use Real-Debrid, TorBox, Premiumize, AllDebrid, Usenet services and more without one provider owning the architecture.</p></article>
-        <article><b>✓</b><h3>Language Guard</h3><p>Require English audio and subtitles before managed media is accepted, without deleting source content.</p></article>
+      <div class="v9-section-head"><span>ARRNEXUS CONTROL LAYER</span><h2>One interface. The whole media workflow.</h2><p>The public project has grown far beyond its original DMM → Arr router while retaining the same core rule: automate safely and keep every decision understandable.</p></div>
+      <div class="v9-feature-grid v91-feature-grid">
+        <article><b>⌕</b><h3>Discover & acquire</h3><p>Search and compare movies, TV and music, then hand them to the right specialist application and route.</p></article>
+        <article><b>⌁</b><h3>Smart routing</h3><p>Default, kids, seasonal and provider-specific libraries with explainable destination decisions.</p></article>
+        <article><b>◎</b><h3>Provider neutral</h3><p>Use Real-Debrid, TorBox, Premiumize, AllDebrid, Usenet and other supported providers side by side.</p></article>
+        <article><b>✓</b><h3>English Language Guard</h3><p>Require English audio and subtitles before managed media is accepted, without deleting source content.</p></article>
         <article><b>↺</b><h3>Self-healing</h3><p>Find broken links, missing media and upgrade candidates with bounded, non-destructive repair workflows.</p></article>
-        <article><b>▥</b><h3>Operational telemetry</h3><p>See service health, queues, InfiniDysk telemetry, quality analysis and recent activity in one place.</p></article>
+        <article><b>▥</b><h3>Operational telemetry</h3><p>Service health, queues, InfiniDysk telemetry, quality analysis, activity and logs in one control centre.</p></article>
+        <article><b>◈</b><h3>DMM Inbox</h3><p>Poster-rich source review, duplicate grouping, existing-library detection, bulk routing and explicit failure reasons.</p></article>
+        <article><b>≋</b><h3>Quality Lab</h3><p>Score releases and explain why one candidate is better, including quality, pack type, cache state and policy.</p></article>
+        <article><b>♫</b><h3>Music Hub</h3><p>Music discovery, per-user Spotify OAuth and Lidarr hand-off while keeping provider sources honestly labelled.</p></article>
+        <article><b>A</b><h3>AIOStreams Bridge</h3><p>Safe full-config preview, stale-state protection, backup, apply, rollback and redacted search diagnostics.</p></article>
+        <article><b>✓</b><h3>Stack Readiness</h3><p>See whether required services, providers, mounts and namespace access are actually ready before relying on automation.</p></article>
+        <article><b>≡</b><h3>Unified diagnostics</h3><p>Problem Centre, logs, sanitized support bundles, backups and operational history without exposing secrets.</p></article>
       </div>
     </section>
 
     <section id="integrations" class="v9-public-section v9-integration-section">
-      <div class="v9-section-head"><span>SUPPORTED ECOSYSTEM</span><h2>Built to integrate, not replace.</h2></div>
-      <div class="v9-integration-cloud"><span>Radarr</span><span>Sonarr</span><span>Lidarr</span><span>Prowlarr</span><span>Jellyfin</span><span>Seerr</span><span>DUMB</span><span>InfiniDysk</span><span>Decypharr</span><span>AIOStreams</span><span>Spotify</span><span>Real-Debrid</span><span>TorBox</span><span>Premiumize</span></div>
-    </section>
-
-    <section id="start" class="v9-public-section">
-      <div class="v9-section-head"><span>FIRST RUN</span><h2>From empty container to a checked stack.</h2></div>
-      <div class="v9-steps">
-        <article><em>1</em><h3>Create administrator</h3><p>Local authentication is created before private media data is exposed.</p></article>
-        <article><em>2</em><h3>Detect environment</h3><p>ArrNexus checks its host PID access, DUMB namespace and mount visibility.</p></article>
-        <article><em>3</em><h3>Connect services</h3><p>Configure Arr applications and verify credentials from the browser.</p></article>
-        <article><em>4</em><h3>Register providers</h3><p>Select whichever Debrid or Usenet services your stack actually uses.</p></article>
-        <article><em>5</em><h3>Review readiness</h3><p>See missing dependencies before relying on automation.</p></article>
+      <div class="v9-section-head"><span>SUPPORTED ECOSYSTEM</span><h2>Built to integrate, not replace.</h2><p>ArrNexus treats applications and acquisition services as capabilities. Configure only what your stack uses.</p></div>
+      <div class="v91-integration-groups">
+        <article><span>ARR & REQUESTS</span><div class="v9-integration-cloud"><b>Radarr</b><b>Sonarr</b><b>Lidarr</b><b>Prowlarr</b><b>Seerr</b></div></article>
+        <article><span>LIBRARY & STACK</span><div class="v9-integration-cloud"><b>Jellyfin</b><b>DUMB</b><b>InfiniDysk / NzbDAV</b><b>Decypharr</b></div></article>
+        <article><span>DEBRID & STREAMING</span><div class="v9-integration-cloud"><b>Real-Debrid</b><b>TorBox</b><b>Premiumize</b><b>AllDebrid</b><b>Debrid-Link</b><b>EasyDebrid</b><b>AIOStreams</b></div></article>
+        <article><span>MUSIC</span><div class="v9-integration-cloud"><b>Spotify</b><b>ListenBrainz</b><b>MusicBrainz</b><b>Apple / iTunes</b><b>Audius</b><b>SoundCloud</b><b>Last.fm</b></div></article>
       </div>
     </section>
 
+    <section id="workflow" class="v9-public-section">
+      <div class="v9-section-head"><span>HOW IT WORKS</span><h2>From deployment to a checked media stack.</h2></div>
+      <div class="v9-steps v91-steps">
+        <article><em>1</em><h3>Deploy ArrNexus</h3><p>Run the Portainer/Docker stack with only persistent <code>./data:/data</code> required for normal configuration.</p></article>
+        <article><em>2</em><h3>Create administrator</h3><p>Private pages stay behind local authentication from the first run.</p></article>
+        <article><em>3</em><h3>Detect environment</h3><p>Check PID namespace access, DUMB process discovery and logical mount visibility.</p></article>
+        <article><em>4</em><h3>Connect services</h3><p>Add Arr and ecosystem URLs/API credentials through the UI and verify them.</p></article>
+        <article><em>5</em><h3>Register providers</h3><p>Enable the Debrid and Usenet capabilities your installation actually uses.</p></article>
+        <article><em>6</em><h3>Review readiness</h3><p>See missing dependencies before trusting automated acquisition and routing.</p></article>
+      </div>
+    </section>
+
+    <section class="v9-public-section v91-safety">
+      <div class="v9-section-head"><span>DESIGNED FOR REAL LIBRARIES</span><h2>Safety is part of the architecture.</h2></div>
+      <div class="v91-safety-grid">
+        <article><strong>Non-destructive by default</strong><p>Language rejection and routing problems do not delete the original Debrid/DMM source.</p></article>
+        <article><strong>Preview before risky changes</strong><p>AIOStreams full-config writes use digest checks, masked previews, backups and rollback.</p></article>
+        <article><strong>Secrets stay private</strong><p>Credentials live in persistent data, are masked in UI/logs and are excluded from public release exports.</p></article>
+        <article><strong>Performance-aware</strong><p>Expensive namespace and dashboard state is cached/prewarmed so normal navigation does not become a storage scan.</p></article>
+      </div>
+    </section>
+
+    <section id="download" class="v9-public-section v91-release-section">
+      <div class="v91-release-card">
+        <div class="v91-release-icon"><img src="/static/arrnexus-icon-v9.png" alt=""></div>
+        <div class="v91-release-copy"><span class="v9-chip">LATEST BUILD</span><h2>ArrNexus v{{ version }}</h2><p>Download a clean source-only package generated from this running ArrNexus build. Persistent data, databases, backups, runtime caches and secrets are excluded.</p><div class="v91-release-meta"><span>{{ release_filename }}</span><span>Docker / Portainer</span><span>Source package</span></div></div>
+        <div class="v91-release-actions"><a class="v9-primary" href="/download/latest" data-no-soft-nav download>Download ZIP ↓</a><a class="v9-secondary" href="/download/latest.sha256" data-no-soft-nav download>SHA-256</a></div>
+      </div>
+      <div class="v91-quick-install"><span>QUICK START</span><code>unzip {{ release_filename }} &amp;&amp; cd arrnexus-v{{ version }} &amp;&amp; docker compose up -d --build</code></div>
+    </section>
+
     <section id="changelog" class="v9-public-section v9-whats-new">
-      <div><span class="v9-chip">WHAT'S NEW IN V9</span><h2>The product release.</h2><p>New identity, public front door, guided onboarding, provider registry, readiness scoring and expanded AIOStreams wiring — while retaining the v8/v7 acquisition and safety engine underneath.</p></div>
+      <div><span class="v9-chip">WHAT'S NEW IN V9.1</span><h2>One design. Faster navigation.</h2><p>v9.1 unifies the entire private control centre with the public ArrNexus design, removes theme switching, adds a public release download, expands the public product guide and introduces stale-while-revalidate dashboard snapshots plus more aggressive soft-navigation prefetching.</p></div>
       <a class="v9-primary" href="{{ '/dashboard' if logged_in else ('/login' if configured else '/setup') }}">{{ 'Open dashboard' if logged_in else ('Sign in' if configured else 'Start setup') }} →</a>
     </section>
   </main>

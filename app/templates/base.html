@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="{{ request.session.get('theme','nexus') }}">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -8,8 +8,8 @@
   <meta name="theme-color" content="#050506">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/arrnexus-icon-v9.png" type="image/png">
-  <link rel="stylesheet" href="/static/app.css?v=9.0">
-  <script defer src="/static/app.js?v=9.0"></script>
+  <link rel="stylesheet" href="/static/app.css?v=9.1">
+  <script defer src="/static/app.js?v=9.1"></script>
 </head>
 <body class="nx-body">
 <div class="nx-progress" id="nxProgress" aria-hidden="true"></div>
@@ -88,7 +88,7 @@
       <div class="nx-mode"><span class="dot ok"></span><span>Safe symlink mode</span></div>
       <a class="nx-profile" href="/profile" data-nav>
         <span class="avatar-mini">{{ (request.session.get('display_name') or 'A')[:1]|upper }}</span>
-        <span><strong>{{ request.session.get('display_name') or 'Profile' }}</strong><small>Profile & appearance</small></span>
+        <span><strong>{{ request.session.get('display_name') or 'Profile' }}</strong><small>Account & preferences</small></span>
       </a>
       <a class="nx-logout" href="/">About ArrNexus</a>
       <a class="nx-logout" href="/logout">Log out</a>
