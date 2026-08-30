@@ -367,3 +367,214 @@ async def enrich_release_art(rows: list[dict], limit: int = 8) -> list[dict]:
         return row
     head = await asyncio.gather(*(one(r) for r in rows[:limit]))
     return head + [dict(r) for r in rows[limit:]]
+
+# ---------------------------------------------------------------------------
+# v4 provider-isolated discovery helpers
+# ---------------------------------------------------------------------------
+
+async def apple_top_albums(count: int = 24) -> list[dict]:
+    """Public Apple RSS/marketing feed. No Apple Music listener account needed."""
+    country = (settings.public_music_country or "GB").lower()
+    urls = [
+        f"https://rss.marketingtools.apple.com/api/v2/{country}/music/most-played/{min(count,100)}/albums.json",
+        f"https://rss.applemarketingtools.com/api/v2/{country}/music/most-played/{min(count,100)}/albums.json",
+    ]
+    data = None
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        for url in urls:
+            try:
+                r = await client.get(url, headers={"Accept":"application/json","User-Agent":settings.music_user_agent})
+                if r.status_code < 400:
+                    data = r.json(); break
+            except Exception:
+                continue
+    if not data:
+        return []
+    rows = ((data.get("feed") or {}).get("results") or [])
+    out=[]
+    for x in rows[:count]:
+        genres=x.get("genres") or []
+        art=x.get("artworkUrl100") or ""
+        if art: art=art.replace("100x100", "600x600")
+        out.append({
+            "source":"Apple","kind":"album","id":str(x.get("id") or ""),
+            "title":x.get("name") or "","artist":x.get("artistName") or "",
+            "genre":", ".join(g.get("name","") if isinstance(g,dict) else str(g) for g in genres[:2]),
+            "date":x.get("releaseDate") or "","artwork":art,"external":x.get("url") or "",
+            "rank":len(out)+1,
+        })
+    return out
+
+
+async def musicbrainz_recent(count: int = 24, genre: str = "") -> list[dict]:
+    """Recent MusicBrainz release groups; deliberately not ListenBrainz data."""
+    from datetime import date, timedelta
+    end=date.today(); start=end-timedelta(days=120)
+    query=f"firstreleasedate:[{start.isoformat()} TO {end.isoformat()}]"
+    if genre.strip():
+        query += f' AND tag:"{genre.strip()}"'
+    try:
+        data=await _mb_get("release-group", {"query":query,"limit":min(count,25)})
+    except Exception:
+        return []
+    out=[]
+    for x in data.get("release-groups",[])[:count]:
+        credit=x.get("artist-credit") or []; artist=credit[0].get("name") if credit else "Unknown artist"; mbid=x.get("id") or ""
+        out.append({"source":"MusicBrainz","kind":"album","id":mbid,"title":x.get("title") or "Unknown release","artist":artist,"date":x.get("first-release-date") or "","genre":", ".join(t.get("name","") for t in (x.get("tags") or [])[:3]),"artwork":f"https://coverartarchive.org/release-group/{mbid}/front-500" if mbid else "","external":f"https://musicbrainz.org/release-group/{mbid}" if mbid else ""})
+    return await enrich_release_art(out, min(8,len(out)))
+
+
+async def deezer_chart(count: int = 24) -> list[dict]:
+    """Deezer public chart endpoint. No personal listener account is used."""
+    try:
+        async with httpx.AsyncClient(timeout=20.0,follow_redirects=True) as client:
+            r=await client.get("https://api.deezer.com/chart/0/albums",params={"limit":min(count,100)})
+        r.raise_for_status(); rows=(r.json().get("data") or [])
+    except Exception:
+        return []
+    out=[]
+    for x in rows[:count]:
+        a=x.get("artist") or {}
+        out.append({"source":"Deezer","kind":"album","id":str(x.get("id") or ""),"title":x.get("title") or "","artist":a.get("name") or "","genre":"","artwork":x.get("cover_xl") or x.get("cover_big") or x.get("cover_medium") or "","external":x.get("link") or "","rank":len(out)+1})
+    return out
+
+
+async def deezer_search(term: str, kind: str = "album", count: int = 24) -> list[dict]:
+    if not term.strip(): return []
+    endpoint="artist" if kind=="artist" else "album"
+    try:
+        async with httpx.AsyncClient(timeout=20.0,follow_redirects=True) as client:
+            r=await client.get(f"https://api.deezer.com/search/{endpoint}",params={"q":term,"limit":min(count,100)})
+        r.raise_for_status(); rows=(r.json().get("data") or [])
+    except Exception:
+        return []
+    out=[]
+    for x in rows[:count]:
+        a=x.get("artist") or {}; is_artist=endpoint=="artist"
+        artwork = (x.get("picture_xl") or x.get("picture_big") or x.get("picture_medium") or "") if is_artist else (x.get("cover_xl") or x.get("cover_big") or x.get("cover_medium") or "")
+        out.append({"source":"Deezer","kind":"artist" if is_artist else "album","id":str(x.get("id") or ""),"title":(x.get("name") or "") if is_artist else (x.get("title") or ""),"artist":(x.get("name") or "") if is_artist else (a.get("name") or ""),"genre":"","artwork":artwork,"external":x.get("link") or ""})
+    return out
+
+
+async def spotify_search(term: str, kind: str = "album", count: int = 20) -> list[dict]:
+    """Optional app-only Spotify catalog access via client credentials.
+
+    No personal Spotify account is linked to ArrNexus. Spotify app access is
+    optional because Development Mode eligibility/rules can change.
+    """
+    cid=setting_get("music.spotify.client_id", ""); secret=setting_get("music.spotify.client_secret", "")
+    if not cid or not secret or not term.strip(): return []
+    token_cache=cache_get("spotify:app_token") or {}
+    token=""
+    if isinstance(token_cache,dict) and token_cache.get("access_token") and float(token_cache.get("expires_at") or 0)>time.time()+90:
+        token=token_cache["access_token"]
+    if not token:
+        try:
+            async with httpx.AsyncClient(timeout=20.0,follow_redirects=True) as client:
+                tr=await client.post("https://accounts.spotify.com/api/token",auth=(cid,secret),data={"grant_type":"client_credentials"})
+            tr.raise_for_status(); td=tr.json(); token=td.get("access_token") or ""
+            if token: cache_set("spotify:app_token",{"access_token":token,"expires_at":time.time()+int(td.get("expires_in") or 3600)})
+        except Exception: return []
+    typ="artist" if kind=="artist" else "album"
+    out=[]; offset=0
+    while len(out)<min(count,30):
+        try:
+            async with httpx.AsyncClient(timeout=20.0,follow_redirects=True) as client:
+                r=await client.get("https://api.spotify.com/v1/search",params={"q":term,"type":typ,"market":(settings.public_music_country or "GB").upper(),"limit":min(10,count-len(out)),"offset":offset},headers={"Authorization":f"Bearer {token}"})
+            r.raise_for_status(); payload=r.json(); rows=((payload.get("artists") if typ=="artist" else payload.get("albums")) or {}).get("items") or []
+        except Exception: break
+        if not rows: break
+        for x in rows:
+            images=x.get("images") or []; art=images[0].get("url") if images else ""
+            artists=x.get("artists") or []
+            artist=x.get("name") if typ=="artist" else (artists[0].get("name") if artists else "")
+            out.append({"source":"Spotify","kind":typ,"id":x.get("id") or "","title":x.get("name") or "","artist":artist,"genre":", ".join((x.get("genres") or [])[:3]),"date":x.get("release_date") or "","artwork":art,"external":((x.get("external_urls") or {}).get("spotify") or "")})
+        offset += len(rows)
+    return out[:count]
+
+
+async def provider_featured(source: str, genre: str = "", count: int = 24) -> tuple[list[dict], str]:
+    """Return truly source-specific browse content and a human status note."""
+    source=(source or "unified").lower()
+    if source=="listenbrainz":
+        rows=await trending_releases(count,"this_week"); return await enrich_release_art(rows,min(10,len(rows))), "ListenBrainz sitewide releases"
+    if source=="apple":
+        rows=await apple_top_albums(count); return rows, "Apple public top albums"
+    if source=="audius":
+        return await audius_trending(count,genre), "Audius trending tracks"
+    if source=="musicbrainz":
+        return await musicbrainz_recent(count,genre), "Recent MusicBrainz release groups"
+    if source=="archive":
+        return await internet_archive_search(genre,count), "Popular Internet Archive audio"
+    if source=="jamendo":
+        return await jamendo_search(genre,count), "Jamendo popular music" if setting_get("music.jamendo.client_id","") else "Configure a Jamendo developer client ID to browse Jamendo"
+    if source=="soundcloud":
+        if setting_get("music.soundcloud.client_id","") and setting_get("music.soundcloud.client_secret",""):
+            return [], "SoundCloud app access is configured — search the SoundCloud catalogue above"
+        return [], "Configure SoundCloud application credentials in Settings; no listener account is linked"
+    if source=="deezer":
+        return await deezer_chart(count), "Deezer chart albums"
+    if source=="spotify":
+        if setting_get("music.spotify.client_id","") and setting_get("music.spotify.client_secret",""):
+            return [], "Spotify app access is configured — search the Spotify catalogue above"
+        return [], "Optional Spotify application credentials enable catalog search without linking a listener account"
+    if source=="lastfm":
+        return await lastfm_top(count), "Last.fm top tracks" if setting_get("music.lastfm.api_key","") else "Configure a Last.fm application API key to browse charts"
+    if source=="unified":
+        lb,apple,audius,dz=await asyncio.gather(trending_releases(8),apple_top_albums(8),audius_trending(8,genre),deezer_chart(8))
+        seen=set(); out=[]
+        for row in lb+apple+audius+dz:
+            key=((row.get("artist") or "").lower(),(row.get("title") or "").lower())
+            if key in seen: continue
+            seen.add(key); out.append(row)
+        return out[:count], "A mixed, deduplicated view across open/account-free catalogues"
+    return [], "This provider is an external catalogue launcher; ArrNexus does not fake its recommendations with another provider's data"
+
+
+async def provider_search(source: str, term: str, kind: str = "artist", count: int = 30) -> tuple[list[dict], str]:
+    source=(source or "unified").lower(); term=term.strip()
+    if not term: return [], ""
+    if source=="apple": return await itunes_search(term,"album" if kind=="album" else "musicArtist",count), ""
+    if source=="audius": return await audius_search(term,count), ""
+    if source in {"musicbrainz","listenbrainz"}: return await search_musicbrainz(term,kind,count), ""
+    if source=="archive": return await internet_archive_search(term,count), ""
+    if source=="jamendo": return await jamendo_search(term,count), ""
+    if source=="soundcloud": return await soundcloud_search(term,count), ""
+    if source=="lastfm": return await lastfm_search(term,kind,count), ""
+    if source=="deezer": return await deezer_search(term,kind,count), ""
+    if source=="spotify": return await spotify_search(term,kind,count), ""
+    if source.startswith("plugin-"):
+        plugin=next((p for p in provider_catalog() if p.get("key")==source),None)
+        return [], plugin_search_url(plugin or {},term) if plugin else ""
+    if source in {"amazon","beatport","bandcamp","discogs"}:
+        return [], external_music_links(term).get(source,"")
+    # For You searches multiple *real* providers then dedupes.
+    mb,apple,au,dz,arc=await asyncio.gather(search_musicbrainz(term,kind,12),itunes_search(term,"album" if kind=="album" else "musicArtist",12),audius_search(term,12),deezer_search(term,kind,12),internet_archive_search(term,8))
+    seen=set(); rows=[]
+    for row in mb+apple+au+dz+arc:
+        key=((row.get("artist") or "").lower(),(row.get("title") or "").lower())
+        if key in seen: continue
+        seen.add(key); rows.append(row)
+    return rows[:count], ""
+
+
+# Replace provider catalog with capability-aware v4 list.
+def provider_catalog() -> list[dict]:
+    builtins = [
+        {"key":"unified","name":"For You","mode":"native","description":"Mixed open/account-free discovery, deduplicated across sources"},
+        {"key":"listenbrainz","name":"ListenBrainz","mode":"native","description":"Public sitewide listening trends"},
+        {"key":"apple","name":"Apple / iTunes","mode":"native","description":"Public iTunes search and Apple public chart feed; no Apple Music listener login"},
+        {"key":"audius","name":"Audius","mode":"native","description":"Open music trending and track search"},
+        {"key":"musicbrainz","name":"MusicBrainz","mode":"native","description":"Open music metadata, search and recent release groups"},
+        {"key":"deezer","name":"Deezer","mode":"native","description":"Public chart and catalogue search without linking a listener account"},
+        {"key":"archive","name":"Internet Archive","mode":"native","description":"Public audio/archive discovery"},
+        {"key":"jamendo","name":"Jamendo","mode":"optional","description":"Optional developer client ID; no listener account linking"},
+        {"key":"soundcloud","name":"SoundCloud","mode":"optional","description":"Optional application credentials; no listener account linking"},
+        {"key":"spotify","name":"Spotify","mode":"optional","description":"Optional app client credentials for public catalog search; no user OAuth"},
+        {"key":"amazon","name":"Amazon Music","mode":"external","description":"External catalogue launcher; no personal account connected"},
+        {"key":"beatport","name":"Beatport","mode":"external","description":"Electronic music catalogue launcher"},
+        {"key":"bandcamp","name":"Bandcamp","mode":"external","description":"Independent music discovery launcher"},
+        {"key":"lastfm","name":"Last.fm","mode":"optional","description":"Optional app API key for global charts/search"},
+        {"key":"discogs","name":"Discogs","mode":"external","description":"Release database launcher"},
+    ]
+    return builtins + load_catalog_plugins()

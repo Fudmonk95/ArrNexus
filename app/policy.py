@@ -10,7 +10,11 @@ from .db import setting_get
 class ReleasePolicy:
     preferred_resolution: int = 1080
     minimum_resolution: int = 720
-    max_size_gb: float = 30.0
+    max_size_gb: float = 35.0
+    max_movie_size_gb: float = 45.0
+    max_episode_size_gb: float = 15.0
+    max_season_size_gb: float = 100.0
+    max_series_size_gb: float = 400.0
     prefer_hevc: bool = True
     prefer_cached_debrid: bool = True
     minimum_seeders: int = 2
@@ -45,7 +49,11 @@ def load_policy() -> ReleasePolicy:
     return ReleasePolicy(
         preferred_resolution=_int("policy.preferred_resolution", 1080),
         minimum_resolution=_int("policy.minimum_resolution", 720),
-        max_size_gb=_float("policy.max_size_gb", 30.0),
+        max_size_gb=_float("policy.max_size_gb", 35.0),
+        max_movie_size_gb=_float("policy.max_movie_size_gb", 45.0),
+        max_episode_size_gb=_float("policy.max_episode_size_gb", 15.0),
+        max_season_size_gb=_float("policy.max_season_size_gb", 100.0),
+        max_series_size_gb=_float("policy.max_series_size_gb", 400.0),
         prefer_hevc=_bool("policy.prefer_hevc", True),
         prefer_cached_debrid=_bool("policy.prefer_cached_debrid", True),
         minimum_seeders=_int("policy.minimum_seeders", 2),
@@ -68,11 +76,24 @@ def _resolution(title: str) -> int:
     return 0
 
 
-def score_release(release: dict, policy: ReleasePolicy | None = None) -> dict:
+def max_size_for(policy: ReleasePolicy, media_type: str = "", pack_type: str = "") -> float:
+    if media_type == "movie":
+        return policy.max_movie_size_gb or policy.max_size_gb
+    if media_type == "tv":
+        if pack_type == "full_series":
+            return policy.max_series_size_gb or policy.max_size_gb
+        if pack_type == "season_pack":
+            return policy.max_season_size_gb or policy.max_size_gb
+        if pack_type in {"episode", "episode_bundle"}:
+            return policy.max_episode_size_gb or policy.max_size_gb
+    return policy.max_size_gb
+
+
+def score_release(release: dict, policy: ReleasePolicy | None = None, media_type: str = "", pack_type: str = "") -> dict:
     """Return a transparent heuristic score and explanation for a release.
 
-    This never auto-grabs on its own. It is intentionally explainable so the UI
-    can show *why* a release ranked above another one.
+    The score is explainable and can account for TV pack type so a full-series
+    pack is not incorrectly rejected by the same size ceiling as one episode.
     """
     p = policy or load_policy()
     title = str(release.get("title") or "")
@@ -80,7 +101,10 @@ def score_release(release: dict, policy: ReleasePolicy | None = None) -> dict:
     protocol = str(release.get("protocol") or "").lower()
     size = int(release.get("size") or 0)
     size_gb = size / (1024 ** 3) if size else 0.0
-    seeders = int(release.get("seeders") or 0) if str(release.get("seeders") or "0").lstrip("-").isdigit() else 0
+    try:
+        seeders = int(release.get("seeders") or 0)
+    except Exception:
+        seeders = 0
     resolution = _resolution(title)
     reasons: list[str] = []
     score = 50
@@ -93,8 +117,9 @@ def score_release(release: dict, policy: ReleasePolicy | None = None) -> dict:
             rejected = True
             break
 
-    if p.max_size_gb > 0 and size_gb > p.max_size_gb:
-        reasons.append(f"Over size limit ({size_gb:.1f} GB > {p.max_size_gb:g} GB)")
+    size_limit = max_size_for(p, media_type, pack_type)
+    if size_limit > 0 and size_gb > size_limit:
+        reasons.append(f"Over {pack_type.replace('_',' ') or media_type or 'release'} size limit ({size_gb:.1f} GB > {size_limit:g} GB)")
         score -= 45
         rejected = True
     elif size_gb:
@@ -137,15 +162,19 @@ def score_release(release: dict, policy: ReleasePolicy | None = None) -> dict:
             score -= 12
             reasons.append(f"Low seeders ({seeders})")
 
-    cached = bool(
-        release.get("cached")
-        or release.get("isCached")
-        or release.get("instantAvailability")
-        or release.get("realDebridCached")
-    )
+    cached = bool(release.get("cached") or release.get("isCached") or release.get("instantAvailability") or release.get("realDebridCached"))
     if p.prefer_cached_debrid and cached:
         score += 25
-        reasons.append("Cached on debrid")
+        reasons.append("Cached on Real-Debrid")
+    elif p.prefer_cached_debrid and protocol == "torrent":
+        reasons.append("Real-Debrid cache not confirmed")
+
+    if media_type == "tv" and pack_type == "full_series":
+        score += 10
+        reasons.append("Complete/multi-season pack")
+    elif media_type == "tv" and pack_type == "season_pack":
+        score += 5
+        reasons.append("Season pack")
 
     score = max(0, min(100, score))
     decision = "rejected" if rejected else "preferred" if score >= 78 else "allowed"
@@ -156,4 +185,5 @@ def score_release(release: dict, policy: ReleasePolicy | None = None) -> dict:
         "resolution": resolution,
         "size_gb": round(size_gb, 2),
         "cached": cached,
+        "size_limit_gb": size_limit,
     }

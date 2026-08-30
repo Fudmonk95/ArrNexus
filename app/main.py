@@ -36,12 +36,19 @@ from .namespace import view_path, is_within_logical, namespace_status, Namespace
 from .instances import discover_instances
 from .library import inventory_roots, build_source_link_index
 from .jellyfin import search_jellyfin, jellyfin_status
-from .music import search_musicbrainz, trending_artists, trending_releases, itunes_search, external_music_links, GENRES, audius_trending, audius_search, provider_catalog, enrich_artist_art, enrich_release_art, representative_artwork, internet_archive_search, jamendo_search, soundcloud_search, lastfm_search, lastfm_top
+from .music import (
+    search_musicbrainz, trending_artists, trending_releases, itunes_search,
+    external_music_links, GENRES, audius_trending, audius_search,
+    provider_catalog, enrich_artist_art, enrich_release_art, representative_artwork,
+    internet_archive_search, jamendo_search, soundcloud_search, lastfm_search,
+    lastfm_top, provider_featured, provider_search,
+)
 from .connections import get_connection, save_connection
 from .paths import movie_roots, tv_roots, lidarr_root, source_root, all_library_roots, dumb_root
 from .seerr import SeerrClient, SeerrError, result_rows as seerr_result_rows
 from . import realdebrid as rd
 from .policy import load_policy, score_release
+from .tvpacks import classify_release, pack_matches, coverage_summary, choose_best_complete, choose_best_season_packs
 from .notifications import send_notification
 from .admin_tools import create_database_backup, list_backups, sanitized_config, diagnostics_zip
 from .plugins import load_catalog_plugins, plugin_search_url
@@ -54,7 +61,7 @@ templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
 
-APP_VERSION = "3.0.0-validated"
+APP_VERSION = "4.0.0"
 RUNNING_TASKS: set[asyncio.Task] = set()
 
 
@@ -736,6 +743,42 @@ async def browser_file(request: Request, path: str):
     return FileResponse(actual,filename=Path(path).name)
 
 
+@app.get("/problems", response_class=HTMLResponse)
+async def problems_page(request: Request):
+    require_auth(request)
+    problems=[]; service_rows=[]
+    ns=namespace_status()
+    if not ns.get("ok"):
+        problems.append({"severity":"critical","kind":"Namespace","title":"DUMB namespace unavailable","detail":ns.get("error") or "Mount namespace could not be resolved","href":"/maintenance"})
+    # Live service checks are deliberately isolated so one dead service does not break the page.
+    for name,client in (("Radarr",RadarrClient()),("Sonarr",SonarrClient()),("Lidarr",LidarrClient()),("Prowlarr",ProwlarrClient())):
+        try:
+            st=await client.status(); service_rows.append({"name":name,"ok":True,"detail":st.get("version") or "Connected"})
+        except Exception as exc:
+            service_rows.append({"name":name,"ok":False,"detail":str(exc)})
+            problems.append({"severity":"error","kind":"Connection","title":f"{name} unavailable","detail":str(exc),"href":"/arrs"})
+    try:
+        broken=scan_broken_symlinks(250)
+    except Exception as exc:
+        broken=[]; problems.append({"severity":"warning","kind":"Maintenance","title":"Broken-link scan failed","detail":str(exc),"href":"/maintenance"})
+    if broken:
+        problems.append({"severity":"error","kind":"Library","title":f"{len(broken)} broken symlink(s)","detail":"Open Maintenance to inspect and repair links.","href":"/maintenance"})
+    failed_jobs=[]
+    for j in recent_jobs(50):
+        if int(j["failed"] or 0)>0 or j["status"] in {"failed","error"}:
+            failed_jobs.append(dict(j))
+    if failed_jobs:
+        problems.append({"severity":"error","kind":"Import","title":f"{len(failed_jobs)} recent import job(s) with failures","detail":"Open Import Jobs for per-item reasons.","href":"/jobs"})
+    error_logs=list_logs("error","all","",30)
+    score=100
+    score-=min(35,sum(15 for x in service_rows if not x["ok"]))
+    score-=min(25,len(broken)*2)
+    score-=min(25,sum(int(x.get("failed") or 0) for x in failed_jobs)*3)
+    if not ns.get("ok"): score-=30
+    score=max(0,score)
+    return templates.TemplateResponse("problems.html",{"request":request,"problems":problems,"services":service_rows,"broken":broken,"failed_jobs":failed_jobs,"error_logs":error_logs,"health_score":score,"namespace":ns})
+
+
 @app.get("/maintenance", response_class=HTMLResponse)
 async def maintenance_page(request: Request):
     require_auth(request)
@@ -876,6 +919,7 @@ async def settings_page(request: Request, notice: str = ""):
         "soundcloud_configured":bool(setting_get("music.soundcloud.client_id") and setting_get("music.soundcloud.client_secret")),
         "jamendo_client_id":setting_get("music.jamendo.client_id",""),
         "lastfm_configured":bool(setting_get("music.lastfm.api_key")),
+        "spotify_configured":bool(setting_get("music.spotify.client_id") and setting_get("music.spotify.client_secret")),
         "seerr":get_connection("seerr"),
         "policy": load_policy(),
         "notifications": {
@@ -925,12 +969,14 @@ async def settings_mount_delete(request: Request, mount_id: int):
 
 
 @app.post("/settings/music-providers")
-async def settings_music_providers(request: Request, soundcloud_client_id: str = Form(''), soundcloud_client_secret: str = Form(''), jamendo_client_id: str = Form(''), lastfm_api_key: str = Form('')):
+async def settings_music_providers(request: Request, soundcloud_client_id: str = Form(''), soundcloud_client_secret: str = Form(''), jamendo_client_id: str = Form(''), lastfm_api_key: str = Form(''), spotify_client_id: str = Form(''), spotify_client_secret: str = Form('')):
     require_admin(request)
     if soundcloud_client_id.strip(): setting_set('music.soundcloud.client_id',soundcloud_client_id.strip(),True)
     if soundcloud_client_secret.strip() and soundcloud_client_secret != '********': setting_set('music.soundcloud.client_secret',soundcloud_client_secret.strip(),True)
     setting_set('music.jamendo.client_id',jamendo_client_id.strip(),True)
     if lastfm_api_key.strip() and lastfm_api_key != '********': setting_set('music.lastfm.api_key',lastfm_api_key.strip(),True)
+    if spotify_client_id.strip(): setting_set('music.spotify.client_id',spotify_client_id.strip(),True)
+    if spotify_client_secret.strip() and spotify_client_secret != '********': setting_set('music.spotify.client_secret',spotify_client_secret.strip(),True)
     log_event('info','settings','music_provider_settings','Music provider application credentials updated')
     return RedirectResponse('/settings?notice='+quote('Music provider settings saved'),status_code=303)
 
@@ -969,16 +1015,20 @@ async def settings_user_delete(request: Request, user_id: int):
 
 
 @app.post("/settings/policy")
-async def settings_policy(request: Request, preferred_resolution: int = Form(1080), minimum_resolution: int = Form(720), max_size_gb: float = Form(30), minimum_seeders: int = Form(2), prefer_hevc: str = Form("false"), prefer_cached_debrid: str = Form("false"), reject_terms: str = Form("cam,telesync,telecine,hdcam,ts")):
+async def settings_policy(request: Request, preferred_resolution: int = Form(1080), minimum_resolution: int = Form(720), max_size_gb: float = Form(35), max_movie_size_gb: float = Form(45), max_episode_size_gb: float = Form(15), max_season_size_gb: float = Form(100), max_series_size_gb: float = Form(400), minimum_seeders: int = Form(2), prefer_hevc: str = Form("false"), prefer_cached_debrid: str = Form("false"), reject_terms: str = Form("cam,telesync,telecine,hdcam,ts")):
     require_admin(request)
     setting_set("policy.preferred_resolution", str(max(480, preferred_resolution)))
     setting_set("policy.minimum_resolution", str(max(0, minimum_resolution)))
     setting_set("policy.max_size_gb", str(max(0, max_size_gb)))
+    setting_set("policy.max_movie_size_gb", str(max(0, max_movie_size_gb)))
+    setting_set("policy.max_episode_size_gb", str(max(0, max_episode_size_gb)))
+    setting_set("policy.max_season_size_gb", str(max(0, max_season_size_gb)))
+    setting_set("policy.max_series_size_gb", str(max(0, max_series_size_gb)))
     setting_set("policy.minimum_seeders", str(max(0, minimum_seeders)))
     setting_set("policy.prefer_hevc", "true" if prefer_hevc.lower() in {"1","true","yes","on"} else "false")
     setting_set("policy.prefer_cached_debrid", "true" if prefer_cached_debrid.lower() in {"1","true","yes","on"} else "false")
     setting_set("policy.reject_terms", reject_terms.strip())
-    log_event("info","policy","updated","Release scoring policy updated")
+    log_event("info","policy","updated","Release scoring policy updated",{"movie_gb":max_movie_size_gb,"episode_gb":max_episode_size_gb,"season_gb":max_season_size_gb,"series_gb":max_series_size_gb})
     return RedirectResponse('/settings?notice='+quote('Release policy saved'),status_code=303)
 
 
@@ -1156,56 +1206,87 @@ def _arr_media_card(row: dict, media_type: str, route: str = "default", instance
     }
 
 
-async def _library_shelves() -> list[dict]:
-    shelves=[]
-    for inst in discover_instances():
+async def _library_shelves() -> tuple[list[dict], list[str]]:
+    shelves=[]; warnings=[]
+    try:
+        instances=discover_instances()
+    except Exception as exc:
+        log_event("error","discover","instance_discovery_failed",str(exc))
+        return [], [f"DUMB Arr discovery failed: {exc}"]
+    for inst in instances:
         if inst.service not in {"radarr","sonarr"} or not inst.api_key:
             continue
         try:
             c=client_for_instance(inst)
             rows=await (c.movies() if inst.service=="radarr" else c.series())
-        except Exception:
+            if not isinstance(rows,list):
+                rows=[]
+        except Exception as exc:
+            warnings.append(f"{inst.service.title()}/{inst.instance}: {exc}")
+            log_event("warning","discover","library_shelf_failed",str(exc),{"service":inst.service,"instance":inst.instance})
             continue
         media_type="movie" if inst.service=="radarr" else "tv"
-        # Most recently added first when Arr exposes added; stable title fallback.
-        rows=sorted(rows or [], key=lambda x: (x.get("added") or "", x.get("title") or ""), reverse=True)[:30]
+        rows=sorted(rows, key=lambda x: (str(x.get("added") or ""), str(x.get("title") or "")), reverse=True)[:30]
         route=inst.destination_key or "default"
-        label=("Movies" if media_type=="movie" else "TV") + (" · " + route.replace("disney","Disney+").replace("apple","Apple TV+").title() if route!="default" else "")
-        shelves.append({"key":f"{inst.service}:{route}","title":label,"subtitle":f"{len(rows)} shown from {inst.service}/{inst.instance}","items":[_arr_media_card(x,media_type,route,inst.instance) for x in rows]})
-    return shelves
+        pretty_route={"default":"","disney":"Disney+","apple":"Apple TV+"}.get(route,route.replace("_"," ").title())
+        label=("Movies" if media_type=="movie" else "TV") + (f" · {pretty_route}" if pretty_route else "")
+        cards=[]
+        for row in rows:
+            try:
+                cards.append(_arr_media_card(row,media_type,route,inst.instance))
+            except Exception as exc:
+                log_event("warning","discover","library_card_failed",str(exc),{"title":str(row.get("title") or "")})
+        shelves.append({"key":f"{inst.service}-{route}".replace("/","-"),"title":label,"subtitle":f"{len(cards)} shown from {inst.service}/{inst.instance}","items":cards})
+    return shelves,warnings
 
 
 async def _seerr_shelves() -> tuple[list[dict], str]:
-    c=SeerrClient()
-    if not c.configured:
-        return [], "Configure Seerr in Connections to enable account-free trending/popular discovery using your existing Seerr metadata backend."
     try:
+        c=SeerrClient()
+        if not c.configured:
+            return [], "Configure Seerr in Connections to enable trending/popular discovery. Your own Arr library shelves still work without Seerr."
         tm,tp,mm,tt=await asyncio.gather(
             c.trending("movie","week",1), c.trending("tv","week",1),
-            c.discover_movies(1,"popularity.desc"), c.discover_tv(1,"popularity.desc")
+            c.discover_movies(1,"popularity.desc"), c.discover_tv(1,"popularity.desc"),
+            return_exceptions=True,
         )
-        return [
-            {"key":"trending-movies","title":"Trending movies this week","subtitle":"Seerr discovery","items":seerr_result_rows(tm,"movie")[:24]},
-            {"key":"popular-movies","title":"Popular movies","subtitle":"Seerr discovery","items":seerr_result_rows(mm,"movie")[:24]},
-            {"key":"trending-tv","title":"Trending TV this week","subtitle":"Seerr discovery","items":seerr_result_rows(tp,"tv")[:24]},
-            {"key":"popular-tv","title":"Popular TV shows","subtitle":"Seerr discovery","items":seerr_result_rows(tt,"tv")[:24]},
-        ], ""
+        specs=[
+            ("trending-movies","Trending movies this week","movie",tm),
+            ("popular-movies","Popular movies","movie",mm),
+            ("trending-tv","Trending TV this week","tv",tp),
+            ("popular-tv","Popular TV shows","tv",tt),
+        ]
+        shelves=[]; failures=[]
+        for key,title,kind,payload in specs:
+            if isinstance(payload,Exception):
+                failures.append(f"{title}: {payload}"); continue
+            try:
+                rows=seerr_result_rows(payload if isinstance(payload,dict) else {},kind)[:24]
+                shelves.append({"key":key,"title":title,"subtitle":"Seerr discovery","items":rows})
+            except Exception as exc:
+                failures.append(f"{title}: {exc}")
+        return shelves, ("; ".join(failures) if failures else "")
     except Exception as exc:
+        log_event("warning","discover","seerr_shelves_failed",str(exc))
         return [], f"Seerr discovery unavailable: {exc}"
 
 
 async def _mark_shelf_library_state(shelves: list[dict]):
-    # Mark Seerr/TMDB cards we already own, without making each card issue an API call.
     owned_movies={}; owned_tv={}
-    for inst in discover_instances():
+    try:
+        instances=discover_instances()
+    except Exception as exc:
+        log_event("warning","discover","library_state_instances_failed",str(exc)); return
+    for inst in instances:
         if inst.service not in {"radarr","sonarr"} or not inst.api_key: continue
         try:
             c=client_for_instance(inst); rows=await (c.movies() if inst.service=="radarr" else c.series())
         except Exception: continue
         target=owned_movies if inst.service=="radarr" else owned_tv
         for x in rows or []:
-            target[normalize_title(x.get("title") or "")]=(inst.destination_key or "default", inst.instance)
-    for shelf in shelves:
+            title=normalize_title(x.get("title") or "")
+            if title: target[title]=(inst.destination_key or "default", inst.instance)
+    for shelf in shelves or []:
         for x in shelf.get("items") or []:
             if x.get("in_library"): continue
             hit=(owned_movies if x.get("media_type")=="movie" else owned_tv).get(normalize_title(x.get("title") or ""))
@@ -1216,10 +1297,20 @@ async def _mark_shelf_library_state(shelves: list[dict]):
 @app.get("/discover", response_class=HTMLResponse)
 async def discover_page(request: Request, q: str = "", media_type: str = "movie", notice: str = "", error: str = ""):
     require_auth(request)
-    results=[]; page_error=error or None; rd_names=[]
-    seerr_shelves,seerr_notice=await _seerr_shelves()
-    library_shelves=await _library_shelves()
-    await _mark_shelf_library_state(seerr_shelves)
+    results=[]; page_error=error or None; rd_names=[]; warnings=[]
+    # Discover must never white-screen because one optional data source fails.
+    try:
+        seerr_shelves,seerr_notice=await _seerr_shelves()
+    except Exception as exc:
+        seerr_shelves=[]; seerr_notice=f"Seerr discovery unavailable: {exc}"; warnings.append(seerr_notice)
+    try:
+        library_shelves,library_warnings=await _library_shelves(); warnings.extend(library_warnings)
+    except Exception as exc:
+        library_shelves=[]; warnings.append(f"Library shelves unavailable: {exc}")
+    try:
+        await _mark_shelf_library_state(seerr_shelves)
+    except Exception as exc:
+        warnings.append(f"Library-state badges unavailable: {exc}")
     if q.strip():
         try:
             results=await discover_lookup(q.strip(), media_type)
@@ -1227,16 +1318,23 @@ async def discover_page(request: Request, q: str = "", media_type: str = "movie"
                 try:
                     torrents=await rd.torrents(250); rd_names=[normalize_title(x.get("filename") or x.get("original_filename") or "") for x in torrents]
                 except Exception: rd_names=[]
-            for c in results:
-                nt=normalize_title(c.get("title") or "")
-                c["arrnexus_in_rd"]=bool(nt and any(nt in rn or rn in nt for rn in rd_names if rn))
+            for candidate in results:
+                nt=normalize_title(candidate.get("title") or "")
+                candidate["arrnexus_in_rd"]=bool(nt and any(nt in rn or rn in nt for rn in rd_names if rn))
+                candidate["arrnexus_poster"]=poster_url(candidate)
+                candidate["arrnexus_genres"]=candidate.get("genres") or []
         except Exception as exc:
-            page_error=str(exc)
-    return templates.TemplateResponse("discover.html", {
-        "request":request,"q":q,"media_type":media_type,"results":results,
-        "error":page_error,"notice":notice,"movie_roots":movie_roots(),"tv_roots":tv_roots(),"rd_connected":rd.connected(),
-        "catalog_shelves":seerr_shelves,"library_shelves":library_shelves,"seerr_notice":seerr_notice,
-    })
+            page_error=str(exc); log_event("error","discover","search_failed",str(exc),{"query":q,"media_type":media_type})
+    try:
+        return templates.TemplateResponse("discover.html", {
+            "request":request,"q":q,"media_type":media_type,"results":results,
+            "error":page_error,"notice":notice,"movie_roots":movie_roots(),"tv_roots":tv_roots(),"rd_connected":rd.connected(),
+            "catalog_shelves":seerr_shelves,"library_shelves":library_shelves,"seerr_notice":seerr_notice,"discover_warnings":warnings,
+        })
+    except Exception as exc:
+        # Last-resort diagnostic instead of an opaque Internal Server Error.
+        log_event("error","discover","template_failed",str(exc))
+        return HTMLResponse(f"<h1>ArrNexus Discover error</h1><p>{__import__('html').escape(str(exc))}</p><p><a href='/logs?source=discover&level=error'>Open Discover logs</a></p>",status_code=500)
 
 
 @app.post("/discover/add")
@@ -1294,58 +1392,267 @@ async def scraping_api(request: Request):
     require_auth(request); return {"items":list_scrapes(50,"all")}
 
 
+
+def _release_hash(row: dict) -> str:
+    h=str(row.get("infoHash") or row.get("infohash") or row.get("hash") or "").strip()
+    if h:
+        return h.lower()
+    magnet=str(row.get("magnetUrl") or row.get("magnet") or "")
+    m=re.search(r"(?i)btih:([a-z0-9]{32,40})",magnet)
+    return (m.group(1).lower() if m else "")
+
+
+async def _annotate_rd_cache(rows: list[dict], limit: int = 35):
+    if not rd.connected():
+        return
+    sem=asyncio.Semaphore(6)
+    async def one(row):
+        h=_release_hash(row)
+        if not h:
+            row["realDebridCached"]=False; return
+        key=f"rdcache:{h}"
+        cached=cache_get(key)
+        if isinstance(cached,dict) and "cached" in cached:
+            row["realDebridCached"]=bool(cached["cached"]); return
+        async with sem:
+            try:
+                payload=await rd.instant_availability(h)
+                node=(payload or {}).get(h) or (payload or {}).get(h.lower()) or {}
+                available=False
+                if isinstance(node,dict):
+                    for provider_rows in node.values():
+                        if provider_rows:
+                            available=True; break
+                row["realDebridCached"]=available
+                cache_set(key,{"cached":available})
+            except Exception:
+                row["realDebridCached"]=False
+    await asyncio.gather(*(one(r) for r in rows[:limit]))
+
+
+def _expected_tv_seasons(meta: dict | None) -> list[int]:
+    seasons=[]
+    for x in ((meta or {}).get("seasons") or []):
+        try:
+            n=int(x.get("seasonNumber"))
+            if n>0: seasons.append(n)
+        except Exception: pass
+    return sorted(set(seasons))
+
+
+async def _tv_library_coverage(meta: dict | None) -> dict | None:
+    """Find an existing Sonarr copy and summarize season coverage.
+
+    This powers the 'get missing only' decision so ArrNexus can avoid grabbing a
+    whole series when only one or two seasons are actually absent.
+    """
+    if not meta:
+        return None
+    raw=meta.get("raw") or {}
+    target_tvdb=str(raw.get("tvdbId") or raw.get("tvdbid") or "")
+    target_title=normalize_title(meta.get("title") or raw.get("title") or "")
+    try:
+        instances=[i for i in discover_instances() if i.service=="sonarr" and i.api_key]
+    except Exception:
+        return None
+    for inst in instances:
+        try:
+            rows=await client_for_instance(inst).series()
+        except Exception:
+            continue
+        hit=None
+        for row in rows or []:
+            row_tvdb=str(row.get("tvdbId") or row.get("tvdbid") or "")
+            if target_tvdb and row_tvdb and target_tvdb==row_tvdb:
+                hit=row; break
+            if target_title and normalize_title(row.get("title") or "")==target_title:
+                hit=row; break
+        if not hit:
+            continue
+        seasons=[]; missing=[]; complete=[]; partial=[]
+        for season in hit.get("seasons") or []:
+            try:
+                n=int(season.get("seasonNumber") or 0)
+            except Exception:
+                continue
+            if n<=0:
+                continue
+            st=season.get("statistics") or {}
+            total=int(st.get("episodeCount") or st.get("totalEpisodeCount") or 0)
+            have=int(st.get("episodeFileCount") or 0)
+            if total>0 and have>=total:
+                state="complete"; complete.append(n)
+            elif have>0:
+                state="partial"; partial.append(n); missing.append(n)
+            else:
+                state="missing"; missing.append(n)
+            seasons.append({"number":n,"have":have,"total":total,"state":state})
+        seasons.sort(key=lambda x:x["number"])
+        return {
+            "found":True,"title":hit.get("title") or meta.get("title"),"series_id":hit.get("id"),
+            "instance":inst.instance,"route":inst.destination_key or "default","seasons":seasons,
+            "missing_seasons":sorted(set(missing)),"complete_seasons":sorted(set(complete)),"partial_seasons":sorted(set(partial)),
+        }
+    return {"found":False,"seasons":[],"missing_seasons":[],"complete_seasons":[],"partial_seasons":[]}
+
+
+async def _search_debrid_releases(release_q: str, media_type: str, protocol: str, pack_mode: str = "any", quality: str = "any", cached_only: bool = False, hide_duplicates: bool = True) -> tuple[list[dict],dict|None]:
+    release_meta=None
+    categories=[2000] if media_type=="movie" else [5000] if media_type=="tv" else None
+    try:
+        if media_type=="tv": meta_rows=await SonarrClient().lookup(release_q.strip())
+        elif media_type=="movie": meta_rows=await RadarrClient().lookup(release_q.strip())
+        else:
+            meta_rows=await RadarrClient().lookup(release_q.strip())
+            if not meta_rows: meta_rows=await SonarrClient().lookup(release_q.strip())
+        if meta_rows:
+            m=meta_rows[0]
+            release_meta={"title":m.get("title") or release_q,"year":m.get("year"),"overview":m.get("overview") or "","poster":poster_url(m),"genres":m.get("genres") or [],"seasons":m.get("seasons") or [],"raw":m}
+    except Exception:
+        release_meta=None
+    rows=await ProwlarrClient().search(release_q.strip(),categories=categories,limit=100)
+    if protocol in {"torrent","usenet"}:
+        rows=[x for x in (rows or []) if str(x.get("protocol") or "").lower()==protocol]
+    work=[]
+    for raw in rows or []:
+        row=dict(raw)
+        pack=classify_release(row.get("title") or "") if media_type=="tv" else None
+        if pack:
+            row["arrnexus_pack"]=pack.as_dict()
+            row["arrnexus_coverage"]=coverage_summary(pack,_expected_tv_seasons(release_meta))
+            if not pack_matches(pack_mode,pack):
+                continue
+        if quality!="any" and f"{quality}p" not in str(row.get("title") or "").lower() and not (quality=="2160" and "4k" in str(row.get("title") or "").lower()):
+            continue
+        work.append(row)
+    if protocol!="usenet":
+        await _annotate_rd_cache(work)
+    policy=load_policy(); scored=[]; seen=set()
+    for row in work:
+        pack_type=(row.get("arrnexus_pack") or {}).get("kind") or ""
+        row["arrnexus_policy"]=score_release(row,policy,media_type=media_type,pack_type=pack_type)
+        if cached_only and not row.get("realDebridCached"):
+            continue
+        if hide_duplicates:
+            dedupe=(normalize_title(row.get("title") or ""),int(row.get("size") or 0)//(100*1024*1024))
+            if dedupe in seen: continue
+            seen.add(dedupe)
+        scored.append(row)
+    scored.sort(key=lambda x:(bool(x.get("realDebridCached")),int((x.get("arrnexus_policy") or {}).get("score") or 0),int(x.get("seeders") or 0)),reverse=True)
+    return scored,release_meta
+
+
+async def _add_release_to_rd(release: dict) -> str:
+    if str(release.get("protocol") or "").lower()!="torrent":
+        raise ArrError("Only torrent releases can be added directly to Real-Debrid")
+    magnet=release.get("magnetUrl") or release.get("magnet") or ""; info_hash=_release_hash(release)
+    if not magnet and info_hash: magnet=f"magnet:?xt=urn:btih:{info_hash}"
+    if magnet:
+        added=await rd.add_magnet(magnet)
+    else:
+        dl=await ProwlarrClient().download_release(release.get("downloadUrl") or release.get("downloadURL") or "")
+        added=await (rd.add_magnet(dl["magnet"]) if dl.get("magnet") else rd.add_torrent_file(dl.get("content") or b""))
+    tid=str((added or {}).get("id") or "")
+    if tid:
+        try: await rd.select_all(tid)
+        except Exception: pass
+    return tid
+
+
 @app.get("/debrid", response_class=HTMLResponse)
-async def debrid_page(request: Request, q: str = "", release_q: str = "", protocol: str = "torrent", media_type: str = "all", error: str = "", notice: str = ""):
+async def debrid_page(request: Request, q: str = "", release_q: str = "", protocol: str = "torrent", media_type: str = "all", pack_mode: str = "any", quality: str = "any", cached_only: str = "false", hide_duplicates: str = "true", error: str = "", notice: str = ""):
     require_auth(request)
-    user = None
-    torrents = []
-    releases = []
-    release_meta = None
-    page_error = error or None
+    user=None; torrents=[]; releases=[]; release_meta=None; page_error=error or None
+    cached_flag=str(cached_only).lower() in {"1","true","yes","on"}
+    dedupe_flag=str(hide_duplicates).lower() not in {"0","false","no","off"}
     if rd.connected():
         try:
-            user, torrents = await asyncio.gather(rd.user(), rd.torrents(500))
+            user,torrents=await asyncio.gather(rd.user(),rd.torrents(500))
         except Exception as exc:
-            page_error = str(exc)
+            page_error=str(exc)
     if q.strip():
-        nq = q.lower()
-        torrents = [x for x in torrents if nq in (x.get("filename") or "").lower()]
+        nq=q.lower(); torrents=[x for x in torrents if nq in (x.get("filename") or "").lower()]
     if release_q.strip():
         try:
-            categories = [2000] if media_type == "movie" else [5000] if media_type == "tv" else None
-            # Resolve a visual metadata card separately from the raw Prowlarr
-            # release list. Prowlarr supplies releases; Arr metadata supplies
-            # the clean title/poster/genres.
-            try:
-                if media_type == "tv":
-                    meta_rows = await SonarrClient().lookup(release_q.strip())
-                elif media_type == "movie":
-                    meta_rows = await RadarrClient().lookup(release_q.strip())
-                else:
-                    meta_rows = await RadarrClient().lookup(release_q.strip())
-                    if not meta_rows:
-                        meta_rows = await SonarrClient().lookup(release_q.strip())
-                if meta_rows:
-                    m=meta_rows[0]
-                    release_meta={"title":m.get("title") or release_q,"year":m.get("year"),"overview":m.get("overview") or "","poster":poster_url(m),"genres":m.get("genres") or []}
-            except Exception:
-                release_meta=None
-            releases = await ProwlarrClient().search(release_q.strip(), categories=categories, limit=100)
-            if protocol in {"torrent", "usenet"}:
-                releases = [x for x in (releases or []) if str(x.get("protocol") or "").lower() == protocol]
-            scored = []
-            policy = load_policy()
-            for row in (releases or [])[:100]:
-                row = dict(row)
-                row["arrnexus_policy"] = score_release(row, policy)
-                scored.append(row)
-            releases = sorted(scored, key=lambda x: int((x.get("arrnexus_policy") or {}).get("score") or 0), reverse=True)
+            releases,release_meta=await _search_debrid_releases(release_q.strip(),media_type,protocol,pack_mode,quality,cached_flag,dedupe_flag)
         except Exception as exc:
-            page_error = str(exc)
-    return templates.TemplateResponse("debrid.html", {
-        "request": request, "connected": rd.connected(), "user": user, "torrents": torrents,
-        "error": page_error, "notice": notice, "q": q, "release_q": release_q, "protocol": protocol, "media_type": media_type, "releases": releases, "release_meta": release_meta, "policy": load_policy(),
+            page_error=str(exc); log_event("error","debrid","search_failed",str(exc),{"query":release_q,"media_type":media_type,"pack_mode":pack_mode})
+    expected_seasons=_expected_tv_seasons(release_meta) if media_type=="tv" else []
+    tv_coverage=None
+    if media_type=="tv" and release_meta:
+        try:
+            tv_coverage=await _tv_library_coverage(release_meta)
+        except Exception as exc:
+            log_event("warning","debrid","tv_coverage_failed",str(exc),{"query":release_q})
+    full_count=sum(1 for r in releases if (r.get("arrnexus_pack") or {}).get("kind")=="full_series")
+    season_count=sum(1 for r in releases if (r.get("arrnexus_pack") or {}).get("kind")=="season_pack")
+    episode_count=sum(1 for r in releases if (r.get("arrnexus_pack") or {}).get("kind") in {"episode","episode_bundle"})
+    return templates.TemplateResponse("debrid.html",{
+        "request":request,"connected":rd.connected(),"user":user,"torrents":torrents,"error":page_error,"notice":notice,"q":q,
+        "release_q":release_q,"protocol":protocol,"media_type":media_type,"pack_mode":pack_mode,"quality":quality,"cached_only":cached_flag,
+        "hide_duplicates":dedupe_flag,"releases":releases,"release_meta":release_meta,"policy":load_policy(),"expected_seasons":expected_seasons,
+        "tv_coverage":tv_coverage,"pack_counts":{"full_series":full_count,"season_pack":season_count,"episode":episode_count},
     })
+
+
+@app.post("/debrid/add-smart-show")
+async def debrid_add_smart_show(request: Request, release_q: str = Form(...), quality: str = Form("any"), cached_only: str = Form("false")):
+    require_request_access(request,count_against_limit=False)
+    if not rd.connected():
+        return RedirectResponse("/debrid?error="+quote("Connect Real-Debrid first"),status_code=303)
+    try:
+        rows,meta=await _search_debrid_releases(release_q,"tv","torrent","any",quality,str(cached_only).lower() in {"1","true","yes","on"},True)
+        expected=_expected_tv_seasons(meta)
+        best=choose_best_complete(rows,expected)
+        added=[]
+        if best:
+            await _add_release_to_rd(best); added=[best]
+            detail=f"Added best complete-series pack: {best.get('title')}"
+        else:
+            packs,missing=choose_best_season_packs(rows,expected)
+            if missing and expected:
+                raise ArrError("No complete-series pack found and season packs are missing: "+", ".join(f"S{x:02d}" for x in missing))
+            if not packs:
+                raise ArrError("No complete-series or season-pack combination matched the current policy")
+            for row in packs:
+                await _add_release_to_rd(row); added.append(row)
+            detail=f"Added {len(added)} season pack(s) covering the show"
+        add_activity("debrid",meta.get("title") if meta else release_q,detail)
+        log_event("info","debrid","smart_show_added",detail,{"query":release_q,"count":len(added)})
+        return RedirectResponse(f"/debrid?release_q={quote(release_q)}&media_type=tv&protocol=torrent&pack_mode=any&notice={quote(detail)}",status_code=303)
+    except Exception as exc:
+        log_event("error","debrid","smart_show_failed",str(exc),{"query":release_q})
+        return RedirectResponse(f"/debrid?release_q={quote(release_q)}&media_type=tv&protocol=torrent&error={quote(str(exc))}",status_code=303)
+
+
+@app.post("/debrid/add-missing-show")
+async def debrid_add_missing_show(request: Request, release_q: str = Form(...), quality: str = Form("any"), cached_only: str = Form("false")):
+    require_request_access(request,count_against_limit=False)
+    if not rd.connected():
+        return RedirectResponse("/debrid?error="+quote("Connect Real-Debrid first"),status_code=303)
+    try:
+        rows,meta=await _search_debrid_releases(release_q,"tv","torrent","any",quality,str(cached_only).lower() in {"1","true","yes","on"},True)
+        coverage=await _tv_library_coverage(meta)
+        if not coverage or not coverage.get("found"):
+            raise ArrError("This show is not currently matched in Sonarr, so ArrNexus cannot safely determine which seasons are missing")
+        missing=list(coverage.get("missing_seasons") or [])
+        if not missing:
+            detail="Sonarr already reports every released season as complete"
+            return RedirectResponse(f"/debrid?release_q={quote(release_q)}&media_type=tv&protocol=torrent&notice={quote(detail)}",status_code=303)
+        packs,still_missing=choose_best_season_packs(rows,missing)
+        if still_missing:
+            raise ArrError("Could not find acceptable season packs for: "+", ".join(f"S{x:02d}" for x in still_missing))
+        if not packs:
+            raise ArrError("No acceptable season packs were found for the missing seasons")
+        for row in packs:
+            await _add_release_to_rd(row)
+        detail="Added season pack(s) for missing coverage: "+", ".join(f"S{x:02d}" for x in missing)
+        add_activity("debrid",meta.get("title") if meta else release_q,detail)
+        log_event("info","debrid","missing_seasons_added",detail,{"query":release_q,"seasons":missing,"count":len(packs)})
+        return RedirectResponse(f"/debrid?release_q={quote(release_q)}&media_type=tv&protocol=torrent&notice={quote(detail)}",status_code=303)
+    except Exception as exc:
+        log_event("error","debrid","missing_seasons_failed",str(exc),{"query":release_q})
+        return RedirectResponse(f"/debrid?release_q={quote(release_q)}&media_type=tv&protocol=torrent&error={quote(str(exc))}",status_code=303)
 
 
 @app.post("/debrid/add-release")
@@ -1436,59 +1743,48 @@ async def ensure_lidarr_artist(artist_name: str):
 @app.get("/music", response_class=HTMLResponse)
 async def music_page(request: Request, q: str = "", kind: str = "artist", source: str = "unified", genre: str = ""):
     require_auth(request)
-    providers=provider_catalog(); results=[]; source_featured=[]; error=None; external_url=""; links=external_music_links(q or genre or "")
-    # Shared sections remain visible on every provider tab.
+    providers=provider_catalog(); results=[]; source_featured=[]; error=None; external_url=""; source_note=""; lidarr_error=None
+    available_keys={p.get("key") for p in providers}
+    if source not in available_keys:
+        source="unified"
+    term=q.strip() or genre.strip()
+
+    # Provider discovery and Lidarr health are deliberately isolated. A broken
+    # Lidarr connection must not make Apple/Audius/MusicBrainz/etc disappear.
     try:
-        trends,releases,audius=await asyncio.gather(trending_artists(18,"this_week"),trending_releases(18,"this_week"),audius_trending(18,genre))
-        trends,releases=await asyncio.gather(enrich_artist_art(trends,10),enrich_release_art(releases,10))
-    except Exception:
-        trends,releases,audius=[],[],[]
-    try:
-        term=q.strip() or genre.strip()
+        source_featured,source_note=await provider_featured(source,genre,24)
         if term:
-            if source=="apple": results=await itunes_search(term,"album" if kind=="album" else "musicArtist",30)
-            elif source=="audius": results=await audius_search(term,30)
-            elif source in {"musicbrainz","listenbrainz"}: results=await search_musicbrainz(term,kind,30)
-            elif source=="archive": results=await internet_archive_search(term,30)
-            elif source=="jamendo": results=await jamendo_search(term,30)
-            elif source=="soundcloud": results=await soundcloud_search(term,30)
-            elif source=="lastfm": results=await lastfm_search(term,kind,30)
-            elif source.startswith("plugin-"):
-                plugin = next((p for p in providers if p.get("key") == source), None)
-                external_url = plugin_search_url(plugin or {}, term) if plugin else ""
-                results = await search_musicbrainz(term, kind, 24)
-            elif source in {"spotify","amazon","beatport","bandcamp","discogs"}:
-                external_url=links.get(source,"")
-                # Keep ArrNexus useful without linking the user's streaming account:
-                # resolve the same query against open MusicBrainz metadata so the
-                # tab still has native cards that can be sent to Lidarr.
-                results=await search_musicbrainz(term,kind,24)
-            else:
-                mb,apple,au,arc=await asyncio.gather(search_musicbrainz(term,kind,14),itunes_search(term,"album" if kind=="album" else "musicArtist",14),audius_search(term,14),internet_archive_search(term,10))
-                seen=set()
-                for row in mb+apple+au+arc:
-                    k=(normalize_title(row.get("artist") or ""),normalize_title(row.get("title") or ""))
-                    if k not in seen: seen.add(k); results.append(row)
-        # Source-specific browse content even when there is no search.
-        if source=="audius": source_featured=audius
-        elif source=="listenbrainz": source_featured=releases
-        elif source=="archive": source_featured=await internet_archive_search(genre,20)
-        elif source=="jamendo": source_featured=await jamendo_search(genre,20)
-        elif source=="soundcloud" and term: source_featured=results[:20]
-        elif source=="apple" and term: source_featured=results[:20]
-        elif source=="musicbrainz": source_featured=(results[:20] if term else releases[:20])
-        elif source.startswith("plugin-"): source_featured=(results[:20] if term else releases[:20])
-        elif source in {"spotify","amazon","beatport","bandcamp","lastfm","discogs"}: source_featured=(results[:20] if term else releases[:20])
-        elif source=="apple" and not term: source_featured=releases[:20]
-        elif source=="soundcloud" and not term: source_featured=releases[:20]
-        elif source=="lastfm": source_featured=(results[:20] if term else await lastfm_top(20))
+            results, external_url = await provider_search(source,term,kind,30)
+        elif source in {"amazon","beatport","bandcamp","discogs"}:
+            external_url=external_music_links(genre or "").get(source,"") if genre else ""
+    except Exception as exc:
+        error=str(exc)
+        log_event("warning","music","provider_failed",str(exc),{"source":source,"query":q,"genre":genre})
+
+    if source=="unified":
+        try:
+            trends,releases,audius=await asyncio.gather(trending_artists(18,"this_week"),trending_releases(18,"this_week"),audius_trending(18,genre))
+            trends,releases=await asyncio.gather(enrich_artist_art(trends,10),enrich_release_art(releases,10))
+        except Exception as exc:
+            trends=[]; releases=[]; audius=[]
+            log_event("warning","music","unified_trends_failed",str(exc))
+    else:
+        trends=releases=audius=[]
+
+    try:
         lidarr_artists=await LidarrClient().artists()
     except Exception as exc:
-        lidarr_artists=[]; error=str(exc)
+        lidarr_artists=[]; lidarr_error=str(exc)
+        log_event("warning","music","lidarr_library_failed",str(exc))
+
+    selected_provider=next((p for p in providers if p.get("key")==source),{"name":"For You","description":""})
     return templates.TemplateResponse("music.html",{
         "request":request,"q":q,"kind":kind,"source":source,"genre":genre,"results":results,"source_featured":source_featured,
-        "trends":trends,"releases":releases,"audius":audius,"lidarr_artists":lidarr_artists,"genres":GENRES,"error":error,
-        "providers":providers,"external_url":external_url,"soundcloud_configured":bool(setting_get("music.soundcloud.client_id") and setting_get("music.soundcloud.client_secret")),"jamendo_configured":bool(setting_get("music.jamendo.client_id")),"lastfm_configured":bool(setting_get("music.lastfm.api_key")),
+        "source_note":source_note,"selected_provider":selected_provider,"trends":trends,"releases":releases,"audius":audius,
+        "lidarr_artists":lidarr_artists,"lidarr_error":lidarr_error,"genres":GENRES,"error":error,"providers":providers,"external_url":external_url,
+        "soundcloud_configured":bool(setting_get("music.soundcloud.client_id") and setting_get("music.soundcloud.client_secret")),
+        "jamendo_configured":bool(setting_get("music.jamendo.client_id")),"lastfm_configured":bool(setting_get("music.lastfm.api_key")),
+        "spotify_configured":bool(setting_get("music.spotify.client_id") and setting_get("music.spotify.client_secret")),
     })
 
 

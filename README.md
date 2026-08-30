@@ -1,56 +1,125 @@
-# ArrNexus v3.0
+# ArrNexus v4.0
 
-ArrNexus is a self-hosted media-control layer for DUMB-style Radarr/Sonarr/Lidarr stacks using InfiniDysk/NzbDAV, Decypharr/Real-Debrid, Prowlarr and Jellyfin.
+ArrNexus is a self-hosted media-control layer for DUMB-style Radarr/Sonarr/Lidarr stacks using InfiniDysk/NzbDAV, Decypharr/Real-Debrid, Prowlarr, Jellyfin and optional Seerr discovery.
 
-It is designed to be deployed as a single Docker/Portainer stack and then configured entirely from the browser. A normal installation does **not** require an `.env` file.
+It is designed for **Portainer/Docker Compose first** deployment: start the stack, open the browser, create the administrator and configure services in the UI. A normal installation does **not** require an `.env` file.
 
-## Main features
+## What's new in v4
 
-- First-run web setup creates the administrator account.
-- UI-managed Radarr, Sonarr, Lidarr, Prowlarr, Jellyfin and Seerr connections.
-- Automatic discovery of DUMB Arr processes through the host PID namespace.
+### Discover reliability + Seerr-style shelves
+
+- Fixed the Discover template regression that could return an HTTP 500 when shelf dictionaries exposed an `items` key.
+- Discover now isolates Seerr, Arr library and search failures instead of allowing one optional source to white-screen the page.
+- Trending/popular Seerr shelves and every discovered specialist Radarr/Sonarr library render as horizontal poster rails.
+- Search results retain request state and distinguish `Requested` from `In Real-Debrid`.
+- Discover problems are written to the filterable ArrNexus logs and surfaced as source notices.
+
+### Music source isolation
+
+Provider tabs now use their **own provider data** instead of relabelling ListenBrainz highlights:
+
+- ListenBrainz — public sitewide listening trends.
+- Apple/iTunes — public catalogue search plus Apple public top-album feeds where available.
+- Audius — open trending/search data.
+- MusicBrainz — open metadata/search/recent release groups.
+- **Deezer — public chart/catalogue discovery without a listener login.**
+- Internet Archive — public audio discovery.
+- Jamendo — optional developer client ID.
+- SoundCloud — optional application credentials; no personal listener account linking.
+- Spotify — optional app Client ID/Secret for public catalogue search; no user OAuth.
+- Last.fm — optional application key.
+- Amazon Music, Beatport, Bandcamp and Discogs — honest external catalogue launchers rather than fake recommendations.
+
+If Lidarr is offline, the selected discovery provider still renders; only the `Add/Search via Lidarr` workflow is unavailable.
+
+### Smart TV packs in Debrid / DMM
+
+TV Prowlarr → Real-Debrid searches now understand:
+
+- `Any`
+- `Full series`
+- `Season packs`
+- `Episodes`
+
+ArrNexus parses common `S01-S03`, `Season 1-3`, `S02`, `S02E03`, complete-series and season-pack naming patterns and displays a pack badge for each release.
+
+Additional controls:
+
+- quality filter (`2160p`, `1080p`, `720p`, any)
+- `Cached RD only`
+- duplicate hiding
+- Real-Debrid cache badges
+- pack-aware release scoring
+- separate size ceilings for movies, episodes, season packs and full-series packs
+
+For an existing Sonarr series, ArrNexus displays a **season coverage strip** showing complete / partial / missing seasons and provides:
+
+- **Get entire show intelligently** — prefer one acceptable complete-series pack, otherwise assemble the best season-pack combination.
+- **Get missing seasons only** — use Sonarr's season statistics and add only the missing/incomplete season packs.
+
+### Problem Centre
+
+A new Problem Centre turns operational state into actionable issues:
+
+- DUMB namespace health
+- Radarr/Sonarr/Lidarr/Prowlarr connectivity
+- broken symlinks
+- recent failed import jobs
+- recent error log events
+- simple library-health score
+
+This complements the existing Maintenance page and filtered Logs view.
+
+## Existing standout features retained
+
+- First-run administrator setup in the browser.
+- UI-managed Radarr, Sonarr, Lidarr, Prowlarr, Jellyfin and Seerr connections/API keys.
+- Automatic DUMB Arr process discovery through the host PID namespace.
 - DMM/Decypharr inbox scanning through `/proc/<arr-pid>/root/mnt/debrid`.
-- Clean metadata titles, posters, genre badges, duplicate grouping and quality comparison.
+- Clean metadata titles, posters, genres, duplicate grouping and quality comparisons.
 - Waiting / Imported / Duplicates / Upgrades / Ignored inbox states.
-- Bulk import with one route for all selected items or per-item automatic routing.
-- Non-destructive symlink imports: Decypharr/Real-Debrid source media is never moved.
-- Background import jobs with progress, per-item failure reasons and a persistent job toast.
-- Scraping page showing Arr searches before a result reaches the normal download queue.
+- Bulk import with explicit route selection or per-item automatic routing.
+- Non-destructive symlink imports; Decypharr/Real-Debrid source media is never moved.
+- Background import jobs with persistent progress toasts and per-item failure reasons.
+- Scraping page for requests still searching indexers before they reach Download Queue.
 - Unified Radarr/Sonarr/Lidarr download queue.
-- Seerr-backed trending/popular Discover shelves plus separate shelves for every discovered specialist Arr library.
-- Direct Prowlarr -> Real-Debrid torrent search with Movies / TV category filtering.
-- Real-Debrid device OAuth and account library view.
-- Music Hub backed by public/open discovery sources, with Add/Search actions routed into Lidarr/Usenet.
-- MusicBrainz, ListenBrainz, Apple/iTunes, Audius and Internet Archive support by default.
-- Optional SoundCloud application credentials, Jamendo client ID and Last.fm application API key.
-- Spotify, Amazon Music, Beatport, Bandcamp, Last.fm and Discogs catalog launchers without personal account linking.
-- Routing-rule editor and learned title corrections.
-- Broken-symlink scanner, orphan detector, safe repair and safe Undo.
-- Read-only browser for registered DUMB library paths.
+- Real-Debrid device OAuth and account torrent-library view.
+- Routing-rule editor plus learned title corrections.
+- Broken-link scanner, orphan detector, safe repair and safe Undo.
+- Read-only DUMB namespace file browser.
 - Filterable application logs.
-- Multiple users, email login/password reset, per-user dashboard layouts and 12 themes.
+- Multiple users, email login/password reset, request permissions/limits and themes.
+- Per-title operational timeline.
+- Explainable release-scoring policy with `Why this score` details.
+- Sanitized diagnostics ZIP for GitHub/support issues.
+- Optional ntfy, Gotify, Discord webhook and email notifications.
+- Daily rolling SQLite backups and manual backups.
+- Sanitized configuration export/import.
+- Optional GitHub release update checker.
+- Safe JSON-only community music-provider SDK.
+- Installable PWA/mobile shell.
 
 ## DUMB namespace requirement
 
-The host itself may not contain `/mnt/debrid`. DUMB creates the mount tree inside the Arr process mount namespace.
+The Debian host may not contain `/mnt/debrid`. DUMB creates that mount tree inside the Arr process mount namespace.
 
-ArrNexus therefore uses:
+ArrNexus therefore reads through:
 
 ```text
 /proc/<main-radarr-pid>/root/mnt/debrid
 ```
 
-while all symlinks it creates still contain the normal DUMB-visible target path such as:
+while symlinks written to the media libraries retain normal DUMB-visible targets such as:
 
 ```text
 /mnt/debrid/decypharr/__all__/Movie (2026)/Movie.mkv
 ```
 
-The Compose stack needs `pid: host` and `SYS_PTRACE` so it can inspect the live Arr namespace. It does not need `privileged: true`.
+The stack requires `pid: host` and `SYS_PTRACE` so it can inspect the live Arr namespace. It does **not** require `privileged: true`.
 
-## Portainer / Docker Compose installation
+## Portainer / Docker Compose
 
-Use the included `docker-compose.yml`:
+The included Compose file intentionally contains no application secrets:
 
 ```yaml
 services:
@@ -69,135 +138,119 @@ services:
       - ./data:/data
 ```
 
-Then build/start the stack and open:
+Build/start it and open:
 
 ```text
 http://YOUR-SERVER:8484
 ```
 
-On the first visit ArrNexus opens the setup wizard. Create the administrator there; no username/password environment variables are needed.
+On a fresh database the setup wizard creates the first administrator. Service URLs/API keys, mounts, provider settings, themes, users and operational policy are then maintained through the UI and persisted in `/data/router.db`.
 
-### Browser setup order
+### Recommended setup order
 
-1. **Connections**: save Radarr, Sonarr, Lidarr, Prowlarr, Jellyfin and (optionally) Seerr URLs/API keys.
-2. **Settings -> Mounts & logical directories**: confirm the DUMB paths and add/remove custom route roots.
-3. **Debrid / DMM**: optionally connect Real-Debrid using device authentication.
-4. **Profile & Appearance**: choose a theme and dashboard layout.
-5. **DMM Inbox**: review routing suggestions before the first bulk import.
+1. **Connections** — Radarr, Sonarr, Lidarr, Prowlarr, Jellyfin and optional Seerr.
+2. **Settings → Mounts & logical directories** — confirm DUMB roots and specialist destinations.
+3. **Debrid / DMM** — connect the same Real-Debrid account used by DMM/Decypharr if desired.
+4. **Profile** — select theme/dashboard layout.
+5. **Problem Centre** — confirm namespace/service health.
+6. **DMM Inbox** — test one import before bulk routing.
 
-## Seerr discovery
+## Core workflows
 
-Seerr is optional but strongly recommended when it is already present in the media stack. ArrNexus uses it as the discovery metadata backend for trending/popular movie and TV shelves. This avoids requiring every ArrNexus user to create a separate TMDB credential.
-
-The existing Arr libraries are always shown independently from Seerr, so specialist shelves such as Kids, Christmas, Halloween, Netflix, Disney+, Amazon, Apple TV+ and BBC can still be displayed from the discovered Arr instances.
-
-## DMM / Real-Debrid workflow
-
-There are two related but distinct workflows:
+### Normal Arr request
 
 ```text
-Discover -> Radarr/Sonarr -> Prowlarr -> selected download client
+Discover
+  → specialist Radarr/Sonarr
+  → Prowlarr
+  → InfiniDysk/Usenet OR Decypharr/Real-Debrid
+  → Arr library
+  → Jellyfin
 ```
 
-and:
+### Direct Debrid / DMM acquisition
 
 ```text
-Debrid / DMM -> Prowlarr torrent search -> Real-Debrid -> Decypharr -> __all__ -> DMM Inbox -> Arr symlink library
+Debrid / DMM
+  → Prowlarr torrent search
+  → TV-pack / quality / cache / policy filtering
+  → Real-Debrid
+  → Decypharr
+  → __all__
+  → DMM Inbox
+  → specialist Arr symlink library
 ```
 
-A title being present in Radarr/Sonarr does not by itself mean it exists in the Real-Debrid library. ArrNexus displays these states separately.
+### Music
 
-## Music Hub
+```text
+Public/account-free discovery catalogue
+  → identify artist/album
+  → Lidarr
+  → Prowlarr
+  → NZB/Usenet
+  → lidarr-nzbdav
+```
 
-ArrNexus does not download audio from Spotify, Apple Music, Amazon Music, SoundCloud or other streaming services. Discovery metadata is resolved independently and the selected artist/album is sent to Lidarr. Lidarr then searches its configured Prowlarr/Usenet indexers and uses the existing Usenet download path.
+ArrNexus does not download audio from streaming services.
 
-No personal Spotify, Apple or Amazon login is required.
+## Upgrading from v3.0 validated
 
-Optional provider settings are entered under **Settings -> Optional music catalog credentials**:
-
-- SoundCloud: application client ID + client secret.
-- Jamendo: developer client ID.
-- Last.fm: application API key; public chart/search calls do not require a listener session.
-
-The core Music Hub remains usable without either.
-
-## Upgrading from ArrNexus v2.0
-
-Stop v2, extract v3 and copy the old persistent `data` directory. Do **not** copy the old `.env` as a requirement for v3.
+Stop v3, extract v4 and copy only the persistent `data` directory:
 
 ```bash
-cd /opt/dmm-arr-router/arrnexus-v2.0
+cd /opt/dmm-arr-router/arrnexus-v3.0-validated
 docker compose down
 
 cd /opt/dmm-arr-router
-unzip /home/<user>/arrnexus-v3.0.zip
+unzip /home/<user>/arrnexus-v4.0.zip
 
-mkdir -p arrnexus-v3.0/data
-cp -a arrnexus-v2.0/data/. arrnexus-v3.0/data/
+mkdir -p arrnexus-v4.0/data
+cp -a arrnexus-v3.0-validated/data/. arrnexus-v4.0/data/
 
-# Optional one-time migration if v2 still kept API keys only in .env:
-python3 arrnexus-v3.0/migrate_legacy_env.py \
-  arrnexus-v2.0/.env \
-  arrnexus-v3.0/data/router.db
-
-cd arrnexus-v3.0
+cd arrnexus-v4.0
+docker compose config
 docker compose up -d --build
+docker compose ps
+docker compose logs --tail=150 arrnexus
 ```
 
-Open `http://SERVER:8484` and check **Connections**. The optional migration command copies old connection values into SQLite; after verification the old `.env` is no longer required by ArrNexus v3.
+Do **not** copy an old `.env` as a requirement. Existing SQLite configuration migrates forward automatically.
 
-## Security
+## Validation
 
-- Never commit `data/router.db`, OAuth credentials or API keys to Git.
-- ArrNexus masks stored API keys in the UI.
-- Real-Debrid source files are never deleted by an import.
-- Undo only removes symlinks recorded as created by ArrNexus.
-- The built-in file browser is read-only.
-- Put ArrNexus behind your normal reverse proxy/authentication policy before exposing it outside your trusted network.
-
-## GitHub publishing notes
-
-Recommended repository contents:
-
-```text
-app/
-Dockerfile
-docker-compose.yml
-requirements.txt
-README.md
-.env.example     # informational/legacy only
-.gitignore
-```
-
-Do not commit the runtime `data/` directory.
-
-## Validated standout features
-
-This validated v3 build also includes the higher-level features intended to make ArrNexus useful as a public GitHub project rather than only a private dashboard:
-
-- **Per-title timeline**: follow a title across request, scraping/search, import and repair activity from one chronological screen.
-- **Explainable release policy**: Prowlarr/Real-Debrid results receive a visible score with reasons such as resolution, codec, release size, seeders and rejected CAM/TS terms. The policy is edited in Settings.
-- **Diagnostics bundle**: one-click ZIP containing sanitized settings, logs, jobs, imports, version and namespace/connection state. Secrets are masked or omitted.
-- **Notifications**: optional ntfy, Gotify, Discord webhook and email delivery. Notification failures are isolated from import jobs.
-- **Automatic backups**: rolling daily SQLite backups plus manual backup downloads.
-- **Configuration portability**: sanitized JSON export/import for non-secret settings and logical mount mappings.
-- **Update checker**: optional GitHub release checker against a repository configured by the administrator.
-- **Provider SDK**: safe JSON-only music catalog provider files under `/data/providers`; community providers cannot execute Python code.
-- **PWA/mobile support**: installable manifest/service worker and responsive mobile navigation.
-- **User request controls**: administrators can allow/deny requests and set per-user daily request limits.
-- **Release score explanations**: every scored direct-debrid result can show exactly why it ranked where it did.
-
-Run the bundled offline validator after installing dependencies:
+Run:
 
 ```bash
 python validate.py
 ```
 
-See `VALIDATION.md` for the validation matrix and environment limitations.
+The v4 validator covers Python/Jinja startup plus specific regression tests for:
 
-### JSON catalog provider example
+- Discover shelf/search rendering (the previous HTTP 500 case)
+- music-provider source isolation
+- TV full-series/season/episode parsing
+- full-series and missing-season UI
+- Sonarr season-coverage visualizer
+- Real-Debrid cache badges
+- pack-aware size/scoring rules
+- core authenticated pages and PWA resources
 
-A provider file is data-only:
+See `VALIDATION.md` for the full report and environment limits.
+
+## Security
+
+- Never commit `/data/router.db`, OAuth credentials, API keys or SMTP secrets.
+- Stored connection secrets are masked in normal UI views.
+- Diagnostics/config exports omit or mask secrets.
+- Real-Debrid source media is never deleted during import.
+- Undo removes only symlinks recorded as created by ArrNexus.
+- The file browser is read-only.
+- Put ArrNexus behind an appropriate reverse proxy/authentication layer before exposing it outside a trusted network.
+
+## Community provider example
+
+The provider SDK is JSON-only; community providers cannot execute Python code:
 
 ```json
 {
@@ -207,5 +260,3 @@ A provider file is data-only:
   "search_url": "https://example.com/search?q={query}"
 }
 ```
-
-Upload it from **Settings → Music discovery providers**. The required `{query}` placeholder is URL-encoded by ArrNexus.
