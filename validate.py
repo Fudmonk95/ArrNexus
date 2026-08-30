@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
-"""ArrNexus v9.1.0-beta release validator.
+"""ArrNexus v9.2.0-beta release validator.
 
-Runs the retained v9 regression suite first (which itself runs v8 and v7), then checks
-v9.1's single visual identity, expanded public front door, safe public release
-export, onboarding/provider behaviour and performance architecture. No live user
-credentials are used.
+Runs the carried v9.1 -> v9 -> v8 -> v7 regression chain first, then tests the
+v9.2 production-data Dashboard fix, degraded-dashboard fallback, README-driven
+public documentation, safer navigation prefetch and request timing diagnostics.
 """
 from __future__ import annotations
-
 import compileall
-import io
 import os
 import subprocess
 import sys
 import tempfile
-import zipfile
 from pathlib import Path
 
 
@@ -23,47 +19,30 @@ def require(condition: bool, message: str):
         raise AssertionError(message)
 
 
-def run_v9(root: Path) -> None:
-    proc = subprocess.run(
-        [sys.executable, str(root / "validate_v9.py")],
-        cwd=root,
-        text=True,
-        capture_output=True,
-        timeout=240,
-    )
+def run_v91(root: Path) -> None:
+    proc = subprocess.run([sys.executable, str(root / "validate_v91.py")], cwd=root, text=True, capture_output=True, timeout=300)
     if proc.stdout:
         print(proc.stdout.rstrip())
     if proc.stderr:
         print(proc.stderr.rstrip(), file=sys.stderr)
-    require(proc.returncode == 0, f"Retained v9 regression validator failed with exit code {proc.returncode}")
+    require(proc.returncode == 0, f"Retained v9.1 regression validator failed with exit code {proc.returncode}")
 
 
 def main() -> int:
     root = Path(__file__).resolve().parent
-    run_v9(root)
+    run_v91(root)
     require(compileall.compile_dir(root / "app", quiet=1), "Python compilation failed")
 
-    logo = root / "app" / "static" / "arrnexus-logo-v9.png"
-    icon = root / "app" / "static" / "arrnexus-icon-v9.png"
-    require(logo.is_file() and logo.stat().st_size > 10_000, "ArrNexus wordmark asset missing")
-    require(icon.is_file() and icon.stat().st_size > 10_000, "ArrNexus icon asset missing")
-
-    with tempfile.TemporaryDirectory(prefix="arrnexus-v91-validate-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="arrnexus-v92-validate-") as tmp:
         os.environ["DB_PATH"] = str(Path(tmp) / "router.db")
         os.environ["DB_DIR"] = tmp
-        os.environ["SESSION_SECRET"] = "validation-only-v91-session-secret"
-        os.environ["RADARR_API_KEY"] = ""
-        os.environ["SONARR_API_KEY"] = ""
-        os.environ["LIDARR_API_KEY"] = ""
-        os.environ["PROWLARR_API_KEY"] = ""
-        os.environ["JELLYFIN_API_KEY"] = ""
-        os.environ["SEERR_API_KEY"] = ""
+        os.environ["SESSION_SECRET"] = "validation-only-v92-session-secret"
+        for key in ("RADARR_API_KEY","SONARR_API_KEY","LIDARR_API_KEY","PROWLARR_API_KEY","JELLYFIN_API_KEY","SEERR_API_KEY"):
+            os.environ[key] = ""
 
         from fastapi.testclient import TestClient
         import app.main as main_app
-        from app import aiostreams as aio
-        from app.db import create_user, setting_get
-        from app.providers import provider_credentials_for_aiostreams, provider_state
+        from app.db import db, add_activity, create_job
 
         for template in sorted((root / "app" / "templates").glob("*.html")):
             main_app.templates.env.get_template(template.name)
@@ -72,145 +51,62 @@ def main() -> int:
             landing = client.get("/", follow_redirects=False)
             require(landing.status_code == 200, "public landing page")
             for text in (
-                "Your Media Stack", "One Control Plane", "DMM Inbox", "Quality Lab",
-                "AIOStreams Bridge", "Stack Readiness", "Download ZIP", "HOW IT WORKS",
+                "Reference architecture", "WHAT IS REQUIRED?", "INSTALLATION", "DOCKER NETWORKING",
+                "python3 -m venv .venv", "DMM / Debrid Inbox", "ACQUISITION STRATEGIES",
+                "TROUBLESHOOTING", "Download ZIP",
             ):
-                require(text in landing.text, f"expanded public landing content missing: {text}")
-            require("arrnexus-icon-v9.png" in landing.text, "brand asset not referenced on landing")
-            require("1280 movies" not in landing.text, "public landing page leaked private dashboard data")
+                require(text in landing.text, f"README-driven landing content missing: {text}")
+            require(landing.headers.get("x-arrnexus-elapsed-ms"), "request timing response header missing")
+            require("Server-Timing" in landing.headers, "Server-Timing response header missing")
 
-            # The public download must be a source-only archive created from the
-            # running package, never a copy of persistent /data.
-            release = client.get("/download/latest", follow_redirects=False)
-            require(release.status_code == 200, "public release download")
-            require("application/zip" in release.headers.get("content-type", ""), "public release is not a zip")
-            with zipfile.ZipFile(io.BytesIO(release.content)) as zf:
-                names = zf.namelist()
-            require(any(n.endswith("/app/main.py") for n in names), "public release missing application source")
-            require(any(n.endswith("/validate.py") for n in names), "public release missing validator")
-            forbidden = [
-                n for n in names
-                if "/data/" in n or n.endswith("/.env") or n.endswith("/session_secret")
-                or n.endswith((".db", ".sqlite", ".sqlite3", ".pyc"))
-                or "/__pycache__/" in n or "/aiostreams_backups/" in n
-            ]
-            require(not forbidden, f"public release included runtime/private files: {forbidden[:3]}")
-            checksum = client.get("/download/latest.sha256")
-            require(checksum.status_code == 200 and "arrnexus-v9.1.0-beta.zip" in checksum.text, "public checksum endpoint")
+            setup = client.post("/setup", data={
+                "username":"v92validator", "email":"v92@example.invalid", "display_name":"V9.2 Validator",
+                "password":"validation-password-123", "confirm":"validation-password-123",
+            }, follow_redirects=False)
+            require(setup.status_code == 303, "administrator setup")
 
-            private = client.get("/dashboard", follow_redirects=False)
-            require(private.status_code == 303 and private.headers.get("location") == "/setup", "unconfigured dashboard should route to setup")
+            # Reproduce the real v9.1 crash condition: non-empty SQLite Row
+            # objects in all three cached dashboard history lists.
+            with db() as conn:
+                conn.execute("""INSERT INTO imports(source_path,source_name,media_type,destination_key,destination_path,status,undone)
+                              VALUES(?,?,?,?,?,?,?)""", ("/mnt/debrid/example","Example Movie","movie","default","/library/example","complete",0))
+            add_activity("test", "Example Movie", "validator history row", "/mnt/debrid/example")
+            create_job("validator", [{"source_path":"/mnt/debrid/example","display_name":"Example Movie","destination_key":"default"}])
+            main_app._DASHBOARD_CACHE = None
+            main_app._DASHBOARD_CACHE_AT = 0.0
+            dash = client.get("/dashboard", follow_redirects=False)
+            require(dash.status_code == 200, f"dashboard with non-empty migrated history returned {dash.status_code}")
+            require("ARRNEXUS CONTROL CENTRE" in dash.text, "dashboard did not render")
 
-            setup = client.post(
-                "/setup",
-                data={
-                    "username": "v91validator",
-                    "email": "v91@example.invalid",
-                    "display_name": "V9.1 Validator",
-                    "password": "validation-password-123",
-                    "confirm": "validation-password-123",
-                },
-                follow_redirects=False,
-            )
-            require(setup.status_code == 303 and setup.headers.get("location") == "/onboarding", "first admin should enter guided onboarding")
-            require(setting_get("setup.complete", "") == "false", "setup should remain incomplete until onboarding finish")
-
-            onboarding = client.get("/onboarding", follow_redirects=False)
-            require(onboarding.status_code == 200, "onboarding page")
-            require("Environment detection" in onboarding.text and "Choose providers" in onboarding.text and "System readiness" in onboarding.text, "guided onboarding sections missing")
-
-            providers_page = client.get("/providers", follow_redirects=False)
-            require(providers_page.status_code == 200, "provider registry page")
-            for label in ("Real-Debrid", "TorBox", "Premiumize", "AllDebrid", "Easynews", "InfiniDysk / NzbDAV"):
-                require(label in providers_page.text, f"provider missing from registry UI: {label}")
-
-            save = client.post(
-                "/providers/torbox",
-                data={"enabled": "1", "apiKey": "validation-torbox-secret"},
-                follow_redirects=False,
-            )
-            require(save.status_code == 303, "TorBox provider save")
-            torbox = provider_state("torbox", mask=True)
-            require(torbox["enabled"] and torbox["configured"], "TorBox provider was not enabled/configured")
-            require(torbox["credentials"].get("apiKey") == "********", "provider secret was not masked")
-            require(provider_credentials_for_aiostreams().get("torbox", {}).get("apiKey") == "validation-torbox-secret", "provider credential not available to internal AIOStreams bridge")
-            masked_page = client.get("/providers")
-            require("validation-torbox-secret" not in masked_page.text, "provider page leaked secret")
-
-            original = {
-                "services": [
-                    {"id": "premiumize", "enabled": True, "credentials": {"apiKey": "remote-premiumize-secret"}},
-                    {"id": "realdebrid", "enabled": False, "credentials": {}},
-                ],
-                "presets": [],
-                "unrelated": {"keep": True},
-            }
-            integrations = {
-                "prowlarr": {"url": "", "api_key": ""},
-                "realdebrid": {"available": False, "api_key": ""},
-                "nzbdav": {"available": False, "credentials": {}, "fields": []},
-                "providers": {
-                    "torbox": {"apiKey": "validation-torbox-secret"},
-                    "premiumize": {"apiKey": "arrnexus-should-not-overwrite"},
-                },
-            }
-            plan = aio.merge_autowire(original, integrations, wire_prowlarr=False, wire_realdebrid=False, wire_nzbdav=False)
-            require(plan["config"]["unrelated"] == {"keep": True}, "provider merge changed unrelated AIOStreams config")
-            services = {x.get("id"): x for x in plan["config"].get("services", []) if isinstance(x, dict)}
-            require(services["torbox"]["enabled"] is True, "TorBox was not enabled by provider-neutral merge")
-            require(services["torbox"]["credentials"].get("apiKey") == "validation-torbox-secret", "TorBox key not wired")
-            require(services["premiumize"]["credentials"].get("apiKey") == "remote-premiumize-secret", "existing AIOStreams provider credential was overwritten")
-            safe = aio.safe_json(plan["config"])
-            require("validation-torbox-secret" not in safe and "remote-premiumize-secret" not in safe, "provider merge preview leaked a secret")
-
-            profile = client.get("/profile")
-            require(profile.status_code == 200, "profile page")
-            require("Theme gallery" not in profile.text and "ArrNexus UI" in profile.text, "legacy theme switching still exposed")
-
-            readiness = client.get("/readiness", follow_redirects=False)
-            require(readiness.status_code == 200 and "Stack Readiness" in readiness.text, "stack readiness page")
-
-            landing_after = client.get("/", follow_redirects=False)
-            require(landing_after.status_code == 200 and "Dashboard" in landing_after.text, "logged-in public landing CTA should expose dashboard")
-
-            finish = client.post("/onboarding/finish", follow_redirects=False)
-            require(finish.status_code == 303 and finish.headers.get("location", "").startswith("/dashboard"), "onboarding finish")
-            require(setting_get("setup.complete", "") == "true", "onboarding did not mark setup complete")
-
-            create_user("normalv91", "normalv91@example.invalid", "Normal", "validation-password-456", "user")
-            client.get("/logout")
-            login = client.post("/login", data={"username": "normalv91", "password": "validation-password-456"}, follow_redirects=False)
-            require(login.status_code == 303 and login.headers.get("location") == "/dashboard", "login should enter private dashboard")
-            for admin_url in ("/providers", "/readiness", "/onboarding"):
-                denied = client.get(admin_url, follow_redirects=False)
-                require(denied.status_code == 403, f"non-admin gained access to {admin_url}")
+            # The route itself must fail safe if a future dependency throws.
+            original_snapshot = main_app.dashboard_snapshot
+            async def broken_snapshot(force: bool = False):
+                raise RuntimeError("validator forced snapshot failure")
+            main_app.dashboard_snapshot = broken_snapshot
+            try:
+                degraded = client.get("/dashboard", follow_redirects=False)
+            finally:
+                main_app.dashboard_snapshot = original_snapshot
+            require(degraded.status_code == 200, "dashboard did not degrade gracefully")
+            require("Dashboard is running in degraded mode" in degraded.text, "degraded dashboard warning missing")
 
     main_source = (root / "app" / "main.py").read_text(encoding="utf-8")
-    base = (root / "app" / "templates" / "base.html").read_text(encoding="utf-8")
     landing_source = (root / "app" / "templates" / "landing.html").read_text(encoding="utf-8")
-    profile_source = (root / "app" / "templates" / "profile.html").read_text(encoding="utf-8")
-    css = (root / "app" / "static" / "app.css").read_text(encoding="utf-8")
     js = (root / "app" / "static" / "app.js").read_text(encoding="utf-8")
-    providers = (root / "app" / "providers.py").read_text(encoding="utf-8")
-    aio_source = (root / "app" / "aiostreams.py").read_text(encoding="utf-8")
-    release_source = (root / "app" / "release_export.py").read_text(encoding="utf-8")
+    css = (root / "app" / "static" / "app.css").read_text(encoding="utf-8")
+    readme = (root / "README.md").read_text(encoding="utf-8")
 
-    require('APP_VERSION = "9.1.0-beta"' in main_source, "v9.1 beta version string missing")
-    for route in ("/dashboard", "/onboarding", "/providers", "/readiness", "/download/latest"):
-        require(route in main_source, f"missing v9.1 route {route}")
-    require("data-theme" not in base, "private app still selects legacy themes")
-    require("Theme gallery" not in profile_source and "data-theme-choice" not in profile_source, "theme UI not removed")
-    require("ArrNexus v9.1 — one product-wide visual system" in css and "--bg:#050506" in css, "unified black v9.1 design system missing")
-    require("stale-while-revalidate" in js and "idlePrefetch" in js and "inflight" in js, "v9.1 soft-navigation performance layer missing")
-    require("_DASHBOARD_CACHE_TTL" in main_source and "dashboard_snapshot" in main_source and "asyncio.to_thread(scan_source)" in main_source, "dashboard stale-while-revalidate cache missing")
-    require("_EXCLUDED_DIRS" in release_source and '"data"' in release_source and '"session_secret"' in release_source, "safe public release exporter missing exclusions")
-    require("arrnexus-icon-v9.png" in base and "arrnexus-icon-v9.png" in landing_source, "brand icon not integrated")
-    require("provider_credentials_for_aiostreams" in providers and '"torbox"' in providers, "provider registry integration missing")
-    require("provider_payload" in aio_source and "only fill missing remote" in aio_source, "provider-neutral AIOStreams safety merge missing")
+    require('APP_VERSION = "9.2.0-beta"' in main_source, "v9.2 version string missing")
+    require("[dict(x) for x in recent_imports(8)]" in main_source, "dashboard DB rows are not normalised")
+    require("request_timing_middleware" in main_source and "slow_request" in main_source, "route performance telemetry missing")
+    require("idlePrefetch" not in js, "aggressive v9.1 idle prefetch still present")
+    require("220" in js and "stale-while-revalidate" in js, "intent-prefetch / SWR navigation layer missing")
+    require("ArrNexus v9.2" in css and "v92-dashboard-warning" in css, "v9.2 visual/reliability CSS missing")
+    require("python3 -m venv .venv" in landing_source and "python validate.py" in landing_source, "public validator install guide incomplete")
+    require("python3 -m venv .venv" in readme and "Dashboard reliability fix" in readme, "README v9.2 host validation guide incomplete")
 
-    print("PASS: ArrNexus v9.1.0-beta retains v7/v8/v9 functionality and adds one product-wide UI, faster stale-while-revalidate navigation, dashboard snapshots and safe public release downloads")
+    print("PASS: ArrNexus v9.2.0-beta retains v7/v8/v9/v9.1 regressions and fixes production-data Dashboard caching while adding README-driven public documentation and measurable performance diagnostics")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -23,7 +23,7 @@
   document.addEventListener('DOMContentLoaded',()=>{updateSelected();pollActive();setInterval(pollActive,7000);setInterval(refreshExternalLogs,4500);if('serviceWorker' in navigator)navigator.serviceWorker.register('/static/sw.js').catch(()=>{});});
 })();
 
-/* ArrNexus v9.1: persistent shell, stale-while-revalidate page cache and idle prefetch. */
+/* ArrNexus v9.2: persistent shell, intent prefetch and stale-while-revalidate page cache. */
 (function(){
   const pageCache=new Map(),inflight=new Map();
   const FRESH_MS=45000,STALE_MS=180000,MAX_PAGES=36;
@@ -37,20 +37,12 @@
   function applyPage(html,url,push=true){const parser=new DOMParser(),doc=parser.parseFromString(html,'text/html'),incoming=doc.getElementById('pageContent'),current=document.getElementById('pageContent');if(!incoming||!current){location.href=url;return;}current.innerHTML=incoming.innerHTML;current.classList.remove('nx-loading');current.classList.add('nx-loaded');setTimeout(()=>current.classList.remove('nx-loaded'),180);const newHeading=doc.querySelector('.nx-title-wrap h1'),heading=document.querySelector('.nx-title-wrap h1');if(newHeading&&heading)heading.textContent=newHeading.textContent;const newKicker=doc.querySelector('.nx-kicker'),kicker=document.querySelector('.nx-kicker');if(newKicker&&kicker)kicker.textContent=newKicker.textContent;if(doc.title)document.title=doc.title;const targetPath=new URL(url,location.href).pathname;document.querySelectorAll('.nx-nav-links>a').forEach(a=>{const p=new URL(a.href,location.href).pathname;a.classList.toggle('active',p==='/'?targetPath==='/':targetPath.startsWith(p));});document.getElementById('appSidebar')?.classList.remove('open');if(push)history.pushState({arrnexus:true},'',url);window.scrollTo({top:0,behavior:'instant'});if(typeof window.updateSelected==='function')window.updateSelected();document.dispatchEvent(new CustomEvent('arrnexus:navigated',{detail:{url}}));}
   async function navigate(url,push=true){const main=document.getElementById('pageContent');if(!main){location.href=url;return;}main.classList.add('nx-loading');main.setAttribute('aria-busy','true');startProgress();try{const html=await getPage(url);applyPage(html,url,push);}catch(err){console.warn('Soft navigation fallback',err);location.href=url;return;}finally{main.removeAttribute('aria-busy');finishProgress();}}
   document.addEventListener('click',e=>{const a=e.target.closest('a');if(!canSoftNavigate(a)||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button!==0)return;e.preventDefault();navigate(a.href,true);},true);
-  let hoverTimer=null;document.addEventListener('pointerover',e=>{const a=e.target.closest('a');if(!canSoftNavigate(a))return;clearTimeout(hoverTimer);hoverTimer=setTimeout(()=>getPage(a.href,{prefetch:true}).catch(()=>{}),70);});
+  let hoverTimer=null;document.addEventListener('pointerover',e=>{const a=e.target.closest('a');if(!canSoftNavigate(a))return;clearTimeout(hoverTimer);hoverTimer=setTimeout(()=>getPage(a.href,{prefetch:true}).catch(()=>{}),220);});
   document.addEventListener('pointerdown',e=>{const a=e.target.closest('a');if(canSoftNavigate(a))getPage(a.href,{prefetch:true}).catch(()=>{});},{passive:true});
   window.addEventListener('popstate',()=>navigate(location.href,false));
 
-  function idlePrefetch(){if(navigator.connection?.saveData)return;const preferred=['/dashboard','/discover','/inbox','/queue','/libraries','/providers','/readiness','/arrs','/settings'];const links=preferred.map(path=>Array.from(document.querySelectorAll('.nx-nav-links>a')).find(a=>new URL(a.href,location.href).pathname===path)).filter(Boolean);let i=0;const next=()=>{if(document.hidden||i>=links.length)return;const a=links[i++];getPage(a.href,{prefetch:true}).catch(()=>{}).finally(()=>setTimeout(next,180));};if('requestIdleCallback'in window)requestIdleCallback(next,{timeout:1800});else setTimeout(next,900);}
-
-  const commands=()=>Array.from(document.querySelectorAll('.nx-nav-links>a')).map(a=>({label:(a.querySelector('span:last-child')?.textContent||a.textContent).trim(),href:a.href,group:a.closest('.nx-nav-section')?.querySelector('summary span')?.textContent||'Page',icon:a.querySelector('.nx-nav-icon')?.textContent||'•'}));
-  const modal=()=>document.getElementById('nxCommand'),input=()=>document.getElementById('nxCommandInput'),results=()=>document.getElementById('nxCommandResults');
-  function renderCommands(q=''){const term=q.trim().toLowerCase(),rows=commands().filter(x=>!term||x.label.toLowerCase().includes(term)||x.group.toLowerCase().includes(term));results().innerHTML=rows.map((x,i)=>'<a class="nx-command-result '+(i===0?'selected':'')+'" href="'+x.href+'"><span class="nx-nav-icon">'+x.icon+'</span><span><strong>'+x.label+'</strong><small>'+x.group+'</small></span><span>↵</span></a>').join('')||'<div class="log-empty">No matching page.</div>';}
-  function openCommand(){const m=modal();if(!m)return;m.hidden=false;renderCommands('');setTimeout(()=>input()?.focus(),0);}function closeCommand(){const m=modal();if(m)m.hidden=true;}
-  document.addEventListener('click',e=>{if(e.target.closest('[data-command-open]')){openCommand();return;}if(e.target.closest('[data-command-close]')){closeCommand();return;}});
-  document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();modal()?.hidden?openCommand():closeCommand();return;}if(e.key==='Escape'&&!modal()?.hidden){closeCommand();return;}if(!modal()?.hidden&&e.key==='Enter'){const a=results()?.querySelector('.nx-command-result.selected')||results()?.querySelector('.nx-command-result');if(a){e.preventDefault();closeCommand();navigate(a.href,true);}}});
-  document.addEventListener('input',e=>{if(e.target?.id==='nxCommandInput')renderCommands(e.target.value);});
-  document.addEventListener('DOMContentLoaded',idlePrefetch);
+  // v9.2 deliberately does not crawl/prefetch every sidebar route in the background.
+  // Expensive pages are fetched only on explicit navigation or sustained pointer intent.
 })();
 
 /* Native InfiniDysk live overview + passive, cached update badge. */

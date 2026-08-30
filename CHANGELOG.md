@@ -1,5 +1,30 @@
 # ArrNexus Changelog
 
+## 9.2.0-beta — Reliability, Documentation & Performance
+
+### Dashboard production-data fix
+- Fixed an HTTP 500 on upgraded/live databases caused by `copy.deepcopy()` receiving cached `sqlite3.Row` objects from recent imports, jobs and activity.
+- Dashboard snapshot rows are normalised to plain dictionaries before caching.
+- Added a migrated/non-empty database regression that reproduces the original failure.
+- Added degraded Dashboard rendering plus diagnostic logging so a future integration failure does not become an opaque Internal Server Error.
+
+### Public documentation
+- Rebuilt `/` from the detailed public README structure rather than a short marketing summary.
+- Added problem statement, project origin, reference architecture, requirements matrix, installation, upgrade, Python virtualenv validation, Docker networking, integrations, DMM/virtual-media explanation, acquisition strategies, feature guide, security and troubleshooting.
+- Kept the public current-build ZIP and SHA-256 controls.
+
+### Performance
+- Removed v9.1's automatic idle crawl/prefetch of expensive sidebar destinations.
+- Retained persistent-shell soft navigation, in-flight request de-duplication and stale-while-revalidate caching.
+- Increased recently visited page freshness and changed hover prefetch to sustained user intent.
+- Added `Server-Timing` and `X-ArrNexus-Elapsed-Ms` response headers.
+- Added `performance / slow_request` log events for requests taking 1.5 seconds or longer.
+
+### Regression protection
+- Added `validate_v91.py` to retain v9.1 regression coverage.
+- v9.2 `validate.py` runs v9.1 → v9 → v8 → v7 before v9.2-specific tests.
+- Added non-empty Dashboard history, degraded Dashboard, public documentation and route timing tests.
+
 ## 9.1.0-beta — Unified UI & Performance
 
 ### Product-wide visual identity

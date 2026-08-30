@@ -1,14 +1,38 @@
-# ArrNexus v9.1.0-beta — Unified Product & Performance Release
+# ArrNexus v9.2.0-beta — Reliability, Documentation & Performance Release
 
 **Your media stack. One control plane.**
 
 ArrNexus is a self-hosted control and intelligence layer that sits above an existing media stack. It integrates with specialist applications instead of unnecessarily replacing them: Radarr, Sonarr, Lidarr, Prowlarr, Jellyfin, Seerr, DUMB, InfiniDysk/NzbDAV, Decypharr, Debrid/Usenet providers, AIOStreams and music discovery/services.
 
-v9.1 is a refinement release built on v9.0. It makes the public ArrNexus visual identity the **only** application theme, expands the public product/download experience and addresses navigation latency with stale-while-revalidate page caching, idle prefetch and a server-side Dashboard snapshot.
+v9.2 builds on v9.1 with a production-data Dashboard fix, a much more detailed README-driven public homepage, measurable route-performance diagnostics and less aggressive navigation prefetching. The black/white ArrNexus visual identity remains the single product-wide design.
 
-`validate.py` runs the retained **v9 → v8 → v7** regression chain before v9.1-specific checks.
+`validate.py` runs the retained **v9.1 → v9 → v8 → v7** regression chain before v9.2-specific checks.
 
-## What's new in v9.1
+## What's new in v9.2
+
+
+### Dashboard reliability fix
+
+v9.1 introduced a shared Dashboard snapshot. Real upgraded databases contain `sqlite3.Row` objects in recent imports/jobs/activity, and those objects cannot be deep-copied. A clean empty validation database did not expose that. v9.2 normalises every cached database row to plain dictionaries before caching and adds a regression test with real non-empty history.
+
+The Dashboard also has a degraded-mode fallback: if one integration/snapshot fails, administrators see a diagnostic banner and the error is written to Unified Logs instead of receiving an opaque `Internal Server Error`.
+
+### Measurable performance
+
+- persistent private application shell remains
+- client page cache freshness increased for recently visited pages
+- stale-while-revalidate retained
+- sustained hover/pointer intent prefetch retained
+- aggressive idle crawling of every sidebar route removed
+- Dashboard server snapshot retained
+- every HTTP response includes `Server-Timing` and `X-ArrNexus-Elapsed-Ms`
+- requests slower than 1.5 seconds are recorded as `performance / slow_request` log events
+
+This makes future optimisation evidence-driven: the slow route can be identified directly rather than guessed at.
+
+### README-driven public documentation
+
+The public `/` page now includes the project explanation, architecture, requirements matrix, installation and upgrade procedure, Python virtualenv validator steps, Docker networking guidance, integration overview, DMM/virtual-media concepts, acquisition strategies, feature guide, security model, troubleshooting and latest-build download.
 
 ### One ArrNexus visual identity
 
@@ -33,7 +57,7 @@ v9.1 extends the v7 performance work rather than replacing it:
 - 45-second client page cache
 - stale-while-revalidate reuse for recently visited pages
 - pointer-hover / pointer-down prefetch
-- low-priority idle prefetch of common navigation destinations
+- no automatic idle crawl of expensive navigation destinations; prefetch happens only on real user intent
 - a short-lived server-side Dashboard snapshot
 - Dashboard refresh happens in the background after the snapshot becomes stale
 - namespace/source/library filesystem work is moved through worker threads where possible
@@ -219,15 +243,29 @@ services:
 
 ## Fresh install
 
+The recommended Docker deployment does not require installing Python dependencies on the host. However, if you want to run the packaged release validator before building the image, use a local virtual environment. This avoids modifying Debian's system Python.
+
 ```bash
+sudo apt update
+sudo apt install -y unzip python3-venv
+
 mkdir -p /opt/arrnexus
 cd /opt/arrnexus
-unzip /path/to/arrnexus-v9.1.zip
-cd arrnexus-v9.1
+unzip /path/to/arrnexus-v9.2.zip
+cd arrnexus-v9.2
+
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python validate.py
+deactivate
 
 docker compose config
 docker compose up -d --build
 docker compose ps
+docker compose logs --tail=200 arrnexus
+curl -fsS http://127.0.0.1:8484/api/health && echo
 ```
 
 Open:
@@ -238,21 +276,26 @@ http://YOUR-SERVER:8484/
 
 Create the first administrator and complete the guided setup.
 
-## Upgrade from v9.0
+## Upgrade from v9.1
 
-Keep v9.0 intact as rollback protection.
+Keep v9.1 intact as rollback protection. Build v9.2 beside it and copy only persistent application data.
 
 ```bash
-cd /opt/arrnexus/arrnexus-v9.0
+cd /opt/arrnexus/arrnexus-v9.1
 docker compose down
 
 cd /opt/arrnexus
-unzip /path/to/arrnexus-v9.1.zip
-mkdir -p arrnexus-v9.1/data
-cp -a arrnexus-v9.0/data/. arrnexus-v9.1/data/
+unzip /path/to/arrnexus-v9.2.zip
+mkdir -p arrnexus-v9.2/data
+cp -a arrnexus-v9.1/data/. arrnexus-v9.2/data/
 
-cd arrnexus-v9.1
-python3 validate.py
+cd arrnexus-v9.2
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python validate.py
+deactivate
 
 docker compose config
 docker compose up -d --build
@@ -261,15 +304,15 @@ docker compose logs --tail=200 arrnexus
 curl -fsS http://127.0.0.1:8484/api/health && echo
 ```
 
-If host Python dependencies are not installed, run the validator from a virtual environment or validate inside an ArrNexus-compatible Python environment. Docker itself installs the application requirements while building the image.
+If any command fails, stop at that command and diagnose before making further changes.
 
-## Rollback to v9.0
+## Rollback to v9.1
 
 ```bash
-cd /opt/arrnexus/arrnexus-v9.1
+cd /opt/arrnexus/arrnexus-v9.2
 docker compose down
 
-cd /opt/arrnexus/arrnexus-v9.0
+cd /opt/arrnexus/arrnexus-v9.1
 docker compose up -d
 ```
 
@@ -280,13 +323,14 @@ docker compose up -d
 1. `validate_v9.py`
 2. `validate_v8.py`
 3. preserved `validate_v7.py`
-4. v9.1-specific UI/performance/public-release tests
+4. v9.1 regression suite
+5. v9.2-specific Dashboard/documentation/performance/public-release tests
 
 Release engineering additionally performs Python compilation, real Jinja compilation, JavaScript syntax checks, a real Uvicorn smoke test from a clean copy, staged-package secret scanning, ZIP packaging and a second validation run after extracting the exact final ZIP into another clean directory.
 
 ## Beta status
 
-`9.1.0-beta` remains intentional until the unified UI and performance changes have been exercised against a real multi-service deployment.
+`9.2.0-beta` remains intentional until the unified UI and performance changes have been exercised against a real multi-service deployment.
 
 ## Security notes
 

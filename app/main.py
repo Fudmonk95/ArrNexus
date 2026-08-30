@@ -85,10 +85,34 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "9.1.0-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "9.2.0-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "9.1.0-beta"
+APP_VERSION = "9.2.0-beta"
+
+
+@app.middleware("http")
+async def request_timing_middleware(request: Request, call_next):
+    """Expose real route timing and log only genuinely slow HTML/API requests."""
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed = (time.perf_counter() - started) * 1000
+        try:
+            log_event("error", "performance", "request_failed", f"{request.method} {request.url.path} failed after {elapsed:.0f}ms")
+        except Exception:
+            pass
+        raise
+    elapsed = (time.perf_counter() - started) * 1000
+    response.headers["Server-Timing"] = f"arrnexus;dur={elapsed:.1f}"
+    response.headers["X-ArrNexus-Elapsed-Ms"] = f"{elapsed:.1f}"
+    if elapsed >= 1500 and request.url.path not in {"/download/latest", "/download/latest.sha256"}:
+        try:
+            log_event("warning", "performance", "slow_request", f"{request.method} {request.url.path} took {elapsed:.0f}ms")
+        except Exception:
+            pass
+    return response
 
 BRAND_ICONS = {
     "radarr": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/radarr.png",
@@ -178,7 +202,7 @@ async def startup():
     except Exception:
         pass
 
-    # Build the first v9.1 dashboard snapshot in the background so opening the
+    # Build the first v9.2 dashboard snapshot in the background so opening the
     # Control Centre does not have to fan out to every service on demand.
     try:
         dash = asyncio.create_task(_refresh_dashboard_snapshot())
@@ -650,7 +674,7 @@ _DASHBOARD_LOCK = asyncio.Lock()
 async def _build_dashboard_snapshot() -> dict:
     """Build the expensive, user-independent dashboard state once.
 
-    v9.1 keeps this work off ordinary navigation. Filesystem inventories use
+    v9.2 keeps this work off ordinary navigation. Filesystem inventories use
     worker threads, service calls run concurrently, and the resulting snapshot
     is reused for a short period by every authenticated profile.
     """
@@ -749,7 +773,11 @@ async def _build_dashboard_snapshot() -> dict:
         "dest_max": max([x[1] for x in dest_top], default=1),
         "activity_days": activity_days,
         "activity_max": max([int(x.get("count") or 0) for x in activity_days], default=1),
-        "recent": recent_imports(8), "activity": recent_activity(12), "jobs": recent_jobs(6),
+        # SQLite Row objects cannot be deep-copied. Dashboard snapshots are
+        # shared/cached, so normalise all DB rows to plain dicts before storing.
+        "recent": [dict(x) for x in recent_imports(8)],
+        "activity": [dict(x) for x in recent_activity(12)],
+        "jobs": [dict(x) for x in recent_jobs(6)],
         "source_root": source_root(), "namespace": ns,
         "rd_connected": rd.connected(), "rd_user": rd_user,
         "snapshot_built_at": time.time(),
@@ -786,14 +814,44 @@ async def dashboard_snapshot(force: bool = False) -> tuple[dict, int]:
     return copy.deepcopy(data), age
 
 
+def _empty_dashboard_snapshot(error: str = "") -> dict:
+    """Safe render payload used when one dashboard dependency is unavailable."""
+    return {
+        "items": [], "source_count": 0, "movie_count": 0, "tv_count": 0,
+        "library_movie_count": 0, "library_tv_count": 0, "route_inventory": [],
+        "libraries": [], "imported_count": 0, "waiting_count": 0, "ignored_count": 0,
+        "statuses": {}, "queue_counts": {"radarr": 0, "sonarr": 0, "lidarr": 0},
+        "scraping_count": 0, "active_jobs": [], "dest_counts": [], "dest_max": 1,
+        "activity_days": [], "activity_max": 1, "recent": [], "activity": [], "jobs": [],
+        "source_root": source_root(), "namespace": {"ok": False, "error": error or "Snapshot unavailable"},
+        "rd_connected": False, "rd_user": None, "snapshot_built_at": time.time(),
+        "dashboard_error": error or "",
+    }
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
     user = current_user(request)
-    data, age = await dashboard_snapshot()
+    try:
+        data, age = await dashboard_snapshot()
+    except Exception as exc:
+        # The Control Centre must remain usable even if an integration or cache
+        # snapshot fails. Record the real exception for admins and render a
+        # degraded dashboard instead of FastAPI's opaque Internal Server Error.
+        try:
+            log_event("error", "dashboard", "snapshot_failed", str(exc))
+        except Exception:
+            pass
+        data, age = _empty_dashboard_snapshot(str(exc)), 0
+    try:
+        readiness = stack_readiness() if user.get("role") == "admin" else None
+    except Exception as exc:
+        readiness = None
+        data["dashboard_error"] = data.get("dashboard_error") or f"Readiness unavailable: {exc}"
     data.update({
         "request": request,
         "dashboard_layout": user.get("dashboard_layout") or "default",
-        "readiness": stack_readiness() if user.get("role") == "admin" else None,
+        "readiness": readiness,
         "snapshot_age": age,
     })
     return templates.TemplateResponse("dashboard.html", data)
