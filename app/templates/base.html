@@ -1,30 +1,33 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{% block title %}DMM Arr Router{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css">
+  <script defer src="/static/app.js"></script>
 </head>
 <body>
 <div class="shell">
   <aside class="sidebar">
-    <div class="brand">
-      <div class="brandmark">DR</div>
-      <div><strong>DMM Router</strong><span>Arr Bridge</span></div>
-    </div>
+    <div class="brand"><div class="brandmark">DR</div><div><strong>DMM Router</strong><span>Media Control Hub</span></div></div>
     <nav>
       <a class="{% if request.url.path == '/' %}active{% endif %}" href="/">Dashboard</a>
       <a class="{% if request.url.path.startswith('/inbox') or request.url.path.startswith('/item') %}active{% endif %}" href="/inbox">DMM Inbox</a>
+      <a class="{% if request.url.path.startswith('/discover') %}active{% endif %}" href="/discover">Discover</a>
+      <a class="{% if request.url.path.startswith('/music') %}active{% endif %}" href="/music">Music Hub</a>
+      <a class="{% if request.url.path.startswith('/queue') %}active{% endif %}" href="/queue">Download Queue</a>
+      <a class="{% if request.url.path.startswith('/jobs') %}active{% endif %}" href="/jobs">Import Jobs</a>
       <a class="{% if request.url.path.startswith('/libraries') %}active{% endif %}" href="/libraries">Libraries</a>
+      <a class="{% if request.url.path.startswith('/maintenance') %}active{% endif %}" href="/maintenance">Maintenance</a>
+      <a class="{% if request.url.path.startswith('/rules') %}active{% endif %}" href="/rules">Routing Rules</a>
       <a class="{% if request.url.path.startswith('/arrs') %}active{% endif %}" href="/arrs">Arrs</a>
-      <a class="{% if request.url.path.startswith('/music') %}active{% endif %}" href="/music">Music Search</a>
     </nav>
-    <div class="sidefoot"><a href="/logout">Log out</a></div>
+    <div class="sidefoot"><button class="btn ghost" onclick="toggleTheme()">Toggle theme</button><a href="/logout">Log out</a></div>
   </aside>
   <main class="main">
     <header class="topbar">
-      <div><span class="eyebrow">DMM → Arr → Jellyfin</span><h1>{% block heading %}Dashboard{% endblock %}</h1></div>
+      <div><span class="eyebrow">DMM · Arr · Jellyfin · Music</span><h1>{% block heading %}Dashboard{% endblock %}</h1></div>
       <div class="pill">safe symlink mode</div>
     </header>
     {% block content %}{% endblock %}

@@ -1,41 +1,30 @@
-{% extends "base.html" %}
+{% extends 'base.html' %}
 {% block heading %}Dashboard{% endblock %}
 {% block content %}
-<div class="stats-grid">
+<div class="stats-grid five">
   <div class="stat"><span>DMM items</span><strong>{{ source_count }}</strong><small>{{ source_root }}</small></div>
-  <div class="stat"><span>Movies detected</span><strong>{{ movie_count }}</strong><small>ready to route</small></div>
+  <div class="stat"><span>Movies detected</span><strong>{{ movie_count }}</strong><small>source scan</small></div>
   <div class="stat"><span>TV detected</span><strong>{{ tv_count }}</strong><small>episode-pattern detection</small></div>
-  <div class="stat"><span>Recent imports</span><strong>{{ recent|length }}</strong><small>latest activity</small></div>
+  <div class="stat"><span>Imported</span><strong>{{ imported_count }}</strong><small>router history</small></div>
+  <div class="stat"><span>Recent jobs</span><strong>{{ jobs|length }}</strong><small><a href="/jobs">view progress</a></small></div>
 </div>
 
-<section class="panel">
+<div class="panel">
   <div class="panelhead"><div><h2>DUMB namespace</h2><p>The container follows the live Radarr mount namespace automatically.</p></div></div>
-  {% if namespace.ok %}
-    <div class="service"><span class="dot ok"></span><strong>Connected</strong><span>Radarr PID {{ namespace.pid }} · {{ namespace.dumb_root }} · source {{ 'available' if namespace.source_exists else 'missing' }}</span></div>
-  {% else %}
-    <div class="service"><span class="dot bad"></span><strong>Unavailable</strong><span>{{ namespace.error }}</span></div>
-  {% endif %}
-</section>
+  {% if namespace.ok %}<div class="statusline"><span class="dot ok"></span><strong>Connected</strong><span>Radarr PID {{ namespace.pid }} · {{ namespace.dumb_root }} · source {{ 'available' if namespace.source_exists else 'missing' }}</span></div>
+  {% else %}<div class="alert error">{{ namespace.error }}</div>{% endif %}
+</div>
 
-<section class="grid-2">
-  <div class="panel">
-    <div class="panelhead"><div><h2>Service health</h2><p>Live API connectivity</p></div></div>
-    <div class="service-list">
-      {% for name, s in statuses.items() %}
-      <div class="service"><span class="dot {{ 'ok' if s.ok else 'bad' }}"></span><strong>{{ name|capitalize }}</strong><span>{{ s.version if s.ok else s.error }}</span></div>
-      {% endfor %}
-    </div>
+<div class="grid-2">
+  <div class="panel"><h2>Service health</h2><div class="service-list">
+    {% for name,s in statuses.items() %}<div class="service"><span class="dot {{ 'ok' if s.ok else 'bad' }}"></span><strong>{{ name|capitalize }}</strong><span>{{ s.version if s.ok else s.error }}</span></div>{% endfor %}
+  </div></div>
+  <div class="panel"><div class="panelhead"><div><h2>Recent activity</h2><p>Imports, routing, music and repairs.</p></div></div>
+    <div class="activity-list">{% for a in activity %}<div class="activity"><span class="tag">{{ a.kind }}</span><div><strong>{{ a.title }}</strong><small>{{ a.detail }}</small></div><time>{{ a.created_at }}</time></div>{% else %}<div class="empty">No activity yet.</div>{% endfor %}</div>
   </div>
-  <div class="panel">
-    <div class="panelhead"><div><h2>What this app does</h2><p>Nothing is moved out of Decypharr.</p></div></div>
-    <ol class="steps"><li>Scan <code>__all__</code></li><li>Identify movie or TV</li><li>Suggest the best Arr library</li><li>Create symlinks</li><li>Ask Radarr/Sonarr to rescan</li></ol>
-  </div>
-</section>
+</div>
 
-<section class="panel">
-  <div class="panelhead"><div><h2>Waiting in DMM</h2><p>First 12 detected items</p></div><a class="btn" href="/inbox">Open inbox</a></div>
-  <div class="tablewrap"><table><thead><tr><th>Name</th><th>Type</th><th>Videos</th><th></th></tr></thead><tbody>
-    {% for item in items %}<tr><td>{{ item.name }}</td><td><span class="tag">{{ item.media_type }}</span></td><td>{{ item.video_count }}</td><td><a class="btn small" href="/item?path={{ item.path|urlencode }}">Review</a></td></tr>{% endfor %}
-  </tbody></table></div>
-</section>
+<div class="panel"><div class="panelhead"><div><h2>Waiting in DMM</h2><p>Source items remain in Real-Debrid; imports are tracked separately.</p></div><a class="btn" href="/inbox">Open inbox</a></div>
+  <div class="tablewrap"><table><thead><tr><th>Name</th><th>Type</th><th>Videos</th><th>Quality</th></tr></thead><tbody>{% for i in items %}<tr><td>{{ i.title_guess }}{% if i.year_guess %} ({{ i.year_guess }}){% endif %}</td><td><span class="tag {{ i.media_type }}">{{ i.media_type }}</span></td><td>{{ i.video_count }}</td><td>{{ i.quality ~ 'p' if i.quality else 'Unknown' }}</td></tr>{% else %}<tr><td colspan="4" class="empty">No DMM items detected.</td></tr>{% endfor %}</tbody></table></div>
+</div>
 {% endblock %}

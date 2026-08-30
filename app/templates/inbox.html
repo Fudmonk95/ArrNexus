@@ -1,12 +1,60 @@
-{% extends "base.html" %}
+{% extends 'base.html' %}
 {% block heading %}DMM Inbox{% endblock %}
 {% block content %}
-<section class="panel">
-  <div class="panelhead"><div><h2>Decypharr __all__</h2><p>Review each item before linking it into an Arr library.</p></div><a class="btn" href="/inbox">Rescan</a></div>
-  <div class="tablewrap"><table><thead><tr><th>Source</th><th>Guess</th><th>Year</th><th>Type</th><th>Files</th><th></th></tr></thead><tbody>
-  {% for item in items %}
-    <tr><td>{{ item.name }}</td><td>{{ item.title_guess }}</td><td>{{ item.year_guess or '—' }}</td><td><span class="tag {{ item.media_type }}">{{ item.media_type }}</span></td><td>{{ item.video_count }}</td><td><a class="btn small primary" href="/item?path={{ item.path|urlencode }}">Route</a></td></tr>
-  {% else %}<tr><td colspan="6" class="empty">Nothing found in __all__.</td></tr>{% endfor %}
-  </tbody></table></div>
-</section>
+<div class="panel compact">
+  <form class="filters" method="get" action="/inbox">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search title, year or release name">
+    <select name="media_type"><option value="all" {{ 'selected' if media_type=='all' }}>All types</option><option value="movie" {{ 'selected' if media_type=='movie' }}>Movies</option><option value="tv" {{ 'selected' if media_type=='tv' }}>TV</option></select>
+    <select name="status">
+      {% for k,label in [('all','All'),('waiting','Waiting'),('imported','Imported'),('linked','Already linked'),('ignored','Ignored'),('duplicate','Duplicates'),('upgrade','Upgrades')] %}<option value="{{ k }}" {{ 'selected' if status==k }}>{{ label }}</option>{% endfor %}
+    </select>
+    <select name="view"><option value="grid" {{ 'selected' if view=='grid' }}>Poster grid</option><option value="table" {{ 'selected' if view=='table' }}>Table</option></select>
+    <button class="btn" type="submit">Filter</button>
+  </form>
+</div>
+
+<form method="post" action="/bulk-import" id="bulkForm">
+<div class="bulkbar">
+  <label><input type="checkbox" onclick="toggleAll(this,'source_path')"> Select all</label>
+  <span><strong data-selected-count>0</strong> selected</span>
+  <select name="destination_key"><option value="auto">Auto route each item</option></select>
+  <button class="btn primary" type="submit">Import selected</button>
+</div>
+
+{% if view == 'table' %}
+<div class="panel"><div class="tablewrap"><table><thead><tr><th></th><th>Title</th><th>Status</th><th>Type</th><th>Suggested</th><th>Quality</th><th>Arr / Jellyfin</th><th></th></tr></thead><tbody>
+{% for row in rows %}{% set i=row.item %}<tr>
+<td><input type="checkbox" name="source_path" value="{{ i.path }}"></td>
+<td><strong>{{ i.title_guess }}</strong>{% if i.year_guess %} ({{ i.year_guess }}){% endif %}<small class="block muted">{{ i.name }}</small></td>
+<td><span class="tag state-{{ row.state }}">{{ row.state }}</span>{% if row.upgrade %}<span class="tag amber">Upgrade</span>{% endif %}{% if row.changed %}<span class="tag blue">New files</span>{% endif %}</td>
+<td><span class="tag {{ i.media_type }}">{{ i.media_type }}</span></td>
+<td>{{ row.decision.key }} <small class="muted">{{ row.decision.confidence }}%</small></td>
+<td>{{ i.quality ~ 'p' if i.quality else '?' }}{% if row.existing_resolution %} / library {{ row.existing_resolution }}p{% endif %}</td>
+<td>{% if row.existing %}<span class="tag green">In Arr</span>{% endif %}{% if row.linked_paths %}<span class="tag blue">Linked</span>{% endif %}{% if row.jellyfin.configured %}<span class="tag {{ 'green' if row.jellyfin.found else 'mutedtag' }}">Jellyfin {{ '✓' if row.jellyfin.found else '…' }}</span>{% endif %}</td>
+<td><a class="btn small" href="/item?path={{ i.path|urlencode }}">Review</a></td>
+</tr>{% else %}<tr><td colspan="8" class="empty">No items match this filter.</td></tr>{% endfor %}</tbody></table></div></div>
+{% else %}
+<div class="poster-grid">
+{% for row in rows %}{% set i=row.item %}
+<article class="media-card">
+  <label class="selectbox"><input type="checkbox" name="source_path" value="{{ i.path }}"></label>
+  <a href="/item?path={{ i.path|urlencode }}" class="poster-wrap">
+    {% if row.poster %}<img src="{{ row.poster }}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='grid'">{% endif %}
+    <div class="poster-fallback" style="{{ 'display:none' if row.poster else '' }}">{{ i.title_guess[:2]|upper }}</div>
+    <div class="poster-badges"><span class="tag rd">Real-Debrid</span><span class="tag state-{{ row.state }}">{{ row.state }}</span></div>
+  </a>
+  <div class="media-card-body">
+    <h3>{{ i.title_guess }}</h3><p>{{ i.year_guess or 'Year unknown' }} · {{ i.media_type|upper }} · {{ i.video_count }} file{{ '' if i.video_count==1 else 's' }}</p>
+    <div class="tags"><span class="tag">{{ row.decision.key }}</span><span class="tag">{{ row.decision.confidence }}%</span>{% if i.quality %}<span class="tag">{{ i.quality }}p</span>{% endif %}{% if row.upgrade %}<span class="tag amber">Upgrade available</span>{% endif %}{% if row.changed %}<span class="tag blue">New files</span>{% endif %}</div>
+    <small class="route-reason">{{ row.decision.reason }}</small>
+    <div class="tags">{% if row.existing %}<span class="tag green">Already in Arr</span>{% endif %}{% if row.linked_paths %}<span class="tag blue">Already linked</span>{% endif %}{% if row.jellyfin.configured %}<span class="tag {{ 'green' if row.jellyfin.found else 'mutedtag' }}">Jellyfin {{ 'detected' if row.jellyfin.found else 'not seen yet' }}</span>{% endif %}</div>
+    <div class="card-actions"><a class="btn small" href="/item?path={{ i.path|urlencode }}">Review</a></div>
+  </div>
+</article>
+{% else %}<div class="panel empty">No DMM items match this filter.</div>{% endfor %}
+</div>
+{% endif %}
+</form>
+
+<script>document.addEventListener('DOMContentLoaded',updateSelected);</script>
 {% endblock %}

@@ -1,0 +1,19 @@
+{% extends 'base.html' %}
+{% block heading %}Import Job #{{ job.id }}{% endblock %}
+{% block content %}
+<div class="panel"><div class="panelhead"><div><h2 id="jobStatus">{{ job.status }}</h2><p id="jobMessage">{{ job.message }}</p></div><div class="confidence"><span id="jobDone">{{ job.completed }}</span>/<span id="jobTotal">{{ job.total }}</span></div></div>
+<div class="progress"><div id="progressBar" style="width:{{ (job.completed / job.total * 100) if job.total else 0 }}%"></div></div></div>
+<div class="panel"><div id="jobItems" class="job-items">{% for x in items %}<div class="job-row" data-id="{{ x.id }}"><span class="job-icon {{ x.status }}"></span><div><strong>{{ x.display_name }}</strong><small class="stage">{{ x.stage }} · {{ x.message }}</small></div><span class="tag dest">{{ x.destination_key or 'auto' }}</span></div>{% endfor %}</div></div>
+<script>
+async function poll(){
+  const r=await fetch('/api/jobs/{{ job.id }}'); if(!r.ok)return; const d=await r.json();
+  document.getElementById('jobStatus').textContent=d.job.status;
+  document.getElementById('jobMessage').textContent=d.job.message||'';
+  document.getElementById('jobDone').textContent=d.job.completed; document.getElementById('jobTotal').textContent=d.job.total;
+  document.getElementById('progressBar').style.width=(d.job.total?((d.job.completed+d.job.failed)/d.job.total*100):0)+'%';
+  d.items.forEach(x=>{const el=document.querySelector('.job-row[data-id="'+x.id+'"]'); if(!el)return; el.querySelector('.job-icon').className='job-icon '+x.status; el.querySelector('.stage').textContent=x.stage+' · '+(x.message||''); el.querySelector('.dest').textContent=x.destination_key||'auto';});
+  if(d.job.status==='running'||d.job.status==='queued')setTimeout(poll,1200);
+}
+setTimeout(poll,800);
+</script>
+{% endblock %}

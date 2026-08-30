@@ -1,4 +1,5 @@
 from __future__ import annotations
+import copy
 import httpx
 from typing import Any
 from .config import settings
@@ -23,14 +24,20 @@ class ArrClient:
         if not self.api_key:
             raise ArrError(f"{self.name} API key is not configured")
         url = f"{self.base_url}{path}"
-        async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
             r = await client.request(method, url, headers=self.headers, **kwargs)
         if r.status_code >= 400:
-            body = r.text[:800]
+            body = r.text[:1200]
             raise ArrError(f"{self.name}: {r.status_code} {body}")
         if not r.content:
             return None
-        return r.json()
+        ctype = r.headers.get("content-type", "")
+        if "json" in ctype:
+            return r.json()
+        try:
+            return r.json()
+        except Exception:
+            return r.text
 
     async def status(self):
         return await self.request("GET", f"/api/{self.api_version}/system/status")
@@ -44,69 +51,90 @@ class ArrClient:
     async def quality_profiles(self):
         return await self.request("GET", f"/api/{self.api_version}/qualityprofile")
 
+    async def queue(self, page_size: int = 100):
+        return await self.request("GET", f"/api/{self.api_version}/queue", params={"page": 1, "pageSize": page_size, "includeUnknownMovieItems": True, "includeUnknownSeriesItems": True})
+
     async def command(self, payload: dict):
         return await self.request("POST", f"/api/{self.api_version}/command", json=payload)
 
 
 class RadarrClient(ArrClient):
-    def __init__(self):
-        super().__init__("Radarr", settings.radarr_url, settings.radarr_api_key, "v3")
+    def __init__(self, base_url: str | None = None, api_key: str | None = None, name: str = "Radarr"):
+        super().__init__(name, base_url or settings.radarr_url, api_key if api_key is not None else settings.radarr_api_key, "v3")
 
     async def movies(self):
         return await self.request("GET", "/api/v3/movie")
 
+    async def movie(self, movie_id: int):
+        return await self.request("GET", f"/api/v3/movie/{movie_id}")
+
     async def lookup(self, term: str):
         return await self.request("GET", "/api/v3/movie/lookup", params={"term": term})
 
-    async def add_movie(self, candidate: dict, root: str):
+    async def add_movie(self, candidate: dict, root: str, search: bool = False):
         profiles = await self.quality_profiles()
         qid = pick_named_id(profiles, settings.radarr_quality_profile_name)
-        payload = dict(candidate)
+        payload = copy.deepcopy(candidate)
         payload.pop("id", None)
         payload["qualityProfileId"] = qid
         payload["rootFolderPath"] = root
         payload["monitored"] = True
         payload["minimumAvailability"] = payload.get("minimumAvailability") or "released"
-        payload["addOptions"] = {"searchForMovie": False}
+        payload["addOptions"] = {"searchForMovie": bool(search)}
         return await self.request("POST", "/api/v3/movie", json=payload)
 
     async def rescan(self, movie_id: int):
         return await self.command({"name": "RescanMovie", "movieId": movie_id})
 
+    async def search(self, movie_id: int):
+        return await self.command({"name": "MoviesSearch", "movieIds": [movie_id]})
+
+    async def releases(self, movie_id: int):
+        return await self.request("GET", "/api/v3/release", params={"movieId": movie_id})
+
 
 class SonarrClient(ArrClient):
-    def __init__(self):
-        super().__init__("Sonarr", settings.sonarr_url, settings.sonarr_api_key, "v3")
+    def __init__(self, base_url: str | None = None, api_key: str | None = None, name: str = "Sonarr"):
+        super().__init__(name, base_url or settings.sonarr_url, api_key if api_key is not None else settings.sonarr_api_key, "v3")
 
     async def series(self):
         return await self.request("GET", "/api/v3/series")
 
+    async def series_by_id(self, series_id: int):
+        return await self.request("GET", f"/api/v3/series/{series_id}")
+
     async def lookup(self, term: str):
         return await self.request("GET", "/api/v3/series/lookup", params={"term": term})
 
-    async def add_series(self, candidate: dict, root: str):
+    async def add_series(self, candidate: dict, root: str, search: bool = False):
         profiles = await self.quality_profiles()
         qid = pick_named_id(profiles, settings.sonarr_quality_profile_name)
-        payload = dict(candidate)
+        payload = copy.deepcopy(candidate)
         payload.pop("id", None)
         payload["qualityProfileId"] = qid
         payload["rootFolderPath"] = root
         payload["monitored"] = True
         payload["seasonFolder"] = True
         payload["seriesType"] = payload.get("seriesType") or "standard"
-        payload["addOptions"] = {"monitor": "all", "searchForMissingEpisodes": False}
+        payload["addOptions"] = {"monitor": "all", "searchForMissingEpisodes": bool(search)}
         return await self.request("POST", "/api/v3/series", json=payload)
 
     async def rescan(self, series_id: int):
         return await self.command({"name": "RescanSeries", "seriesId": series_id})
 
+    async def search(self, series_id: int):
+        return await self.command({"name": "SeriesSearch", "seriesId": series_id})
+
 
 class LidarrClient(ArrClient):
-    def __init__(self):
-        super().__init__("Lidarr", settings.lidarr_url, settings.lidarr_api_key, "v1")
+    def __init__(self, base_url: str | None = None, api_key: str | None = None, name: str = "Lidarr"):
+        super().__init__(name, base_url or settings.lidarr_url, api_key if api_key is not None else settings.lidarr_api_key, "v1")
 
     async def artists(self):
         return await self.request("GET", "/api/v1/artist")
+
+    async def artist(self, artist_id: int):
+        return await self.request("GET", f"/api/v1/artist/{artist_id}")
 
     async def artist_lookup(self, term: str):
         return await self.request("GET", "/api/v1/artist/lookup", params={"term": term})
@@ -114,6 +142,36 @@ class LidarrClient(ArrClient):
     async def albums(self, artist_id: int | None = None):
         params = {"artistId": artist_id} if artist_id else None
         return await self.request("GET", "/api/v1/album", params=params)
+
+    async def album_lookup(self, term: str):
+        return await self.request("GET", "/api/v1/album/lookup", params={"term": term})
+
+    async def metadata_profiles(self):
+        return await self.request("GET", "/api/v1/metadataprofile")
+
+    async def add_artist(self, candidate: dict, root: str | None = None, search: bool = False):
+        profiles = await self.quality_profiles()
+        metadata_profiles = await self.metadata_profiles()
+        qid = pick_named_id(profiles, settings.lidarr_quality_profile_name)
+        mid = pick_named_id(metadata_profiles, settings.lidarr_metadata_profile_name)
+        payload = copy.deepcopy(candidate)
+        payload.pop("id", None)
+        payload["qualityProfileId"] = qid
+        payload["metadataProfileId"] = mid
+        payload["rootFolderPath"] = root or settings.lidarr_root
+        payload["monitored"] = True
+        payload["monitorNewItems"] = payload.get("monitorNewItems") or "all"
+        payload["addOptions"] = {"monitor": "all", "searchForMissingAlbums": bool(search)}
+        return await self.request("POST", "/api/v1/artist", json=payload)
+
+    async def monitor_album(self, album_id: int, monitored: bool = True):
+        albums = await self.albums()
+        album = next((x for x in albums if int(x.get("id", 0)) == int(album_id)), None)
+        if not album:
+            raise ArrError("Album not found in Lidarr")
+        payload = copy.deepcopy(album)
+        payload["monitored"] = bool(monitored)
+        return await self.request("PUT", f"/api/v1/album/{album_id}", json=payload)
 
     async def releases_for_album(self, album_id: int):
         return await self.request("GET", "/api/v1/release", params={"albumId": album_id})
@@ -124,6 +182,20 @@ class LidarrClient(ArrClient):
     async def grab_release(self, release: dict):
         return await self.request("POST", "/api/v1/release", json=release)
 
+    async def search_artist(self, artist_id: int):
+        return await self.command({"name": "ArtistSearch", "artistId": artist_id})
+
+    async def search_album(self, album_id: int):
+        return await self.command({"name": "AlbumSearch", "albumIds": [album_id]})
+
+
+class ProwlarrClient(ArrClient):
+    def __init__(self):
+        super().__init__("Prowlarr", settings.prowlarr_url, settings.prowlarr_api_key, "v1")
+
+    async def indexers(self):
+        return await self.request("GET", "/api/v1/indexer")
+
 
 def pick_named_id(items: list[dict], preferred_name: str) -> int:
     if not items:
@@ -133,3 +205,21 @@ def pick_named_id(items: list[dict], preferred_name: str) -> int:
         if str(item.get("name", "")).strip().lower() == wanted:
             return int(item["id"])
     return int(items[0]["id"])
+
+
+def poster_url(item: dict | None) -> str:
+    if not item:
+        return ""
+    for image in item.get("images") or []:
+        if str(image.get("coverType", "")).lower() == "poster":
+            return image.get("remoteUrl") or image.get("url") or ""
+    return ""
+
+
+def fanart_url(item: dict | None) -> str:
+    if not item:
+        return ""
+    for image in item.get("images") or []:
+        if str(image.get("coverType", "")).lower() in {"fanart", "banner"}:
+            return image.get("remoteUrl") or image.get("url") or ""
+    return ""

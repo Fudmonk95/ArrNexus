@@ -6,16 +6,23 @@ def env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    raw = env(name, "true" if default else "false").lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     username: str = env("APP_USERNAME", "admin")
     password: str = env("APP_PASSWORD", "change-me")
     session_secret: str = env("SESSION_SECRET", "change-this-session-secret")
+    db_path: str = env("DB_PATH", "/data/router.db")
+    app_name: str = env("APP_NAME", "DMM Arr Router")
+
     dumb_root: str = env("DUMB_ROOT", "/mnt/debrid")
     source_root: str = env("SOURCE_ROOT", "/mnt/debrid/decypharr/__all__")
     radarr_process_match: str = env("RADARR_PROCESS_MATCH", "/opt/radarr/Radarr/Radarr")
     radarr_data_match: str = env("RADARR_DATA_MATCH", "--data=/radarr/nzbdav")
-    db_path: str = env("DB_PATH", "/data/router.db")
 
     radarr_url: str = env("RADARR_URL", "http://192.168.137.10:7878")
     radarr_api_key: str = env("RADARR_API_KEY")
@@ -32,6 +39,17 @@ class Settings:
 
     prowlarr_url: str = env("PROWLARR_URL", "http://192.168.137.10:9696")
     prowlarr_api_key: str = env("PROWLARR_API_KEY")
+
+    # Optional: only needed for exact "present in Jellyfin" checks.
+    jellyfin_url: str = env("JELLYFIN_URL", "http://192.168.137.10:8096")
+    jellyfin_api_key: str = env("JELLYFIN_API_KEY")
+
+    # Public/free music discovery. No user account is required.
+    musicbrainz_base: str = env("MUSICBRAINZ_BASE", "https://musicbrainz.org/ws/2")
+    listenbrainz_base: str = env("LISTENBRAINZ_BASE", "https://api.listenbrainz.org")
+    music_user_agent: str = env("MUSIC_USER_AGENT", "DMM-Arr-Router/1.0 (self-hosted media manager)")
+    public_music_country: str = env("PUBLIC_MUSIC_COUNTRY", "GB")
+    enable_itunes_search: bool = env_bool("ENABLE_ITUNES_SEARCH", False)
 
     radarr_default_root: str = env("RADARR_DEFAULT_ROOT", "/mnt/debrid/nzbdav-symlinks/radarr-nzbdav")
     radarr_kids_root: str = env("RADARR_KIDS_ROOT", "/mnt/debrid/nzbdav-symlinks/radarr-kids-nzbdav")
@@ -70,6 +88,12 @@ class Settings:
             "apple": self.sonarr_apple_root,
             "bbc": self.sonarr_bbc_root,
         }
+
+    @property
+    def arr_host(self) -> str:
+        # hostname/IP shared by the configured Arr URLs.
+        from urllib.parse import urlsplit
+        return urlsplit(self.radarr_url).hostname or "127.0.0.1"
 
 
 settings = Settings()

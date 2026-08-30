@@ -1,21 +1,12 @@
-{% extends "base.html" %}
-{% block heading %}Music Search{% endblock %}
+{% extends 'base.html' %}
+{% block heading %}Music Hub{% endblock %}
 {% block content %}
-{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-<section class="panel">
-  <div class="panelhead"><div><h2>Lidarr / Usenet</h2><p>Debrid is not used here. Searches and grabs go through Lidarr's configured indexers and download client.</p></div></div>
-  <form class="searchbar" method="get" action="/music"><input name="q" value="{{ q }}" placeholder="Search artist in Lidarr metadata…"><button class="btn primary">Search</button></form>
-  {% if lookup %}<h3>Artist lookup</h3><div class="lookup-grid">{% for a in lookup[:12] %}<div class="lookup-card"><strong>{{ a.artistName or a.foreignArtistId }}</strong><span>{{ a.disambiguation or '' }}</span><small>{{ a.foreignArtistId }}</small></div>{% endfor %}</div>{% endif %}
-</section>
-
-<section class="panel">
-  <div class="panelhead"><div><h2>Your Lidarr artists</h2><p>Select an existing artist to browse albums.</p></div></div>
-  <div class="lookup-grid">{% for a in artists[:80] %}<a class="lookup-card linkcard" href="/music?artist_id={{ a.id }}"><strong>{{ a.artistName }}</strong><span>{{ a.status or '' }}</span></a>{% endfor %}</div>
-</section>
-
-{% if albums %}<section class="panel"><div class="panelhead"><div><h2>Albums</h2><p>Choose an album to run Lidarr's interactive release search.</p></div></div><div class="lookup-grid">{% for a in albums %}<a class="lookup-card linkcard" href="/music?artist_id={{ artist_id }}&album_id={{ a.id }}"><strong>{{ a.title }}</strong><span>{{ a.releaseDate or '' }}</span></a>{% endfor %}</div></section>{% endif %}
-
-{% if releases %}<section class="panel"><div class="panelhead"><div><h2>NZB / indexer results</h2><p>These are returned by Lidarr's own release search.</p></div></div><div class="tablewrap"><table><thead><tr><th>Title</th><th>Indexer</th><th>Protocol</th><th>Size</th><th>Peers</th><th></th></tr></thead><tbody>
-{% for r in releases %}<tr><td>{{ r.title }}</td><td>{{ r.indexer }}</td><td><span class="tag">{{ r.protocol }}</span></td><td>{{ '%.2f GB'|format((r.size or 0)/1073741824) }}</td><td>{{ r.seeders or '—' }}</td><td><form method="post" action="/music/grab"><input type="hidden" name="release_json" value='{{ r|tojson|forceescape }}'><button class="btn small primary">Grab</button></form></td></tr>{% endfor %}
-</tbody></table></div></section>{% endif %}
+<div class="hero music-hero"><div><span class="eyebrow">No Spotify / Apple / Amazon login required</span><h2>Discover music, then send it to Lidarr</h2><p>Core discovery uses public MusicBrainz + ListenBrainz data. Lidarr remains the download engine, so your NZB/Usenet setup does the downloading.</p></div></div>
+<div class="panel"><form class="searchbar" method="get" action="/music"><select name="kind"><option value="artist" {{ 'selected' if kind=='artist' }}>Artists</option><option value="album" {{ 'selected' if kind=='album' }}>Albums</option></select><input name="q" value="{{ q }}" placeholder="Search artist or album"><button class="btn primary">Search</button></form>{% if request.query_params.get('error') or error %}<div class="alert error">{{ request.query_params.get('error') or error }}</div>{% endif %}</div>
+{% if q %}<div class="panel"><div class="panelhead"><div><h2>Search results</h2><p>MusicBrainz public catalog.</p></div></div><div class="music-grid">{% for x in results %}<a class="music-card" href="/music/artist?name={{ x.artist|urlencode }}">{% if x.artwork %}<img src="{{ x.artwork }}" alt="" loading="lazy" onerror="this.style.display='none'">{% else %}<div class="album-fallback">{{ x.artist[:2]|upper }}</div>{% endif %}<div><strong>{{ x.title }}</strong><span>{{ x.artist }}</span>{% if x.date %}<small>{{ x.date }}</small>{% endif %}</div></a>{% else %}<div class="empty">No MusicBrainz results.</div>{% endfor %}</div></div>{% endif %}
+<div class="panel"><div class="panelhead"><div><h2>Browse genres</h2><p>Quick discovery shortcuts. Results are resolved against public metadata, then added through Lidarr.</p></div></div><div class="chip-cloud">{% for g in genres %}<a class="tag" href="/music?kind=album&q={{ g|urlencode }}">{{ g }}</a>{% endfor %}</div></div>
+<div class="panel"><div class="panelhead"><div><h2>Trending releases</h2><p>ListenBrainz sitewide release statistics.</p></div></div><div class="music-grid">{% for x in releases %}<a class="music-card" href="/music/artist?name={{ x.artist|urlencode }}">{% if x.artwork %}<img src="{{ x.artwork }}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='grid'"><div class="album-fallback" style="display:none">{{ x.artist[:2]|upper }}</div>{% else %}<div class="album-fallback">{{ x.artist[:2]|upper }}</div>{% endif %}<div><strong>{{ x.title }}</strong><span>{{ x.artist }}</span><small>{{ x.listen_count }} listens</small></div></a>{% else %}<div class="empty">Trending releases unavailable right now.</div>{% endfor %}</div></div>
+<div class="panel"><div class="panelhead"><div><h2>Trending artists</h2><p>ListenBrainz sitewide listening statistics — no personal account needed.</p></div></div><div class="music-grid">{% for x in trends %}<a class="music-card artist-card" href="/music/artist?name={{ x.artist|urlencode }}"><div class="album-fallback">{{ x.artist[:2]|upper }}</div><div><strong>{{ x.artist }}</strong><span>{{ x.listen_count }} listens</span><small>Open artist</small></div></a>{% else %}<div class="empty">Trending data unavailable right now.</div>{% endfor %}</div></div>
+<div class="panel"><div class="panelhead"><div><h2>Your Lidarr artists</h2><p>{{ lidarr_artists|length }} artists currently managed.</p></div></div><div class="chip-cloud">{% for a in lidarr_artists[:120] %}<a class="tag" href="/music/artist?name={{ (a.artistName or a.name)|urlencode }}">{{ a.artistName or a.name }}</a>{% else %}<span class="muted">No artists yet.</span>{% endfor %}</div></div>
+{% if not itunes_enabled %}<div class="panel note"><strong>Optional Apple catalog enrichment is disabled by default.</strong><p>The app does not require Spotify, Apple, Amazon or Beatport accounts. Artist pages still provide optional one-click external searches for those services.</p></div>{% endif %}
 {% endblock %}

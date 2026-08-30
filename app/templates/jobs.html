@@ -1,0 +1,6 @@
+{% extends 'base.html' %}
+{% block heading %}Import Jobs{% endblock %}
+{% block content %}
+<div class="panel"><div class="panelhead"><div><h2>Import history</h2><p>Bulk and single imports run as background jobs.</p></div></div>
+<div class="tablewrap"><table><thead><tr><th>ID</th><th>Kind</th><th>Status</th><th>Progress</th><th>Message</th><th>Started</th><th></th></tr></thead><tbody>{% for j in jobs %}<tr><td>#{{ j.id }}</td><td>{{ j.kind }}</td><td><span class="tag state-{{ j.status }}">{{ j.status }}</span></td><td>{{ j.completed }}/{{ j.total }}{% if j.failed %} · {{ j.failed }} failed{% endif %}</td><td>{{ j.message }}</td><td>{{ j.created_at }}</td><td><a class="btn small" href="/jobs/{{ j.id }}">Progress</a></td></tr>{% else %}<tr><td colspan="7" class="empty">No import jobs yet.</td></tr>{% endfor %}</tbody></table></div></div>
+{% endblock %}

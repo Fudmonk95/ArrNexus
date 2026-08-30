@@ -1,47 +1,69 @@
 from __future__ import annotations
 from dataclasses import dataclass, asdict
 from pathlib import Path
+import hashlib
+import os
 import re
 from .config import settings
 from .namespace import view_path, logical_from_view
 
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".m2ts", ".webm"}
+AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".alac"}
 EPISODE_RE = re.compile(r"(?i)(?:\bS(?P<s>\d{1,2})E\d{1,3}\b|\b(?P<s2>\d{1,2})x\d{1,3}\b)")
 YEAR_RE = re.compile(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)")
 RELEASE_NOISE = re.compile(
-    r"(?i)\b(2160p|1080p|720p|480p|bluray|blu[- ]?ray|web[- .]?dl|webrip|hdr|dv|x264|x265|h264|h265|hevc|av1|remux|aac|dts|ddp?5?\.?1|proper|repack)\b.*$"
+    r"(?i)\b(4320p|2160p|1080p|720p|576p|480p|bluray|blu[- ]?ray|web[- .]?dl|webrip|hdtv|hdr10\+?|hdr|dv|dolby[ .]?vision|x264|x265|h264|h265|hevc|av1|remux|aac|dts|truehd|atmos|ddp?5?\.?1|proper|repack)\b.*$"
 )
+
+QUALITY_PATTERNS = [
+    (4320, re.compile(r"(?i)\b(4320p|8k)\b")),
+    (2160, re.compile(r"(?i)\b(2160p|4k|uhd)\b")),
+    (1080, re.compile(r"(?i)\b1080[pi]?\b")),
+    (720, re.compile(r"(?i)\b720[pi]?\b")),
+    (576, re.compile(r"(?i)\b576[pi]?\b")),
+    (480, re.compile(r"(?i)\b480[pi]?\b")),
+]
 
 
 @dataclass
 class ScanItem:
     name: str
-    path: str                 # logical DUMB path, e.g. /mnt/debrid/...
+    path: str
     media_type: str
     title_guess: str
     year_guess: int | None
     video_count: int
     season_numbers: list[int]
+    size_bytes: int
+    quality: int
+    fingerprint: str
 
     def dict(self):
         return asdict(self)
 
 
-def video_files(path: Path | str) -> list[Path]:
-    """Return logical DUMB paths for video files below logical path."""
+def media_files(path: Path | str, exts: set[str]) -> list[Path]:
     logical = Path(path)
     actual = view_path(logical)
     actual_files: list[Path] = []
     if actual.is_file():
-        actual_files = [actual] if actual.suffix.lower() in VIDEO_EXTS else []
+        actual_files = [actual] if actual.suffix.lower() in exts else []
     else:
         try:
             for p in actual.rglob("*"):
-                if p.is_file() and p.suffix.lower() in VIDEO_EXTS:
+                if p.is_file() and p.suffix.lower() in exts:
                     actual_files.append(p)
         except (OSError, PermissionError):
             pass
     return [logical_from_view(p) for p in actual_files]
+
+
+def video_files(path: Path | str) -> list[Path]:
+    return media_files(path, VIDEO_EXTS)
+
+
+def audio_files(path: Path | str) -> list[Path]:
+    return media_files(path, AUDIO_EXTS)
 
 
 def parse_title_year(name: str) -> tuple[str, int | None]:
@@ -53,8 +75,37 @@ def parse_title_year(name: str) -> tuple[str, int | None]:
     else:
         title = RELEASE_NOISE.sub("", cleaned)
     title = re.sub(r"[\[\](){}]+", " ", title)
-    title = re.sub(r"\s+", " ", title).strip(" -._")
+    title = re.sub(r"\s+", " ", title).strip(" -._,")
     return title or name, year
+
+
+def quality_from_name(value: str) -> int:
+    for resolution, regex in QUALITY_PATTERNS:
+        if regex.search(value):
+            return resolution
+    return 0
+
+
+def _safe_stat_size(logical_file: Path) -> int:
+    try:
+        return view_path(logical_file).stat().st_size
+    except OSError:
+        return 0
+
+
+def fingerprint_files(files: list[Path]) -> str:
+    h = hashlib.sha256()
+    for p in sorted(files, key=lambda x: str(x).lower()):
+        h.update(str(p).encode("utf-8", errors="replace"))
+        h.update(b"\0")
+        try:
+            st = view_path(p).stat()
+            h.update(str(st.st_size).encode())
+            h.update(str(int(st.st_mtime)).encode())
+        except OSError:
+            pass
+        h.update(b"\n")
+    return h.hexdigest()
 
 
 def inspect_item(path: Path | str) -> ScanItem:
@@ -62,6 +113,8 @@ def inspect_item(path: Path | str) -> ScanItem:
     files = video_files(logical)
     seasons = set()
     has_episode = False
+    max_quality = quality_from_name(logical.name)
+    size = 0
     for f in files:
         m = EPISODE_RE.search(f.name)
         if m:
@@ -69,6 +122,8 @@ def inspect_item(path: Path | str) -> ScanItem:
             s = m.group("s") or m.group("s2")
             if s is not None:
                 seasons.add(int(s))
+        max_quality = max(max_quality, quality_from_name(f.name))
+        size += _safe_stat_size(f)
     title, year = parse_title_year(logical.name)
     return ScanItem(
         name=logical.name,
@@ -78,6 +133,9 @@ def inspect_item(path: Path | str) -> ScanItem:
         year_guess=year,
         video_count=len(files),
         season_numbers=sorted(seasons),
+        size_bytes=size,
+        quality=max_quality,
+        fingerprint=fingerprint_files(files),
     )
 
 
@@ -87,7 +145,11 @@ def scan_source() -> list[ScanItem]:
     if not actual_root.exists():
         return []
     items = []
-    for p in sorted(actual_root.iterdir(), key=lambda x: x.name.lower()):
+    try:
+        entries = sorted(actual_root.iterdir(), key=lambda x: x.name.lower())
+    except OSError:
+        return []
+    for p in entries:
         logical = logical_root / p.name
         item = inspect_item(logical)
         if item.video_count:
@@ -104,3 +166,12 @@ def episode_season(filename: str) -> int | None:
     if not m:
         return None
     return int(m.group("s") or m.group("s2"))
+
+
+def human_size(value: int) -> str:
+    size = float(value or 0)
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size < 1024 or unit == "TB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{size:.1f} TB"

@@ -1,38 +1,32 @@
-{% extends "base.html" %}
-{% block heading %}Route media{% endblock %}
+{% extends 'base.html' %}
+{% block heading %}Review Item{% endblock %}
 {% block content %}
-{% if request.query_params.get('error') %}<div class="alert error">{{ request.query_params.get('error') }}</div>{% endif %}
-{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
-<div class="grid-2">
-<section class="panel">
-  <div class="panelhead"><div><h2>{{ item.name }}</h2><p>{{ item.path }}</p></div><span class="tag {{ item.media_type }}">{{ item.media_type }}</span></div>
-  <dl class="details"><dt>Title guess</dt><dd>{{ item.title_guess }}</dd><dt>Year</dt><dd>{{ item.year_guess or 'Unknown' }}</dd><dt>Video files</dt><dd>{{ item.video_count }}</dd><dt>Seasons</dt><dd>{{ item.season_numbers|join(', ') if item.season_numbers else '—' }}</dd></dl>
-</section>
-<section class="panel">
-  <div class="panelhead"><div><h2>Suggested destination</h2><p>{{ decision.reason }}</p></div><span class="confidence">{{ decision.confidence }}%</span></div>
-  <div class="routebox"><strong>{{ decision.key|capitalize }}</strong><code>{{ decision.root }}</code></div>
-  {% if existing %}<div class="alert success">Already exists in {{ 'Radarr' if item.media_type == 'movie' else 'Sonarr' }} as <strong>{{ existing.title }}</strong>. Its existing Arr path wins when imported.</div>{% endif %}
-</section>
+<div class="detail-layout">
+  <div class="panel poster-detail">
+    {% if poster %}<img src="{{ poster }}" alt="" class="detail-poster">{% else %}<div class="detail-poster poster-fallback">{{ item.title_guess[:2]|upper }}</div>{% endif %}
+    <div><span class="tag {{ item.media_type }}">{{ item.media_type }}</span><h2>{{ item.title_guess }}{% if item.year_guess %} ({{ item.year_guess }}){% endif %}</h2><p>{{ item.name }}</p>
+    <div class="tags"><span class="tag rd">Real-Debrid</span><span class="tag">{{ item.video_count }} video{{ '' if item.video_count==1 else 's' }}</span><span class="tag">{{ item.size_bytes|human_size }}</span>{% if item.quality %}<span class="tag">{{ item.quality }}p</span>{% endif %}{% if upgrade %}<span class="tag amber">Upgrade from {{ existing_resolution }}p</span>{% endif %}</div>
+    </div>
+  </div>
+
+  <div class="panel"><div class="panelhead"><div><h2>Routing decision</h2><p>{{ decision.reason }}</p></div><div class="confidence">{{ decision.confidence }}%</div></div>
+    <div class="routebox"><strong>{{ decision.key|capitalize }}</strong><code>{{ decision.root }}</code>{% if instance %}<small>Existing owner: {{ instance.service }}/{{ instance.instance }}</small>{% endif %}</div>
+  </div>
 </div>
 
-<section class="panel">
-  <div class="panelhead"><div><h2>Import</h2><p>Choose the destination. This creates symlinks only; source media stays in Decypharr.</p></div></div>
-  <form method="post" action="/import" class="formgrid">
-    <input type="hidden" name="source_path" value="{{ item.path }}">
-    <input type="hidden" name="media_type" value="{{ item.media_type }}">
-    <label>Destination library
-      <select name="destination_key">
-        {% for key, path in roots.items() %}<option value="{{ key }}" {% if key == decision.key %}selected{% endif %}>{{ key|capitalize }} — {{ path }}</option>{% endfor %}
-      </select>
-    </label>
-    {% if not existing and lookup %}
-    <label>Arr match
-      <select name="candidate_index">
-        {% for candidate in lookup %}<option value="{{ loop.index0 }}">{{ candidate.title }}{% if candidate.year %} ({{ candidate.year }}){% endif %}</option>{% endfor %}
-      </select>
-    </label>
-    {% else %}<input type="hidden" name="candidate_index" value="-1">{% endif %}
-    <div class="formactions"><a class="btn" href="/inbox">Cancel</a><button class="btn primary" type="submit">Create symlinks & rescan</button></div>
-  </form>
-</section>
+<div class="grid-2">
+  <div class="panel"><h2>Arr match</h2>{% if existing %}<div class="alert success">Already in Arr: <strong>{{ existing.title }}</strong> · {{ existing.year }}{% if instance %} · {{ instance.instance }}{% endif %}</div>{% elif lookup %}<p>Best lookup match:</p><div class="lookup-card"><strong>{{ lookup[0].title }}</strong><span>{{ lookup[0].year or '' }}</span></div>{% else %}<div class="alert error">No Arr match found.</div>{% endif %}</div>
+  <div class="panel"><h2>Jellyfin</h2>{% if not jellyfin.configured %}<p>Optional Jellyfin API key is not configured. Importing still works.</p>{% elif jellyfin.found %}<div class="alert success">Detected in Jellyfin.</div>{% for x in jellyfin.items %}<div class="mini-list"><div><span>{{ x.Name }}</span><span>{{ x.Type }}</span></div></div>{% endfor %}{% else %}<p>Not currently detected in Jellyfin.</p>{% endif %}</div>
+</div>
+
+<div class="panel"><div class="panelhead"><div><h2>Import</h2><p>Source remains untouched in Decypharr. The Router only creates symlinks and rescans the selected Arr.</p></div></div>
+<form class="formgrid" method="post" action="/import">
+  <input type="hidden" name="source_path" value="{{ item.path }}">
+  <label>Destination<select name="destination_key"><option value="auto">Auto — {{ decision.key }} ({{ decision.confidence }}%)</option>{% for key,path in roots.items() %}<option value="{{ key }}">{{ key|capitalize }} — {{ path }}</option>{% endfor %}</select></label>
+  <div class="formactions"><button class="btn primary" type="submit">Import with progress</button></div>
+</form>
+{% if history %}<div class="alert success">Imported previously: {{ history.created_at }} · {{ history.destination_key }}{% if not history.undone %}<form method="post" action="/undo/{{ history.id }}" class="inline"><button class="btn small" type="submit">Undo Router links</button></form>{% endif %}</div>{% endif %}
+</div>
+
+<div class="panel"><h2>Ignore / restore</h2><form method="post" action="/item/state" class="inline-actions"><input type="hidden" name="source_path" value="{{ item.path }}"><button class="btn" name="state" value="ignored" type="submit">Ignore in inbox</button><button class="btn" name="state" value="waiting" type="submit">Mark waiting</button></form></div>
 {% endblock %}
