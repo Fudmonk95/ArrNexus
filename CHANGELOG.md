@@ -1,5 +1,19 @@
 # Changelog
 
+## 10.4.2-beta — Stable Archive Identity Hotfix
+
+- Fixed false **RAR source changed after preview** failures on Decypharr/DUMB virtual mounts.
+- Removed transient `/proc/<pid>` paths and virtual `mtime` from archive source identity.
+- Added stable logical-path + source-size fingerprints for scan/cache/identity continuity.
+- Added content catalogue signatures from archive member path, listed size, packed size, encryption flag and CRC.
+- Verification re-lists the archive after testing and refuses to cache results if the media catalogue changed during the job.
+- Extraction performs a fresh catalogue comparison against the verified catalogue before recovering any media.
+- Added best-effort migration for TMDb archive identities saved under v10.4/v10.4.1 fingerprints.
+- Bumped the Language Guard result-cache schema so old false `language_rejected` decisions are re-evaluated under the fixed unknown-language rules.
+- Added a separate Manual Review job counter/status so uncertain media is no longer reported as a confirmed language rejection.
+- Added TMDb/TVDB external-ID preflight when importing to Radarr/Sonarr; already-owned titles are reused instead of failing on `MovieExistsValidator`, duplicate path, or equivalent series validation.
+- Retained media-only, CRC-aware partial RAR recovery from v10.4.1.
+
 ## 10.4.1-beta — Selective RAR Recovery Hotfix
 
 - Changed Archived Media Recovery from whole-archive pass/fail to **member-level video verification and partial recovery**.

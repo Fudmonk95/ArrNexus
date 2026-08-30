@@ -101,10 +101,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.4.1-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.4.2-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "10.4.1-beta"
+APP_VERSION = "10.4.2-beta"
 
 
 @app.middleware("http")
@@ -1307,7 +1307,7 @@ async def run_import_job(job_id: int):
     if not job:
         return
     update_job(job_id, status="running", message="Import in progress")
-    completed = failed = rejected = 0
+    completed = failed = rejected = reviewed = 0
     for ji in job_items:
         iid = int(ji["id"])
         source_path = ji["source_path"]
@@ -1339,9 +1339,14 @@ async def run_import_job(job_id: int):
                 cleanup_text = "Rejected Debrid source removed" if cleanup.get("deleted") else "Rejected source retained"
                 stage = "language_rejected"
                 event = "item_rejected"
-            update_job_item(iid, status="rejected", stage=stage, message=f"{str(exc)} · {cleanup_text}")
+            # Manual Review is a protected/uncertain outcome, not a confirmed
+            # language rejection. Keep the item blocked, but report it separately.
+            update_job_item(iid, status="review" if manual_review else "rejected", stage=stage, message=f"{str(exc)} · {cleanup_text}")
             log_event("warning","language_guard",event,str(exc),{"job_id":job_id,"source":source_path,"provider_deleted":bool(cleanup.get("deleted")),"manual_review":manual_review})
-            rejected += 1
+            if manual_review:
+                reviewed += 1
+            else:
+                rejected += 1
         except Exception as exc:
             update_job_item(iid, status="error", stage="error", message=str(exc))
             log_event("error","import","item_failed",str(exc),{"job_id":job_id,"source":source_path})
@@ -1349,15 +1354,15 @@ async def run_import_job(job_id: int):
         _INBOX_SNAPSHOT.clear()
         invalidate_scan_cache()
         invalidate_library_cache()
-        update_job(job_id, completed=completed, failed=failed, rejected=rejected, message=f"{completed} complete, {rejected} language rejected, {failed} failed")
-    final_status = "complete_with_errors" if failed else ("complete_with_rejections" if rejected else "complete")
-    update_job(job_id, status=final_status, completed=completed, failed=failed, rejected=rejected, message=f"Finished: {completed} complete, {rejected} language rejected, {failed} failed")
-    log_event("warning" if (failed or rejected) else "info","import","job_finished",f"Job #{job_id}: {completed} complete, {rejected} language rejected, {failed} failed",{"job_id":job_id,"completed":completed,"rejected":rejected,"failed":failed})
+        update_job(job_id, completed=completed, failed=failed, rejected=rejected, reviewed=reviewed, message=f"{completed} complete, {reviewed} manual review, {rejected} language rejected, {failed} failed")
+    final_status = "complete_with_errors" if failed else ("complete_with_rejections" if rejected else ("complete_with_reviews" if reviewed else "complete"))
+    update_job(job_id, status=final_status, completed=completed, failed=failed, rejected=rejected, reviewed=reviewed, message=f"Finished: {completed} complete, {reviewed} manual review, {rejected} language rejected, {failed} failed")
+    log_event("warning" if (failed or rejected or reviewed) else "info","import","job_finished",f"Job #{job_id}: {completed} complete, {reviewed} manual review, {rejected} language rejected, {failed} failed",{"job_id":job_id,"completed":completed,"reviewed":reviewed,"rejected":rejected,"failed":failed})
     try:
         await send_notification(
             f"ArrNexus import job #{job_id}",
-            f"{completed} completed, {rejected} language rejected, {failed} failed.",
-            "warning" if (failed or rejected) else "info",
+            f"{completed} completed, {reviewed} manual review, {rejected} language rejected, {failed} failed.",
+            "warning" if (failed or rejected or reviewed) else "info",
             "import_job",
         )
     except Exception:
@@ -1376,7 +1381,7 @@ async def run_language_scan_job(job_id: int, force: bool = False):
     if not job:
         return
     update_job(job_id, status="running", message="Language Guard scan in progress")
-    completed = failed = rejected = 0
+    completed = failed = rejected = reviewed = 0
     for ji in job_items:
         iid = int(ji["id"])
         source_path = str(ji.get("source_path") or "")
@@ -1390,9 +1395,9 @@ async def run_language_scan_job(job_id: int, force: bool = False):
                 set_item_state(source_path, "language_rejected", result.get("summary") or "Language rejected")
                 update_job_item(iid, status="rejected", stage="language_rejected", message=result.get("summary") or "Language rejected")
             elif status == "unknown":
-                completed += 1
+                reviewed += 1
                 set_item_state(source_path, "language_review", result.get("summary") or "Manual language review required")
-                update_job_item(iid, status="complete", stage="language_review", message=result.get("summary") or "Manual review required")
+                update_job_item(iid, status="review", stage="language_review", message=result.get("summary") or "Manual review required")
             else:
                 completed += 1
                 # A successful current-policy check clears stale language-only state.
@@ -1406,9 +1411,9 @@ async def run_language_scan_job(job_id: int, force: bool = False):
             update_job_item(iid, status="error", stage="error", message=str(exc))
             log_event("error", "language_guard", "bulk_source_failed", str(exc), {"source": source_path})
         _INBOX_SNAPSHOT.clear()
-        update_job(job_id, completed=completed, failed=failed, rejected=rejected, message=f"{completed} checked, {rejected} rejected, {failed} failed")
-    final = "complete_with_errors" if failed else ("complete_with_rejections" if rejected else "complete")
-    update_job(job_id, status=final, completed=completed, failed=failed, rejected=rejected, message=f"Finished: {completed} checked, {rejected} language rejected, {failed} failed")
+        update_job(job_id, completed=completed, failed=failed, rejected=rejected, reviewed=reviewed, message=f"{completed} verified, {reviewed} manual review, {rejected} rejected, {failed} failed")
+    final = "complete_with_errors" if failed else ("complete_with_rejections" if rejected else ("complete_with_reviews" if reviewed else "complete"))
+    update_job(job_id, status=final, completed=completed, failed=failed, rejected=rejected, reviewed=reviewed, message=f"Finished: {completed} verified, {reviewed} manual review, {rejected} language rejected, {failed} failed")
 
 
 async def run_language_cleanup_job(job_id: int):
@@ -3909,7 +3914,7 @@ async def run_archive_extract_job(job_id: int):
         iid = int(ji["id"])
         source_path = str(ji.get("source_path") or "")
         try:
-            update_job_item(iid, status="running", stage="inspect", message="Revalidating archive fingerprint, verification state and free space")
+            update_job_item(iid, status="running", stage="inspect", message="Revalidating stable archive identity, media catalogue, verification state and free space")
             row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
             if not row:
                 raise RuntimeError("RAR source is no longer present in the DMM source tree")

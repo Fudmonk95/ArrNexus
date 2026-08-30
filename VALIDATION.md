@@ -1,6 +1,6 @@
-# ArrNexus v10.4.1-beta Validation
+# ArrNexus v10.4.2-beta Validation
 
-v10.4.1 is a focused hotfix on top of the certified v10.4 baseline. The release gate retains the historical regression chain and adds explicit tests for selective, media-only partial RAR recovery.
+v10.4.2 is a focused hotfix on top of the certified v10.4.1 baseline. The release gate retains the historical regression chain and adds explicit tests for stable archive identity across virtual PID/mtime changes plus catalogue-signature change detection.
 
 ## Current-layer regression cases
 
@@ -27,7 +27,7 @@ The current layer also checks that:
 - recovery accepts selected verified media paths only;
 - the UI exposes per-member verified/failed states and a selective recovery action;
 - the recovered-media root is described as a persistent source, not the final library;
-- service-worker cache and application version are v10.4.1.
+- service-worker cache and application version are v10.4.2.
 
 A synthetic extraction harness was also run during certification with a mocked archive-level exit code `2`: only the two selected verified MP4 members were committed, while a failed member was refused.
 
@@ -35,19 +35,19 @@ A synthetic extraction harness was also run during certification with a mocked a
 
 Historical/current layers are retained through:
 
-`v7 → v8 → v9 → v9.1 → v9.2 → v9.3 → v9.4 → v10 → v10.1 → v10.2 → v10.3 → v10.4 → v10.4.1`
+`v7 → v8 → v9 → v9.1 → v9.2 → v9.3 → v9.4 → v10 → v10.1 → v10.2 → v10.3 → v10.4 → v10.4.1 → v10.4.2`
 
 Historical TestClient validators are run in isolated processes because some older layers can print their final PASS marker and then keep interpreter/background threads alive during shutdown. Process isolation does not skip assertions; it only reaps a validator after its final PASS marker has been emitted.
 
 ## Native updater entry point
 
-`python3 validate.py` runs the deterministic v10.4.1 current layer only. Full retained certification is performed separately with `validate_v1041.py` before packaging.
+`python3 validate.py` runs the deterministic v10.4.2 current layer only. Full retained certification is performed separately with `validate_v1042.py` before packaging.
 
 ## Runtime smoke
 
 The release is also launched with a fresh SQLite database under real Uvicorn and checked for:
 
-- `/api/health` → HTTP 200 and version `10.4.1-beta`;
+- `/api/health` → HTTP 200 and version `10.4.2-beta`;
 - `/setup` → HTTP 200;
 - `/` → HTTP 200.
 

@@ -62,7 +62,13 @@ def _first_volume(path: Path) -> bool:
     return not m or int(m.group(1)) == 1
 
 
-def _archive_fingerprint(actual: Path) -> str:
+def _legacy_archive_fingerprint(actual: Path) -> str:
+    """v10.4/v10.4.1 fingerprint retained only for identity migration.
+
+    It is intentionally not used as a safety boundary because Decypharr's
+    virtual /proc view can change PID/mtime while the provider object is still
+    the same archive.
+    """
     h = hashlib.sha256(str(actual).encode())
     try:
         st = actual.stat()
@@ -70,6 +76,61 @@ def _archive_fingerprint(actual: Path) -> str:
     except OSError:
         pass
     return h.hexdigest()
+
+
+def _archive_fingerprint(logical_path: str | Path, actual: Path) -> str:
+    """Stable provider-source identity for virtual DUMB/Decypharr files.
+
+    Never include /proc/<pid> or mtime: both can legitimately change without
+    the Real-Debrid source changing.  File size is retained so a growing or
+    replaced source naturally invalidates archive caches/identity.  Content
+    safety is enforced separately by ``_catalogue_signature``.
+    """
+    logical = str(Path(str(logical_path)))
+    h = hashlib.sha256(logical.encode("utf-8", errors="replace"))
+    try:
+        h.update(f":{int(actual.stat().st_size)}".encode())
+    except OSError:
+        h.update(b":missing")
+    return h.hexdigest()
+
+
+def _catalogue_signature(logical_path: str | Path, entries: list[dict[str, Any]]) -> str:
+    """Fingerprint the useful archive catalogue, independent of virtual FS metadata.
+
+    Member path, listed sizes, encryption flag and CRC are sufficient to catch
+    the changes that matter to selective extraction, including same-size source
+    replacement. Torrent padding is excluded because it is never recovered.
+    """
+    h = hashlib.sha256(str(Path(str(logical_path))).encode("utf-8", errors="replace"))
+    rows = []
+    for row in entries or []:
+        name = _normal_member(str(row.get("path") or ""))
+        if not name or _is_padding_member(name):
+            continue
+        rows.append((
+            name,
+            int(row.get("size") or 0),
+            int(row.get("packed_size") or 0),
+            str(row.get("crc") or "").upper(),
+            bool(row.get("encrypted")),
+        ))
+    for name, size, packed, crc, encrypted in sorted(rows):
+        h.update(f"\n{name}|{size}|{packed}|{crc}|{int(encrypted)}".encode("utf-8", errors="replace"))
+    return h.hexdigest()
+
+
+def _archive_identity(logical_path: str, fingerprint: str, legacy_fingerprint: str = "") -> dict[str, Any] | None:
+    identity = media_identity.get_identity(logical_path, fingerprint)
+    if identity:
+        return identity
+    if legacy_fingerprint and legacy_fingerprint != fingerprint:
+        identity = media_identity.get_identity(logical_path, legacy_fingerprint)
+        if identity:
+            # One-way migration keeps a TMDb choice made on v10.4/v10.4.1.
+            media_identity.save_identity(logical_path, fingerprint, identity)
+            return identity
+    return None
 
 
 def _volume_count(actual: Path) -> int:
@@ -91,11 +152,11 @@ def _ignored_key(logical_path: str, fingerprint: str) -> str:
 
 
 def _inspection_key(fingerprint: str) -> str:
-    return f"archive_recovery:inspect:v1041:{fingerprint}"
+    return f"archive_recovery:inspect:v1042:{fingerprint}"
 
 
 def _verification_key(fingerprint: str) -> str:
-    return f"archive_recovery:verify:v1041:{fingerprint}"
+    return f"archive_recovery:verify:v1042:{fingerprint}"
 
 
 def set_ignored(logical_path: str, fingerprint: str, ignored: bool = True) -> None:
@@ -124,13 +185,14 @@ def scan_archives(force: bool = False, limit: int = 500) -> list[dict[str, Any]]
             if not actual.is_file() or actual.suffix.lower() != ".rar" or not _first_volume(actual):
                 continue
             logical = logical_from_view(actual)
-            fp = _archive_fingerprint(actual)
+            fp = _archive_fingerprint(str(logical), actual)
+            legacy_fp = _legacy_archive_fingerprint(actual)
             verify = cache_get(_verification_key(fp))
             rows.append({
                 "logical_path": str(logical), "name": actual.name, "parent": str(logical.parent),
                 "fingerprint": fp, "size": int(actual.stat().st_size), "volumes": _volume_count(actual),
                 "ignored": is_ignored(str(logical), fp),
-                "identity": media_identity.get_identity(str(logical), fp),
+                "identity": _archive_identity(str(logical), fp, legacy_fp),
                 "verification": verify if isinstance(verify, dict) else None,
                 "extracted": cache_get(f"archive_recovery:extracted:{fp}"),
             })
@@ -259,12 +321,17 @@ def inspect_archive(logical_path: str, *, force: bool = False) -> dict[str, Any]
     actual = view_path(logical_path)
     if not actual.is_file() or actual.suffix.lower() != ".rar":
         raise RuntimeError("RAR source is not available")
-    fp = _archive_fingerprint(actual)
+    fp = _archive_fingerprint(logical_path, actual)
+    legacy_fp = _legacy_archive_fingerprint(actual)
     if not force:
         cached = cache_get(_inspection_key(fp))
         if isinstance(cached, dict) and cached.get("fingerprint") == fp:
-            cached["identity"] = media_identity.get_identity(logical_path, fp)
-            cached["verification"] = cache_get(_verification_key(fp))
+            cached["identity"] = _archive_identity(logical_path, fp, legacy_fp)
+            verify = cache_get(_verification_key(fp))
+            if isinstance(verify, dict) and verify.get("catalogue_signature") == cached.get("catalogue_signature"):
+                cached["verification"] = verify
+            else:
+                cached["verification"] = None
             cached["cached"] = True
             return cached
 
@@ -310,11 +377,16 @@ def inspect_archive(logical_path: str, *, force: bool = False) -> dict[str, Any]
         detail = "; ".join(issues) or "7-Zip returned no usable member listing"
         raise RuntimeError(f"RAR inspection failed (exit {proc.returncode}): {detail}")
 
-    identity = media_identity.get_identity(logical_path, fp)
+    catalogue_signature = _catalogue_signature(logical_path, entries)
+    identity = _archive_identity(logical_path, fp, legacy_fp)
+    verify = cache_get(_verification_key(fp))
+    if not isinstance(verify, dict) or verify.get("catalogue_signature") != catalogue_signature:
+        verify = None
     result = {
         "logical_path": logical_path,
         "name": actual.name,
         "fingerprint": fp,
+        "catalogue_signature": catalogue_signature,
         "entries": visible[:2000],
         "entry_count": len(visible),
         "archive_entry_count": len(entries),
@@ -338,7 +410,7 @@ def inspect_archive(logical_path: str, *, force: bool = False) -> dict[str, Any]
         "volumes": _volume_count(actual),
         "identity": identity,
         "identity_required": identity_required_for_name(actual.name),
-        "verification": cache_get(_verification_key(fp)),
+        "verification": verify,
         "cached": False,
     }
     cache_set(_inspection_key(fp), result)
@@ -408,9 +480,9 @@ def _parse_7z_test_output(stdout: str, stderr: str, media: list[dict[str, Any]],
 
 def verify_archive_media(logical_path: str, *, expected_fingerprint: str = "") -> dict[str, Any]:
     """Test video members only and cache per-file recovery eligibility."""
-    plan = inspect_archive(logical_path)
+    plan = inspect_archive(logical_path, force=True)
     if expected_fingerprint and plan.get("fingerprint") != expected_fingerprint:
-        raise RuntimeError("RAR source changed after preview; inspect it again")
+        raise RuntimeError("RAR source size/path changed after preview; inspect it again")
     if plan.get("password_protected"):
         raise RuntimeError("Password-protected RAR requires manual review")
     if not plan.get("safe"):
@@ -445,9 +517,17 @@ def verify_archive_media(logical_path: str, *, expected_fingerprint: str = "") -
             "exit_code": int(proc.returncode),
         }
 
+    # Decypharr can legitimately change virtual mtime/PID while the same source
+    # is mounted. Re-list after the potentially long verification and compare
+    # the archive catalogue itself instead of virtual filesystem metadata.
+    final_plan = inspect_archive(logical_path, force=True)
+    if final_plan.get("catalogue_signature") != plan.get("catalogue_signature"):
+        raise RuntimeError("RAR media catalogue changed during verification; inspect and verify it again")
+
     result = {
         "logical_path": logical_path,
         "fingerprint": plan["fingerprint"],
+        "catalogue_signature": plan["catalogue_signature"],
         "tested_at": time.time(),
         "seconds": round(time.monotonic() - started, 2),
         **parsed,
@@ -536,9 +616,9 @@ def extract_archive(logical_path: str, *, expected_fingerprint: str = "", select
     available) and pass ffprobe before it is committed to persistent recovery
     storage.
     """
-    plan = inspect_archive(logical_path)
+    plan = inspect_archive(logical_path, force=True)
     if expected_fingerprint and plan["fingerprint"] != expected_fingerprint:
-        raise RuntimeError("RAR source changed after preview; scan/inspect it again")
+        raise RuntimeError("RAR source size/path changed after preview; scan/inspect it again")
     if plan.get("password_protected"):
         raise RuntimeError("Password-protected RAR requires manual review")
     if not plan.get("safe"):
@@ -551,6 +631,8 @@ def extract_archive(logical_path: str, *, expected_fingerprint: str = "", select
     verification = cache_get(_verification_key(plan["fingerprint"]))
     if not isinstance(verification, dict) or verification.get("fingerprint") != plan["fingerprint"]:
         raise RuntimeError("Verify the archive's media files before recovery")
+    if verification.get("catalogue_signature") != plan.get("catalogue_signature"):
+        raise RuntimeError("RAR media catalogue changed since verification; inspect and verify it again")
     verified_rows = {str(x.get("path") or ""): x for x in verification.get("members") or [] if x.get("status") == "verified"}
     if not verified_rows:
         raise RuntimeError("No independently verified media files are available for recovery")

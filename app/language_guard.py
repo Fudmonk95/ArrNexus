@@ -255,7 +255,7 @@ def _policy_fingerprint(policy: LanguagePolicy) -> str:
 def _cache_key(source_path: str, fingerprint: str, policy: LanguagePolicy) -> str:
     ident = hashlib.sha256(source_path.encode("utf-8", errors="replace")).hexdigest()[:24]
     fp = (fingerprint or "nofingerprint")[:32]
-    return f"language:v7:{ident}:{fp}:{_policy_fingerprint(policy)}"
+    return f"language:v1042:{ident}:{fp}:{_policy_fingerprint(policy)}"
 
 
 def _override_key(source_path: str, fingerprint: str) -> str:

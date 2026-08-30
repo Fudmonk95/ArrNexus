@@ -151,7 +151,7 @@ def main() -> int:
             main_app.templates.env.get_template(template.name)
         with TestClient(main_app.app) as client:
             health = client.get("/api/health")
-            require(health.status_code == 200 and health.json().get("version") in {"10.4.0-beta", "10.4.1-beta"}, "v10.4 health/version")
+            require(health.status_code == 200 and health.json().get("version") in {"10.4.0-beta", "10.4.1-beta", "10.4.2-beta"}, "v10.4 health/version")
             setup = client.post("/setup", data={"username":"v104validator","email":"v104@example.invalid","display_name":"V10.4 Validator","password":"validation-password-123","confirm":"validation-password-123"}, follow_redirects=False)
             require(setup.status_code == 303, "v10.4 administrator setup")
             page = client.get("/maintenance/archives", follow_redirects=False)
@@ -179,7 +179,7 @@ def main() -> int:
 
     for marker in ('/maintenance/archives', 'run_archive_extract_job', 'media_identity.search_tmdb'):
         require(marker in main_source, f"v10.4 main marker missing: {marker}")
-    require(('APP_VERSION = "10.4.0-beta"' in main_source) or ('APP_VERSION = "10.4.1-beta"' in main_source), "v10.4+ version marker missing")
+    require(('APP_VERSION = "10.4.0-beta"' in main_source) or ('APP_VERSION = "10.4.1-beta"' in main_source) or ('APP_VERSION = "10.4.2-beta"' in main_source), "v10.4+ version marker missing")
     for marker in ('UNKNOWN_LANGUAGE_CODES', 'language_override:v104', 'status = "unknown"'):
         require(marker in (root/"app"/"language_guard.py").read_text(encoding="utf-8"), f"Language Guard v10.4 marker missing: {marker}")
     for marker in ('scan_archives', 'inspect_archive', 'extract_archive', 'path traversal', 'max_extract_bytes', 'identity_required'):

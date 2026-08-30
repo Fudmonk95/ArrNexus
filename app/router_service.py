@@ -132,6 +132,28 @@ async def route_item(item: ScanItem) -> dict:
     }
 
 
+
+
+async def _existing_target_external(client, service: str, candidate: dict) -> dict | None:
+    """Resolve an already-owned Arr item by stable external ID before POST.
+
+    Title/year matching can miss unusual release naming. Radarr/Sonarr reject a
+    duplicate POST with HTTP 400, but that is an idempotent existing-library
+    condition, not an import failure.
+    """
+    id_key = "tmdbId" if service == "radarr" else "tvdbId"
+    external_id = candidate.get(id_key)
+    if not external_id:
+        return None
+    try:
+        rows = await (client.movies() if service == "radarr" else client.series())
+    except Exception:
+        return None
+    for row in rows or []:
+        if row.get(id_key) and str(row.get(id_key)) == str(external_id):
+            return row
+    return None
+
 async def import_one(source_path: str, destination_key: str | None = None, candidate_index: int = -1, media_type_override: str | None = None) -> dict:
     detected_item = inspect_item(source_path)
     resolved_item, identity = media_identity.apply_to_item(detected_item)
@@ -169,7 +191,25 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
         idx = candidate_index if 0 <= candidate_index < len(lookup) else 0
         candidate = lookup[idx]
         client = target_client
-        arr_item = await (client.add_movie(candidate, root, search=False) if service == "radarr" else client.add_series(candidate, root, search=False))
+        # External IDs are authoritative. If the movie/series is already in the
+        # target Arr, reuse it instead of POSTing a duplicate and surfacing the
+        # normal MovieExistsValidator/SeriesExistsValidator 400 as a failure.
+        arr_item = await _existing_target_external(client, service, candidate)
+        if arr_item is None:
+            try:
+                arr_item = await (client.add_movie(candidate, root, search=False) if service == "radarr" else client.add_series(candidate, root, search=False))
+            except ArrError as exc:
+                text = str(exc)
+                duplicate = any(token in text for token in (
+                    "MovieExistsValidator", "SeriesExistsValidator",
+                    "already been added", "already configured for an existing movie",
+                    "already configured for an existing series",
+                ))
+                if not duplicate:
+                    raise
+                arr_item = await _existing_target_external(client, service, candidate)
+                if arr_item is None:
+                    raise
         actual_destination_key = chosen
 
     if service == "radarr":

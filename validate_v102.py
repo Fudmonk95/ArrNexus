@@ -170,7 +170,7 @@ def main() -> int:
     guide = (root / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8")
     audit = (root / "docs" / "DOCUMENTATION_AUDIT.md").read_text(encoding="utf-8")
 
-    require(any(f'APP_VERSION = \"{v}\"' in main_source for v in ('10.2.0-beta','10.3.0-beta','10.4.0-beta','10.4.1-beta')), "v10.2+ version string missing")
+    require(any(f'APP_VERSION = \"{v}\"' in main_source for v in ('10.2.0-beta','10.3.0-beta','10.4.0-beta','10.4.1-beta','10.4.2-beta')), "v10.2+ version string missing")
     for marker in ("trakt_watchlist", "trakt_list", "imdb", "tmdb", "plex_watchlist", "simkl", "rss", "json"):
         require(marker in lists_source, f"list adapter missing: {marker}")
     require("_atomic_settings" in lists_source and "refresh_token" in lists_source, "atomic Trakt refresh-token handling missing")

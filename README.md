@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.4.1--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.4.2--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -61,6 +61,24 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
 
 ---
+
+## 🛠️ Version 10.4.2 — Stable Archive Identity Hotfix
+
+v10.4.2 fixes false **RAR source changed after preview** failures seen on Decypharr/DUMB virtual mounts. v10.4.1 used the `/proc/<pid>/root/...` view path and file modification time as part of the archive fingerprint; both can legitimately change while the underlying provider archive is unchanged.
+
+### Stable recovery safety
+
+- Archive source identity now uses the logical DMM path plus provider-visible size, never the transient `/proc` PID or virtual `mtime`.
+- Media verification re-lists the archive after the potentially long test and compares a content catalogue signature built from member paths, listed sizes, encryption state and CRC metadata.
+- Extraction performs a fresh catalogue check against the verification result, so a real archive/member change still fails closed even when total file size is unchanged.
+- TMDb archive identities created on v10.4/v10.4.1 are migrated to the stable v10.4.2 source identity when possible.
+
+### Field-import correctness
+
+- Language Guard cache decisions are versioned again so pre-fix false rejections cannot survive an upgrade. Undefined/unknown audio metadata is re-evaluated as **Manual Review**, never a confirmed rejection.
+- Import jobs now report **Manual Review** separately from **Language rejected**; uncertain media no longer inflates the rejection counter.
+- Radarr/Sonarr imports perform an external-ID ownership check before adding a title. A movie already present by TMDb ID (or series by TVDB ID) is reused instead of surfacing normal `MovieExistsValidator`/duplicate-path responses as a failed import.
+- v10.4.2 introduces no new Docker/OS dependency; installations already rebuilt for v10.4 RAR support can use the normal browser updater.
 
 ## 🛠️ Version 10.4.1 — Selective RAR Recovery Hotfix
 
