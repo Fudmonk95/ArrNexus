@@ -1,0 +1,77 @@
+{% extends 'base.html' %}
+{% block title %}Lists & Watchlists · ArrNexus{% endblock %}
+{% block heading %}Lists & Watchlists{% endblock %}
+{% block content %}
+{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<section class="v102-hero panel">
+  <div><span class="eyebrow">LIST AUTOMATION</span><h2>External lists become routed ArrNexus requests.</h2><p>Preview first, then send movies and shows to the specialist Radarr/Sonarr library you choose. Existing titles are never moved just because another list contains them.</p></div>
+  <div class="v102-flow"><span>List source</span><i>→</i><span>Identity match</span><i>→</i><span>Library route</span><i>→</i><span>Usenet / Debrid</span></div>
+</section>
+
+<section class="panel">
+  <details class="v102-disclosure">
+    <summary><div><strong>List provider connections</strong><small>Trakt OAuth, TMDb, Simkl and existing Plex token</small></div><span>Configure</span></summary>
+    <div class="v102-disclosure-body">
+      <form method="post" action="/lists/providers" class="formgrid">
+        <div class="grid-2"><label>Trakt client ID<input name="trakt_client_id" value="{{ provider_state.trakt_client_id if provider_state.trakt_client_id is defined else '' }}" placeholder="Trakt application client ID"></label><label>Trakt client secret<input type="password" name="trakt_client_secret" placeholder="{{ 'Configured — leave blank to keep' if provider_state.trakt_client_configured else 'Trakt application secret' }}"></label></div>
+        <div class="grid-2"><label>TMDb API key<input type="password" name="tmdb_api_key" placeholder="{{ 'Configured — leave blank to keep' if provider_state.tmdb_configured else 'Optional for TMDb list sources' }}"></label><label>Simkl client ID<input name="simkl_client_id" value="{{ provider_state.simkl_client_id if provider_state.simkl_client_id is defined else '' }}" placeholder="Optional"></label></div>
+        <label>Simkl OAuth access token<input type="password" name="simkl_access_token" placeholder="{{ 'Configured — leave blank to keep' if provider_state.simkl_configured else 'Optional' }}"></label>
+        <div class="formactions"><button class="btn primary">Save list providers</button></div>
+      </form>
+      <div class="v102-provider-status">
+        <div><strong>Trakt</strong><span class="tag {{ 'green' if provider_state.trakt_connected else 'mutedtag' }}">{{ ('Connected as ' ~ provider_state.trakt_user) if provider_state.trakt_connected and provider_state.trakt_user else ('Connected' if provider_state.trakt_connected else 'Not connected') }}</span>{% if provider_state.trakt_client_configured and not provider_state.trakt_connected %}<a class="btn small primary" href="/lists/trakt/connect" data-no-soft-nav>Connect Trakt</a>{% endif %}{% if provider_state.trakt_connected %}<form method="post" action="/lists/trakt/disconnect"><button class="btn small ghost">Disconnect</button></form>{% endif %}</div>
+        <div><strong>Plex Watchlist</strong><span class="tag {{ 'green' if provider_state.plex_configured else 'mutedtag' }}">{{ 'Uses saved Plex token' if provider_state.plex_configured else 'Configure Plex in Connections' }}</span></div>
+        {% if trakt_lists %}<div><strong>Your Trakt lists</strong><span class="muted">Use <code>me/&lt;ID or slug&gt;</code> as the Trakt List reference:</span>{% for tl in trakt_lists[:12] %}<span class="tag">{{ tl.name }} · me/{{ tl.slug or tl.id }}</span>{% endfor %}</div>{% endif %}
+      </div>
+    </div>
+  </details>
+</section>
+
+<section class="panel">
+  <details class="v102-disclosure" open>
+    <summary><div><strong>Create list automation</strong><small>Nothing syncs until you explicitly enable it.</small></div><span>New</span></summary>
+    <div class="v102-disclosure-body">
+      <form method="post" action="/lists/save" class="formgrid">
+        <input type="hidden" name="list_id" value="">
+        <div class="grid-2"><label>Name<input name="name" required placeholder="Christmas Movies"></label><label>Source<select name="source_type">{% for key,label in source_types.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label></div>
+        <label>List ID / URL / reference<input name="source_ref" placeholder="Trakt list ID, IMDb URL, TMDb list ID, RSS/JSON URL"><small>Trakt Watchlist and Plex Watchlist do not need a reference.</small></label>
+        <div class="grid-2"><label>Media<select name="media_type"><option value="mixed">Movies + TV</option><option value="movie">Movies</option><option value="tv">TV</option></select></label><label>Acquisition<select name="acquisition_strategy">{% for key in strategies %}<option value="{{ key }}">{{ key|replace('_',' ')|title }}</option>{% endfor %}</select></label></div>
+        <div class="grid-2"><label>Movie destination<select name="movie_destination"><option value="auto">Automatic routing</option>{% for key in movie_destinations %}<option value="{{ key }}">Radarr / {{ key }}</option>{% endfor %}</select></label><label>TV destination<select name="tv_destination"><option value="auto">Automatic routing</option>{% for key in tv_destinations %}<option value="{{ key }}">Sonarr / {{ key }}</option>{% endfor %}</select></label></div>
+        <div class="grid-2"><label>Sync every<input type="number" name="sync_interval_hours" value="12" min="1" max="720"><small>hours</small></label><div class="v102-checks"><label class="check"><input type="checkbox" name="monitor" value="1" checked> Monitor new titles</label><label class="check"><input type="checkbox" name="search_automatically" value="1" checked> Acquire automatically after add</label><label class="check"><input type="checkbox" name="enabled" value="1"> Enable scheduled sync after preview</label></div></div>
+        <div class="formactions"><button class="btn primary">Save list</button></div>
+      </form>
+    </div>
+  </details>
+</section>
+
+<section class="v102-list-grid">
+{% for item in lists %}
+  <details class="v102-list-card" {{ 'open' if preview and preview_list_id==item.id else '' }}>
+    <summary>
+      <div><span class="v102-source">{{ source_types.get(item.source_type,item.source_type) }}</span><h3>{{ item.name }}</h3><p>{{ item.media_type|upper }} · {{ item.sync_interval_hours }}h sync · {{ item.acquisition_strategy|replace('_',' ') }}</p></div>
+      <div class="v102-list-state"><span class="tag {{ 'green' if item.enabled else 'mutedtag' }}">{{ 'Enabled' if item.enabled else 'Paused' }}</span><strong>{{ item.last_count or 0 }}</strong><small>last items</small></div>
+    </summary>
+    <div class="v102-list-body">
+      {% if item.last_error %}<div class="alert error">Last sync: {{ item.last_error }}</div>{% endif %}
+      <div class="v102-route-row"><span>Movies → <strong>Radarr / {{ item.movie_destination }}</strong></span><span>TV → <strong>Sonarr / {{ item.tv_destination }}</strong></span><span>Last sync → <strong>{{ item.last_sync_at or 'Never' }}</strong></span></div>
+      <form method="post" action="/lists/save" class="formgrid v102-edit-form">
+        <input type="hidden" name="list_id" value="{{ item.id }}"><div class="grid-2"><label>Name<input name="name" value="{{ item.name }}" required></label><label>Source<select name="source_type">{% for key,label in source_types.items() %}<option value="{{ key }}" {{ 'selected' if item.source_type==key }}>{{ label }}</option>{% endfor %}</select></label></div>
+        <label>Reference<input name="source_ref" value="{{ item.source_ref }}"></label><div class="grid-2"><label>Media<select name="media_type">{% for kind in ['mixed','movie','tv'] %}<option value="{{ kind }}" {{ 'selected' if item.media_type==kind }}>{{ kind|title }}</option>{% endfor %}</select></label><label>Acquisition<select name="acquisition_strategy">{% for key in strategies %}<option value="{{ key }}" {{ 'selected' if item.acquisition_strategy==key }}>{{ key|replace('_',' ')|title }}</option>{% endfor %}</select></label></div>
+        <div class="grid-2"><label>Movie destination<select name="movie_destination"><option value="auto" {{ 'selected' if item.movie_destination=='auto' }}>Automatic</option>{% for key in movie_destinations %}<option value="{{ key }}" {{ 'selected' if item.movie_destination==key }}>{{ key }}</option>{% endfor %}</select></label><label>TV destination<select name="tv_destination"><option value="auto" {{ 'selected' if item.tv_destination=='auto' }}>Automatic</option>{% for key in tv_destinations %}<option value="{{ key }}" {{ 'selected' if item.tv_destination==key }}>{{ key }}</option>{% endfor %}</select></label></div>
+        <div class="grid-2"><label>Sync hours<input type="number" name="sync_interval_hours" value="{{ item.sync_interval_hours }}" min="1" max="720"></label><div class="v102-checks"><label class="check"><input type="checkbox" name="monitor" value="1" {{ 'checked' if item.monitor }}> Monitor</label><label class="check"><input type="checkbox" name="search_automatically" value="1" {{ 'checked' if item.search_automatically }}> Automatic acquisition</label><label class="check"><input type="checkbox" name="enabled" value="1" {{ 'checked' if item.enabled }}> Scheduled sync enabled</label></div></div>
+        <div class="formactions"><button class="btn">Save changes</button></div>
+      </form>
+      <div class="v102-actions"><a class="btn small" href="/lists/{{ item.id }}/preview" data-no-soft-nav>Preview</a><form method="post" action="/lists/{{ item.id }}/sync"><button class="btn small primary">Sync now</button></form><form method="post" action="/lists/{{ item.id }}/delete" onsubmit="return confirm('Delete this ArrNexus list definition and its run history?')"><button class="btn small ghost">Delete</button></form></div>
+      {% if preview and preview_list_id==item.id %}
+      <div class="v102-preview"><div class="stats-grid five"><div class="stat"><span>List</span><strong>{{ preview.total }}</strong></div><div class="stat"><span>Exists</span><strong>{{ preview.existing }}</strong></div><div class="stat"><span>Requested</span><strong>{{ preview.requested }}</strong></div><div class="stat"><span>Would add</span><strong>{{ preview.would_add }}</strong></div><div class="stat"><span>Unmatched</span><strong>{{ preview.unmatched }}</strong></div></div>
+        <div class="tablewrap"><table><thead><tr><th>Title</th><th>Type</th><th>State</th><th>Destination</th></tr></thead><tbody>{% for row in preview.rows[:200] %}<tr><td><strong>{{ row.title }}</strong>{% if row.year %} <span class="muted">({{ row.year }})</span>{% endif %}</td><td>{{ row.media_type }}</td><td><span class="tag {{ 'green' if row.state=='existing' else ('blue' if row.state=='new' else 'mutedtag') }}">{{ row.state }}</span></td><td>{{ item.movie_destination if row.media_type=='movie' else item.tv_destination }}</td></tr>{% endfor %}</tbody></table></div>
+      </div>{% endif %}
+    </div>
+  </details>
+{% else %}<div class="panel empty">No list automations yet.</div>{% endfor %}
+</section>
+
+{% if runs %}<section class="panel"><details class="v102-disclosure"><summary><div><strong>List run history</strong><small>Preview and synchronization audit trail</small></div><span>{{ runs|length }}</span></summary><div class="v102-disclosure-body tablewrap"><table><thead><tr><th>Time</th><th>List</th><th>Status</th><th>Total</th><th>Existing</th><th>Added</th><th>Unmatched</th><th>Errors</th></tr></thead><tbody>{% for run in runs %}<tr><td>{{ run.created_at }}</td><td>#{{ run.list_id }}</td><td>{{ run.status }}</td><td>{{ run.total }}</td><td>{{ run.existing_count }}</td><td>{{ run.added_count }}</td><td>{{ run.unmatched_count }}</td><td>{{ run.error_count }}</td></tr>{% endfor %}</tbody></table></div></details></section>{% endif %}
+{% endblock %}

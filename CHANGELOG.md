@@ -1,5 +1,19 @@
 # Changelog
 
+## 10.2.0-beta — Lists, Language Guard v2 & Product Appearance
+
+- Added Lists & Watchlists automation with Trakt OAuth/watchlist/lists, IMDb, TMDb, Plex Watchlist, Simkl, RSS/Atom and Custom JSON adapters.
+- Added per-list movie/TV/mixed routing to specialist Radarr/Sonarr destinations using existing ArrNexus acquisition strategies.
+- Added list preview, manual sync, scheduled sync and run history; existing titles are never automatically moved between specialist libraries.
+- Added atomic Trakt access/refresh token replacement for refresh safety.
+- Added Language Guard v2 defaults: English audio required, English subtitles optional. Probe failures and unknown language metadata become Manual review and are never destructive.
+- Added dependency-protected Provider Duplicate Cleanup with stale-preview digest checking and exact Real-Debrid deletion only after all surviving managed-link dependencies are gone.
+- Added managed AIOMetadata health, masked user-config visibility, explicit manifest verification and AIOStreams relationship visibility.
+- Removed historical multi-theme CSS and replaced it with exactly Dark and Light product appearances plus a permanent top-right toggle.
+- Converted Providers and Libraries to collapsed summary-first layouts.
+- Updated the service-worker cache to `arrnexus-static-v10.2`, Help Centre, User Guide, documentation audit and release documentation.
+- Added the v10.2 validation layer while retaining the v7 → v10.1 regression chain.
+
 ## 10.1.0-beta — Language Cleanup & Library Consolidation
 
 - Language Guard rejections are now tracked separately from genuine import errors.

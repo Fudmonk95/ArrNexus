@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.1.0--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.2.0--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -34,7 +34,7 @@
 
 ArrNexus began as a way to bridge **Debrid Media Manager / Real-Debrid** into an existing Arr workflow without throwing away the automation already provided by Radarr and Sonarr.
 
-It has grown into a wider operations layer for **discovery, acquisition planning, provider routing, DMM imports, language validation, library health, media-server visibility, music discovery, Prowlarr control, AIOStreams configuration, diagnostics and day-to-day media operations**.
+It has grown into a wider operations layer for **discovery, external list automation, acquisition planning, provider routing, DMM imports, language validation, library health, media-server visibility, music discovery, Prowlarr control, AIOStreams/AIOMetadata visibility, diagnostics and day-to-day media operations**.
 
 ### The problem it solves
 
@@ -59,6 +59,38 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 ### Supported ecosystem
 
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
+
+---
+
+## 🆕 Version 10.2 — Lists, safer cleanup & true Dark/Light
+
+v10.2 turns external lists into first-class ArrNexus automation inputs while tightening destructive-cleanup rules and finishing the product-wide visual system.
+
+### Lists & Watchlists
+
+Open **Library & Automation → Lists & Watchlists** to create preview-first automations from:
+
+- Trakt Watchlist and personal/public Trakt lists through OAuth
+- IMDb public lists
+- TMDb lists
+- Plex Watchlist
+- Simkl account watch state
+- RSS / Atom
+- Custom JSON feeds
+
+Each definition chooses movie/TV/mixed handling, a specialist Radarr/Sonarr destination and the existing ArrNexus acquisition strategy. Preview separates **existing**, **already requested**, **would add** and **unmatched** titles. Existing media is never silently moved merely because another list contains it.
+
+### Language Guard v2
+
+English audio is the blocking default; English subtitles are optional by default. A confirmed non-English result can follow the exact provider-cleanup policy, but an `ffprobe` error or unknown stream-language result becomes **Manual review** and is never destructive. Item Review retains the explicit recheck action and persisted result.
+
+### Provider Duplicate Cleanup
+
+Maintenance now exposes a separate dependency-protected cleanup preview. ArrNexus can remove redundant managed symlinks, exact eligible Real-Debrid sources, or both. Provider deletion is refused while any surviving managed link still depends on that source and the preview digest must still match.
+
+### AIOMetadata & appearance
+
+AIOMetadata has a managed health/configuration page with masked per-user config visibility and AIOStreams relationship checks. The historical theme gallery is physically removed: ArrNexus now has exactly **Dark** and **Light** appearances with a permanent top-right toggle, Dark as the default, and a true white/black inverted Light surface. Providers and Libraries are collapsed by default for summary-first navigation.
 
 ---
 
@@ -419,8 +451,8 @@ sudo apt install -y unzip python3-venv
 ### Extract
 
 ```bash
-unzip arrnexus-v10.1.0-beta.zip
-cd arrnexus-v10.1
+unzip arrnexus-v10.2.0-beta.zip
+cd arrnexus-v10.2
 mkdir -p data
 ```
 
@@ -1621,7 +1653,7 @@ Recent releases added:
 
 ## 🧪 Release Status
 
-**Current release:** `v10.1.0-beta`
+**Current release:** `v10.2.0-beta`
 
 Beta means exactly that: ArrNexus has extensive deterministic validation, but real deployments vary in:
 

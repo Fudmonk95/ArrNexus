@@ -125,14 +125,14 @@ class RadarrClient(ArrClient):
     async def lookup(self, term: str):
         return await self.request("GET", "/api/v3/movie/lookup", params={"term": term})
 
-    async def add_movie(self, candidate: dict, root: str, search: bool = False):
+    async def add_movie(self, candidate: dict, root: str, search: bool = False, monitored: bool = True):
         profiles = await self.quality_profiles()
         qid = pick_named_id(profiles, settings.radarr_quality_profile_name)
         payload = copy.deepcopy(candidate)
         payload.pop("id", None)
         payload["qualityProfileId"] = qid
         payload["rootFolderPath"] = root
-        payload["monitored"] = True
+        payload["monitored"] = bool(monitored)
         payload["minimumAvailability"] = payload.get("minimumAvailability") or "released"
         payload["addOptions"] = {"searchForMovie": bool(search)}
         return await self.request("POST", "/api/v3/movie", json=payload)
@@ -161,17 +161,17 @@ class SonarrClient(ArrClient):
     async def lookup(self, term: str):
         return await self.request("GET", "/api/v3/series/lookup", params={"term": term})
 
-    async def add_series(self, candidate: dict, root: str, search: bool = False):
+    async def add_series(self, candidate: dict, root: str, search: bool = False, monitored: bool = True):
         profiles = await self.quality_profiles()
         qid = pick_named_id(profiles, settings.sonarr_quality_profile_name)
         payload = copy.deepcopy(candidate)
         payload.pop("id", None)
         payload["qualityProfileId"] = qid
         payload["rootFolderPath"] = root
-        payload["monitored"] = True
+        payload["monitored"] = bool(monitored)
         payload["seasonFolder"] = True
         payload["seriesType"] = payload.get("seriesType") or "standard"
-        payload["addOptions"] = {"monitor": "all", "searchForMissingEpisodes": bool(search)}
+        payload["addOptions"] = {"monitor": "all" if monitored else "none", "searchForMissingEpisodes": bool(search)}
         return await self.request("POST", "/api/v3/series", json=payload)
 
     async def rescan(self, series_id: int):

@@ -193,6 +193,43 @@ CREATE TABLE IF NOT EXISTS ui_preferences (
     PRIMARY KEY(user_id, pref_key),
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS media_lists (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_ref TEXT NOT NULL DEFAULT '',
+    media_type TEXT NOT NULL DEFAULT 'mixed',
+    movie_destination TEXT NOT NULL DEFAULT 'auto',
+    tv_destination TEXT NOT NULL DEFAULT 'auto',
+    acquisition_strategy TEXT NOT NULL DEFAULT 'automatic',
+    monitor INTEGER NOT NULL DEFAULT 1,
+    search_automatically INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    sync_interval_hours INTEGER NOT NULL DEFAULT 12,
+    last_sync_at TEXT,
+    last_error TEXT,
+    last_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_media_lists_enabled ON media_lists(enabled);
+
+CREATE TABLE IF NOT EXISTS media_list_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    list_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'complete',
+    preview INTEGER NOT NULL DEFAULT 0,
+    total INTEGER NOT NULL DEFAULT 0,
+    existing_count INTEGER NOT NULL DEFAULT 0,
+    added_count INTEGER NOT NULL DEFAULT 0,
+    unmatched_count INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    detail TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(list_id) REFERENCES media_lists(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_media_list_runs_list ON media_list_runs(list_id, created_at DESC);
 """
 
 

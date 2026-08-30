@@ -88,3 +88,37 @@ document.addEventListener('click', async (event) => {
   async function activate(){const badge=document.querySelector('.nx-version-badge');if(!badge||badge.dataset.updateCheck!=='1')return;const cache=JSON.parse(localStorage.getItem('arrnexus:update-status')||'null');if(cache&&Date.now()-Number(cache.at||0)<3600000){decorate(cache.data);if(cache.data?.update_available)showModal(cache.data,false);return;}await check(false);}
   document.addEventListener('DOMContentLoaded',activate);document.addEventListener('arrnexus:navigated',activate);
 })();
+
+
+/* ArrNexus v10.2 — Dark/Light appearance toggle. No legacy theme gallery. */
+(function(){
+  const KEY='arrnexus:appearance';
+  function normalized(value){return value==='light'?'light':'dark';}
+  function apply(value){
+    const mode=normalized(value);
+    document.documentElement.dataset.appearance=mode;
+    document.documentElement.style.colorScheme=mode;
+    try{localStorage.setItem(KEY,mode);}catch(_e){}
+    document.querySelectorAll('[data-appearance-toggle]').forEach(button=>{
+      button.textContent=mode==='dark'?'☀':'☾';
+      button.title=mode==='dark'?'Switch to Light appearance':'Switch to Dark appearance';
+      button.setAttribute('aria-label',button.title);
+      button.dataset.currentAppearance=mode;
+    });
+    const meta=document.querySelector('meta[name="theme-color"]');
+    if(meta)meta.setAttribute('content',mode==='dark'?'#030304':'#fafafa');
+  }
+  function activate(){
+    let saved='dark';
+    try{saved=normalized(localStorage.getItem(KEY));}catch(_e){}
+    apply(saved);
+  }
+  document.addEventListener('click',event=>{
+    const button=event.target.closest('[data-appearance-toggle]');
+    if(!button)return;
+    event.preventDefault();
+    apply(document.documentElement.dataset.appearance==='light'?'dark':'light');
+  });
+  document.addEventListener('DOMContentLoaded',activate);
+  document.addEventListener('arrnexus:navigated',activate);
+})();

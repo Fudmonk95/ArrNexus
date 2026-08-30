@@ -37,7 +37,7 @@ ENGLISH_NAME_RE = re.compile(r"(?i)(?:^|[._\-\s])(eng|english|en(?:[-_.](?:us|gb
 class LanguagePolicy:
     enabled: bool = True
     require_english_audio: bool = True
-    require_english_subtitles: bool = True
+    require_english_subtitles: bool = False
     require_default_english_audio: bool = False
     unknown_is_failure: bool = True
     auto_upgrade_search: bool = True
@@ -63,7 +63,7 @@ def load_language_policy() -> LanguagePolicy:
     return LanguagePolicy(
         enabled=_bool_setting("language.enabled", True),
         require_english_audio=_bool_setting("language.require_english_audio", True),
-        require_english_subtitles=_bool_setting("language.require_english_subtitles", True),
+        require_english_subtitles=_bool_setting("language.require_english_subtitles", False),
         require_default_english_audio=_bool_setting("language.require_default_english_audio", False),
         unknown_is_failure=_bool_setting("language.unknown_is_failure", True),
         auto_upgrade_search=_bool_setting("language.auto_upgrade_search", True),
@@ -153,19 +153,31 @@ def evaluate_probe_payload(payload: dict, policy: LanguagePolicy | None = None, 
         policy.require_english_subtitles and not external_english_subtitles and (not subs or unknown_subs)
     )
 
-    if missing:
-        status = "fail"
-    elif metadata_unknown and policy.unknown_is_failure:
-        status = "fail"
-        missing.append("language metadata is unknown")
-    elif metadata_unknown:
+    # Unknown tags are not evidence that a stream is non-English. They may
+    # still block an import, but they are a Manual-review state and can never
+    # authorize destructive provider cleanup.
+    if metadata_unknown:
         status = "unknown"
+        if "language metadata is unknown" not in missing:
+            missing.append("language metadata is unknown")
+    elif missing:
+        status = "fail"
     else:
         status = "pass"
+
+    confirmed_policy_failure = False
+    if status == "fail":
+        if policy.require_english_audio and audio_languages and not english_audio:
+            confirmed_policy_failure = True
+        if policy.require_default_english_audio and audio_languages and not default_english_audio:
+            confirmed_policy_failure = True
+        if policy.require_english_subtitles and subtitle_languages and not english_subtitles:
+            confirmed_policy_failure = True
 
     return {
         "status": status,
         "compliant": status == "pass",
+        "destructive_safe": bool(confirmed_policy_failure and not metadata_unknown),
         "english_audio": english_audio,
         "english_subtitles": english_subtitles,
         "default_english_audio": default_english_audio,
@@ -258,8 +270,9 @@ def inspect_source_languages(source_path: str, fingerprint: str = "", force: boo
     files = video_files(Path(source_path))
     if not files:
         result = {
-            "status": "fail", "compliant": False, "enabled": True,
-            "summary": "No video files found for language verification", "files": [],
+            "status": "unknown", "compliant": False, "enabled": True,
+            "destructive_safe": False,
+            "summary": "Manual review required: no video files were available for language verification", "files": [],
             "missing": ["video media"], "checked_at": datetime.now(timezone.utc).isoformat(),
         }
         cache_set(key, result)
@@ -277,8 +290,8 @@ def inspect_source_languages(source_path: str, fingerprint: str = "", force: boo
             rows.append({"path": str(logical), "name": logical.name, **evaluated})
         except Exception as exc:
             rows.append({
-                "path": str(logical), "name": logical.name, "status": "fail" if policy.unknown_is_failure else "unknown",
-                "compliant": False if policy.unknown_is_failure else None,
+                "path": str(logical), "name": logical.name, "status": "unknown",
+                "compliant": False, "destructive_safe": False,
                 "english_audio": False, "english_subtitles": False,
                 "audio_languages": [], "subtitle_languages": [], "missing": ["language probe failed"],
                 "error": str(exc)[:500],
@@ -298,11 +311,17 @@ def inspect_source_languages(source_path: str, fingerprint: str = "", force: boo
         status = "unknown"
     else:
         status = "pass"
+    # A probe execution failure is never promoted to a destructive policy
+    # decision.  It remains manual review even when unknown metadata is strict.
+    if errors:
+        status = "unknown"
     compliant = status == "pass"
+    destructive_safe = bool(status == "fail" and not errors and not truncated and failed and all(bool(r.get("destructive_safe")) for r in failed))
     if status == "pass":
-        summary = f"English audio + subtitles verified on {len(rows)} file(s)"
+        verified = "English audio" + (" + subtitles" if policy.require_english_subtitles else "")
+        summary = f"{verified} verified on {len(rows)} file(s)"
     elif status == "unknown":
-        summary = f"Language verification incomplete on {len(rows)} of {len(files)} file(s)"
+        summary = f"Manual review required: language verification incomplete on {len(rows)} of {len(files)} file(s)"
     else:
         bits = ", ".join(missing) if missing else "language policy not met"
         summary = f"Language Guard blocked source: {bits}"
@@ -310,6 +329,7 @@ def inspect_source_languages(source_path: str, fingerprint: str = "", force: boo
     result = {
         "status": status,
         "compliant": compliant,
+        "destructive_safe": destructive_safe,
         "enabled": True,
         "summary": summary,
         "missing": missing,
@@ -345,4 +365,4 @@ def result_badge(result: dict | None) -> tuple[str, str]:
         return "fail", "Language rejected"
     if status == "disabled":
         return "disabled", "Language Guard off"
-    return "unknown", "Language unknown"
+    return "unknown", "Manual review"

@@ -1,5 +1,5 @@
-const CACHE='arrnexus-static-v10.1';
-const ASSETS=['/static/app.css?v=10.0','/static/app.js?v=10.0','/static/arrnexus-icon-v9.png','/static/arrnexus-logo-v9.png','/static/manifest.webmanifest'];
+const CACHE='arrnexus-static-v10.2';
+const ASSETS=['/static/app.css?v=10.2','/static/app.js?v=10.2','/static/arrnexus-icon-v9.png','/static/arrnexus-logo-v9.png','/static/manifest.webmanifest'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',e=>{

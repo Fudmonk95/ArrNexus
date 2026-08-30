@@ -1,5 +1,33 @@
-{% extends "base.html" %}{% block title %}Providers · ArrNexus{% endblock %}{% block heading %}Providers{% endblock %}{% block content %}
-<div class="v9-page-intro"><div><span class="v9-kicker">PROVIDER REGISTRY</span><h2>Debrid and Usenet are capabilities, not assumptions.</h2><p>Enable only the services you actually use. Secrets remain in ArrNexus persistent data and are masked on screen. AIOStreams Auto-Wire can reuse configured providers conservatively.</p></div><a class="btn" href="/aiostreams">AIOStreams Bridge →</a></div>{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
+{% extends "base.html" %}
+{% block title %}Providers · ArrNexus{% endblock %}
+{% block heading %}Providers{% endblock %}
+{% block content %}
+<div class="v9-page-intro"><div><span class="v9-kicker">PROVIDER REGISTRY</span><h2>Debrid and Usenet are capabilities, not assumptions.</h2><p>Enable only the services you use. Provider sections stay collapsed until you need their credentials or controls, keeping the page readable even with a large registry.</p></div><a class="btn" href="/aiostreams">AIOStreams Bridge →</a></div>
+{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
 <div class="v9-provider-tabs">{% for category in categories %}<a href="#cat-{{ category|lower|replace(' ','-') }}">{{ category }}</a>{% endfor %}</div>
-{% for category, rows in grouped.items() %}<section id="cat-{{ category|lower|replace(' ','-') }}" class="v9-provider-section"><div class="v9-section-title"><span>{{ category|upper }}</span><h2>{{ category }} providers</h2></div><div class="v9-provider-grid">{% for p in rows %}<article class="v9-provider-card {{ 'configured' if p.configured else '' }}"><header><div class="v9-provider-symbol">{{ p.name[:1] }}</div><div><h3>{{ p.name }}</h3><p>{{ p.description }}</p></div><span class="v9-state {{ 'on' if p.enabled else '' }}">{{ 'Enabled' if p.enabled else 'Off' }}</span></header><div class="v9-capabilities">{% for cap in p.capabilities %}<span>{{ cap }}</span>{% endfor %}</div><form method="post" action="/providers/{{ p.id }}" class="v9-provider-form"><label class="check"><input type="checkbox" name="enabled" value="1" {{ 'checked' if p.enabled }}><span>Enable {{ p.name }}</span></label>{% for f in p.credential_fields %}<label>{{ f.label }}{% set val=p.credentials.get(f.id,'') %}<input name="{{ f.id }}" type="{{ 'password' if f.secret else 'text' }}" value="{{ val if not f.secret else '' }}" placeholder="{{ 'Configured — leave blank to keep' if f.configured and f.secret else ('Optional' if not f.configured else val) }}" autocomplete="off"></label>{% endfor %}<button class="btn primary" type="submit">Save provider</button></form></article>{% endfor %}</div></section>{% endfor %}
-<div class="panel v9-provider-note"><strong>Safety rule</strong><p>ArrNexus provider credentials fill missing AIOStreams user fields during Auto-Wire. Existing AIOStreams user values and operator-level defaults/forced credentials are not blindly replaced.</p></div>{% endblock %}
+{% for category, rows in grouped.items() %}
+<details id="cat-{{ category|lower|replace(' ','-') }}" class="v102-collapsible v9-provider-section">
+  <summary class="v102-summary"><span><span class="v9-kicker">{{ category|upper }}</span><strong>{{ category }} providers</strong></span><span class="tag">{{ rows|length }}</span></summary>
+  <div class="v102-body"><div class="v9-provider-grid">
+  {% for p in rows %}
+    <details class="v102-collapsible v9-provider-card {{ 'configured' if p.configured else '' }}">
+      <summary class="v102-summary v102-provider-summary">
+        <div class="v9-provider-symbol">{{ p.name[:1] }}</div>
+        <div><h3>{{ p.name }}</h3><p>{{ p.description }}</p></div>
+        <span class="v9-state {{ 'on' if p.enabled else '' }}">{{ 'Enabled' if p.enabled else 'Off' }}</span>
+      </summary>
+      <div class="v102-body">
+        <div class="v9-capabilities">{% for cap in p.capabilities %}<span>{{ cap }}</span>{% endfor %}</div>
+        <form method="post" action="/providers/{{ p.id }}" class="v9-provider-form">
+          <label class="check"><input type="checkbox" name="enabled" value="1" {{ 'checked' if p.enabled }}><span>Enable {{ p.name }}</span></label>
+          {% for f in p.credential_fields %}<label>{{ f.label }}{% set val=p.credentials.get(f.id,'') %}<input name="{{ f.id }}" type="{{ 'password' if f.secret else 'text' }}" value="{{ val if not f.secret else '' }}" placeholder="{{ 'Configured — leave blank to keep' if f.configured and f.secret else ('Optional' if not f.configured else val) }}" autocomplete="off"></label>{% endfor %}
+          <button class="btn primary" type="submit">Save provider</button>
+        </form>
+      </div>
+    </details>
+  {% endfor %}
+  </div></div>
+</details>
+{% endfor %}
+<div class="panel v9-provider-note"><strong>Safety rule</strong><p>ArrNexus provider credentials fill missing AIOStreams user fields during Auto-Wire. Existing AIOStreams user values and operator-level defaults/forced credentials are not blindly replaced.</p></div>
+{% endblock %}

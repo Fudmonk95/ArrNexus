@@ -202,7 +202,7 @@ def main() -> int:
         require(route in main_source, f"missing v9.1 route {route}")
     require("data-theme" not in base, "private app still selects legacy themes")
     require("Theme gallery" not in profile_source and "data-theme-choice" not in profile_source, "theme UI not removed")
-    require("ArrNexus v9.1 — one product-wide visual system" in css and "--bg:#050506" in css, "unified black v9.1 design system missing")
+    require("ArrNexus v9.1 — one product-wide visual system" in css and ("--bg:#050506" in css or "--bg:#030304" in css), "unified black v9.1+ design system missing")
     require("stale-while-revalidate" in js and "inflight" in js and "pointerover" in js, "v9.1 soft-navigation regression layer missing")
     require("_DASHBOARD_CACHE_TTL" in main_source and "dashboard_snapshot" in main_source and "asyncio.to_thread(scan_source)" in main_source, "dashboard stale-while-revalidate cache missing")
     require("_EXCLUDED_DIRS" in release_source and '"data"' in release_source and '"session_secret"' in release_source, "safe public release exporter missing exclusions")

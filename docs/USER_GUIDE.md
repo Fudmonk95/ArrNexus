@@ -394,6 +394,46 @@ ArrNexus distinguishes source content, virtual/cache layers and managed Arr/medi
 
 `dumb-namespace`, `routing`
 
+## Lists & Watchlists
+
+v10.2 treats external lists as ArrNexus request sources: titles are identified, previewed, routed to the chosen specialist Radarr/Sonarr library and optionally acquired using the normal Usenet/Debrid planner.
+
+### Before you start
+
+- Configure the Radarr/Sonarr destinations that may receive list items.
+- For private Trakt data, configure a Trakt application and authorize the user account.
+
+### Setup
+
+1. Open Lists & Watchlists as an administrator.
+2. Configure only the list providers you use: Trakt OAuth, TMDb, Plex Watchlist, Simkl, IMDb public lists, RSS/Atom or Custom JSON.
+3. Create a list definition, choose movie/TV/mixed, destinations, acquisition strategy and sync interval.
+4. Preview before enabling scheduled sync.
+
+### How to use it
+
+- Preview separates existing, already requested, would-add and unmatched titles.
+- Sync now adds only new matched titles; scheduled sync repeats the same bounded flow.
+- Existing titles are not moved between specialist libraries merely because another list contains them.
+
+### What working looks like
+
+- New movies/shows appear in the configured Radarr/Sonarr destination and the list run history records totals/adds/errors.
+
+### If it does not work
+
+- If Trakt OAuth fails, verify the exact callback URL shown by ArrNexus is registered in the Trakt application.
+- If matching fails, confirm the list exposes IMDb/TMDb/TVDb IDs or a clean title/year.
+
+### Safety / privacy
+
+- List sync never deletes existing library media.
+- Provider credentials remain in persistent settings and are masked in the UI.
+
+### Related guides
+
+`routing`, `acquisition`, `providers`
+
 ## DUMB mount namespace & /proc/<PID>/root
 
 In DUMB deployments useful virtual mounts can exist inside another process mount namespace. ArrNexus can view those paths through /proc/<PID>/root while keeping logical paths such as /mnt/debrid in the UI.
@@ -937,6 +977,43 @@ The AIOStreams Bridge manages one AIOStreams user configuration safely: verify, 
 
 `providers`
 
+## AIOMetadata
+
+v10.2 adds a managed AIOMetadata connection for service health, masked per-user configuration visibility, explicit manifest verification and AIOStreams relationship checks.
+
+### Before you start
+
+- A reachable AIOMetadata instance; user UUID/alias and password only when you want per-user configuration visibility.
+
+### Setup
+
+1. Open AIOMetadata and save its base URL.
+2. Optionally save the user UUID/alias and password.
+3. If you want manifest verification, paste the exact generated manifest URL; ArrNexus does not invent compressed configuration URLs.
+
+### How to use it
+
+- Use the health card to verify /health.
+- Inspect masked user configuration and whether the current AIOStreams user configuration references the same AIOMetadata host.
+
+### What working looks like
+
+- Health responds successfully and any requested user configuration is returned as JSON with sensitive fields masked.
+
+### If it does not work
+
+- A healthy service with unreadable user config usually means the UUID/password is wrong or the API path is unavailable.
+- If AIOStreams is not linked, verify its active user configuration rather than forcing a write from AIOMetadata.
+
+### Safety / privacy
+
+- ArrNexus keeps AIOMetadata authoritative and does not overwrite its remote configuration from this page.
+- Secrets are never rendered raw.
+
+### Related guides
+
+`aiostreams`, `providers`
+
 # Operations
 
 ## Stack Readiness
@@ -998,7 +1075,7 @@ Problem Centre turns detected broken links, missing media and other diagnosable 
 
 ## Maintenance, repair & housekeeping
 
-Maintenance combines backups/repair context with filesystem/source/link/import inventory work and v10.1 Library Consolidation for duplicate movie/episode symlinks.
+Maintenance combines repair context with filesystem/source/link/import inventory work, Library Consolidation and v10.2 dependency-protected provider duplicate cleanup.
 
 ### Before you start
 
@@ -1012,6 +1089,7 @@ Maintenance combines backups/repair context with filesystem/source/link/import i
 
 - Inspect broken links/source mappings first, then run a specific repair action.
 - Open Library Consolidation to scan every managed movie/TV symlink and preview duplicate groups before applying cleanup.
+- Open Provider Duplicate Cleanup to review redundant symlinks and exact provider sources with surviving-link dependency protection.
 - Use Diagnostics when collecting support information.
 
 ### What working looks like
@@ -1027,7 +1105,7 @@ Maintenance combines backups/repair context with filesystem/source/link/import i
 ### Safety / privacy
 
 - Take a database backup before broad maintenance or upgrades.
-- Provider deletion in Library Consolidation is off by default and requires an exact Real-Debrid torrent match.
+- Provider deletion requires a fresh preview, zero surviving managed-link dependencies and one exact Real-Debrid torrent match.
 
 ### Related guides
 
@@ -1107,8 +1185,8 @@ Language Guard uses ffprobe against the actual media stream metadata before a DM
 
 ### Setup
 
-1. Configure required audio/subtitle languages and unknown-metadata behaviour under Settings.
-2. Choose whether rejected Real-Debrid sources should be removed after an exact provider match; v10.1 enables this by default.
+1. English audio is required by default; English subtitles are optional by default.
+2. Choose whether confirmed rejected Real-Debrid sources should be removed after an exact provider match.
 
 ### How to use it
 
@@ -1118,12 +1196,12 @@ Language Guard uses ffprobe against the actual media stream metadata before a DM
 ### What working looks like
 
 - Audio/subtitle streams are reported explicitly and policy passes/fails with a reason.
-- Probe failures display as Language check failed; policy failures display as Language rejected; successful provider cleanup removes the rejected item from Waiting.
+- Confirmed non-English policy failures display as Language rejected. Probe failures or unknown stream language metadata become Manual review and never authorize destructive provider cleanup.
 
 ### If it does not work
 
 - Filename language tags are not enough; if ffprobe cannot access the actual path, fix namespace/mount visibility.
-- Unknown metadata may fail closed by policy.
+- Unknown metadata can block import for review, but it is not treated as proof that a provider source is safe to delete.
 - If rejected-source cleanup is skipped, inspect the job result: ArrNexus will state whether RD was disconnected, no exact torrent matched, or the match was ambiguous.
 
 ### Safety / privacy

@@ -2,8 +2,8 @@
 
 This file is generated from `app/main.py` routes and the same `app/help_catalog.py` mapping used by the contextual Help button.
 
-- Application routes/actions audited: **124**
-- Help topics: **43**
+- Application routes/actions audited: **139**
+- Help topics: **45**
 - Primary private pages receive a contextual Help link from the application shell.
 - Public/auth/bootstrap pages are documented in the Help Centre and user guide even when they do not use the private shell.
 
@@ -133,6 +133,21 @@ This file is generated from `app/main.py` routes and the same `app/help_catalog.
 | GET | `/aiostreams/search` | `aiostreams_search_page` | `aiostreams` |
 | GET | `/api/aiostreams/status` | `aiostreams_status_api` | `aiostreams` |
 | GET | `/api/aiostreams/search` | `aiostreams_search_api` | `aiostreams` |
+| GET | `/lists` | `lists_page` | `lists` |
+| POST | `/lists/providers` | `lists_provider_save` | `lists` |
+| GET | `/lists/trakt/connect` | `lists_trakt_connect` | `lists` |
+| GET | `/lists/trakt/callback` | `lists_trakt_callback` | `lists` |
+| POST | `/lists/trakt/disconnect` | `lists_trakt_disconnect` | `lists` |
+| POST | `/lists/save` | `lists_save` | `lists` |
+| POST | `/lists/{list_id}/delete` | `lists_delete` | `lists` |
+| GET | `/lists/{list_id}/preview` | `lists_preview` | `lists` |
+| POST | `/lists/{list_id}/sync` | `lists_sync` | `lists` |
+| GET | `/api/lists` | `lists_api` | `lists` |
+| GET | `/aiometadata` | `aiometadata_page` | `aiometadata` |
+| POST | `/aiometadata/save` | `aiometadata_save` | `aiometadata` |
+| GET | `/api/aiometadata/status` | `aiometadata_status_api` | `aiometadata` |
+| GET | `/maintenance/provider-cleanup` | `provider_cleanup_page` | `maintenance` |
+| POST | `/maintenance/provider-cleanup/apply` | `provider_cleanup_apply` | `maintenance` |
 
 ## Release rule
 

@@ -17,11 +17,12 @@ from .db import log_import, add_activity, learn_exact_route, track_request, requ
 
 
 class LanguageRejectedSafe(ImportErrorSafe):
-    """Controlled Language Guard rejection, distinct from an ArrNexus failure."""
-    def __init__(self, message: str, *, cleanup: dict | None = None, replacement_started: bool = False):
+    """Controlled Language Guard block, distinct from an ArrNexus failure."""
+    def __init__(self, message: str, *, cleanup: dict | None = None, replacement_started: bool = False, manual_review: bool = False):
         super().__init__(message)
         self.cleanup = cleanup or {}
         self.replacement_started = bool(replacement_started)
+        self.manual_review = bool(manual_review)
 
 
 def _client_for_instance(inst: ArrInstance):
@@ -173,8 +174,11 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
     policy = load_language_policy()
     if policy.enabled and not bool(language.get("compliant")):
         reason = str(language.get("summary") or "Language policy not met")
+        manual_review = str(language.get("status") or "") == "unknown"
         replacement_started = False
-        if policy.auto_upgrade_search:
+        # Unknown/probe-failed media is held for review rather than treated as
+        # proven non-English.  Do not trigger replacement or provider cleanup.
+        if policy.auto_upgrade_search and not manual_review:
             try:
                 await client.search(int(arr_item["id"]))
                 replacement_started = True
@@ -183,18 +187,23 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
         if replacement_started:
             reason += "; English replacement search queued in Arr"
 
-        cleanup = {"ok": False, "deleted": False, "reason": "Rejected-source cleanup disabled"}
-        if policy.remove_rejected_debrid:
+        cleanup = {"ok": False, "deleted": False, "reason": "Source retained for manual review" if manual_review else "Rejected-source cleanup disabled"}
+        if policy.remove_rejected_debrid and not manual_review and bool(language.get("destructive_safe")):
             try:
                 cleanup = await rd.delete_source_torrent_exact(source_path, item.size_bytes)
             except Exception as exc:
                 cleanup = {"ok": False, "deleted": False, "reason": str(exc)}
+        elif policy.remove_rejected_debrid and not manual_review and not bool(language.get("destructive_safe")):
+            cleanup = {"ok": False, "deleted": False, "reason": "Cleanup refused because the language decision is not destructive-safe"}
 
         if cleanup.get("deleted"):
             reason += f"; rejected Real-Debrid source removed (torrent {cleanup.get('torrent_id')})"
             state = "language_rejected_removed"
             invalidate_scan_cache()
             invalidate_library_cache()
+        elif manual_review:
+            reason += "; source retained — no destructive cleanup is allowed for uncertain/probe-failed results"
+            state = "language_review"
         else:
             reason += f"; rejected source retained: {cleanup.get('reason') or 'provider cleanup did not complete'}"
             state = "language_rejected"
@@ -209,7 +218,8 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
         )
         add_activity("language_guard", item.title_guess, reason, source_path)
         raise LanguageRejectedSafe(
-            f"Language Guard blocked import: {reason}", cleanup=cleanup, replacement_started=replacement_started
+            f"Language Guard {'requires manual review' if manual_review else 'blocked import'}: {reason}",
+            cleanup=cleanup, replacement_started=replacement_started, manual_review=manual_review
         )
 
     if service == "radarr":
@@ -291,14 +301,14 @@ async def discover_lookup(term: str, media_type: str) -> list[dict]:
     return results
 
 
-async def discover_add(candidate: dict, media_type: str, destination_key: str = "auto", search: bool = True, user_id: int | None = None) -> dict:
+async def discover_add(candidate: dict, media_type: str, destination_key: str = "auto", search: bool = True, user_id: int | None = None, monitored: bool = True) -> dict:
     if media_type == "movie":
         decision = decide_movie(candidate.get("title", ""), candidate)
         key = decision.key if destination_key == "auto" else destination_key
         root = movie_roots()[key]
         client, inst = client_for_destination("radarr", key)
         existing = [x for x in await client.movies() if x.get("tmdbId") and x.get("tmdbId") == candidate.get("tmdbId")]
-        movie = existing[0] if existing else await client.add_movie(candidate, root, search=False)
+        movie = existing[0] if existing else await client.add_movie(candidate, root, search=False, monitored=monitored)
         if search:
             await client.search(int(movie["id"]))
         inst_name = inst.instance if inst else "main"
@@ -311,7 +321,7 @@ async def discover_add(candidate: dict, media_type: str, destination_key: str = 
     client, inst = client_for_destination("sonarr", key)
     tvdb = candidate.get("tvdbId")
     existing = [x for x in await client.series() if tvdb and x.get("tvdbId") == tvdb]
-    series = existing[0] if existing else await client.add_series(candidate, root, search=False)
+    series = existing[0] if existing else await client.add_series(candidate, root, search=False, monitored=monitored)
     if search:
         await client.search(int(series["id"]))
     inst_name = inst.instance if inst else "main"

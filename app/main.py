@@ -85,6 +85,9 @@ from .updater import (
     DEFAULT_REPOSITORY as UPDATE_DEFAULT_REPOSITORY, SELF_UPDATE_CAPABLE,
     check_for_update, start_install as start_self_update, status as update_status,
 )
+from . import lists as media_lists
+from . import aiometadata as aiometadata_integration
+from . import provider_cleanup as provider_cleanup_tools
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title="ArrNexus")
@@ -93,10 +96,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.1.0-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.2.0-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "10.1.0-beta"
+APP_VERSION = "10.2.0-beta"
 
 
 @app.middleware("http")
@@ -205,6 +208,15 @@ async def startup():
         task.add_done_callback(RUNNING_TASKS.discard)
     except Exception as exc:
         try: log_event("warning", "selfheal", "scheduler_start_failed", str(exc))
+        except Exception: pass
+
+    # v10.2 list automation uses the same bounded in-process scheduler model.
+    try:
+        list_task = asyncio.create_task(media_lists.scheduler_loop())
+        RUNNING_TASKS.add(list_task)
+        list_task.add_done_callback(RUNNING_TASKS.discard)
+    except Exception as exc:
+        try: log_event("warning", "lists", "scheduler_start_failed", str(exc))
         except Exception: pass
 
     # Pre-warm expensive namespace inventories off the request path.  This is
@@ -1128,9 +1140,17 @@ async def run_import_job(job_id: int):
             completed += 1
         except LanguageRejectedSafe as exc:
             cleanup = getattr(exc, "cleanup", {}) or {}
-            cleanup_text = "Rejected Debrid source removed" if cleanup.get("deleted") else "Rejected source retained for manual review"
-            update_job_item(iid, status="rejected", stage="language_rejected", message=f"{str(exc)} · {cleanup_text}")
-            log_event("warning","language_guard","item_rejected",str(exc),{"job_id":job_id,"source":source_path,"provider_deleted":bool(cleanup.get("deleted"))})
+            manual_review = bool(getattr(exc, "manual_review", False))
+            if manual_review:
+                cleanup_text = "Manual review required · source retained"
+                stage = "language_review"
+                event = "item_review"
+            else:
+                cleanup_text = "Rejected Debrid source removed" if cleanup.get("deleted") else "Rejected source retained"
+                stage = "language_rejected"
+                event = "item_rejected"
+            update_job_item(iid, status="rejected", stage=stage, message=f"{str(exc)} · {cleanup_text}")
+            log_event("warning","language_guard",event,str(exc),{"job_id":job_id,"source":source_path,"provider_deleted":bool(cleanup.get("deleted")),"manual_review":manual_review})
             rejected += 1
         except Exception as exc:
             update_job_item(iid, status="error", stage="error", message=str(exc))
@@ -3460,3 +3480,220 @@ async def aiostreams_search_api(request: Request):
     except _aio.AIOStreamsError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 # ===== END ARRNEXUS V8 AIOSTREAMS ROUTES ======================================
+
+
+# ===== ARRNEXUS V10.2 LISTS / AIOMETADATA / PROVIDER CLEANUP ================
+
+def _v102_admin(request: Request) -> dict:
+    require_admin(request)
+    return current_user(request)
+
+
+def _v102_truth(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _v102_origin(request: Request) -> str:
+    configured = (setting_get("app.public_url", "") or "").strip().rstrip("/")
+    if configured:
+        return configured
+    forwarded_proto = str(request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip()
+    forwarded_host = str(request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc).split(",")[0].strip()
+    return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+
+
+async def _v102_lists_context(request: Request, notice: str = "", error: str = "", preview_list_id: int = 0, preview: dict | None = None):
+    state = media_lists.provider_state()
+    trakt_lists = []
+    if state.get("trakt_connected"):
+        try:
+            trakt_lists = await media_lists.trakt_personal_lists()
+        except Exception as exc:
+            if not error:
+                error = f"Trakt personal lists could not be loaded: {exc}"
+    return {
+        "request": request, "notice": notice, "error": error,
+        "lists": media_lists.list_definitions(), "runs": media_lists.list_runs(limit=30),
+        "source_types": media_lists.SOURCE_TYPES, "strategies": STRATEGIES,
+        "movie_destinations": sorted(movie_roots()), "tv_destinations": sorted(tv_roots()),
+        "provider_state": state, "trakt_lists": trakt_lists,
+        "preview_list_id": int(preview_list_id or 0), "preview": preview,
+    }
+
+
+@app.get("/lists", response_class=HTMLResponse)
+async def lists_page(request: Request, notice: str = "", error: str = ""):
+    _v102_admin(request)
+    return templates.TemplateResponse("lists.html", await _v102_lists_context(request, notice, error))
+
+
+@app.post("/lists/providers")
+async def lists_provider_save(request: Request):
+    _v102_admin(request)
+    form = await request.form()
+    try:
+        media_lists.save_trakt_app(str(form.get("trakt_client_id") or ""), str(form.get("trakt_client_secret") or ""))
+        media_lists.save_tmdb(str(form.get("tmdb_api_key") or ""))
+        media_lists.save_simkl(str(form.get("simkl_client_id") or ""), str(form.get("simkl_access_token") or ""))
+        log_event("info", "lists", "provider_settings_saved", "List provider settings updated")
+        return RedirectResponse("/lists?notice=" + quote("List provider settings saved"), status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/lists?error=" + quote(str(exc)), status_code=303)
+
+
+@app.get("/lists/trakt/connect")
+async def lists_trakt_connect(request: Request):
+    _v102_admin(request)
+    state = secrets.token_urlsafe(24)
+    request.session["trakt_oauth_state"] = state
+    redirect_uri = _v102_origin(request) + "/lists/trakt/callback"
+    setting_set("lists.trakt.redirect_uri", redirect_uri)
+    try:
+        url = media_lists.trakt_authorize_url(redirect_uri, state)
+        return RedirectResponse(url, status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/lists?error=" + quote(str(exc)), status_code=303)
+
+
+@app.get("/lists/trakt/callback")
+async def lists_trakt_callback(request: Request, code: str = "", state: str = ""):
+    _v102_admin(request)
+    expected = str(request.session.pop("trakt_oauth_state", "") or "")
+    if not expected or not secrets.compare_digest(expected, str(state or "")):
+        return RedirectResponse("/lists?error=" + quote("Trakt OAuth state did not match; connection was refused"), status_code=303)
+    if not code:
+        return RedirectResponse("/lists?error=" + quote("Trakt did not return an authorization code"), status_code=303)
+    redirect_uri = setting_get("lists.trakt.redirect_uri") or (_v102_origin(request) + "/lists/trakt/callback")
+    try:
+        await media_lists.trakt_exchange_code(code, redirect_uri)
+        log_event("info", "lists", "trakt_connected", "Trakt account connected")
+        return RedirectResponse("/lists?notice=" + quote("Trakt connected"), status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/lists?error=" + quote(str(exc)), status_code=303)
+
+
+@app.post("/lists/trakt/disconnect")
+async def lists_trakt_disconnect(request: Request):
+    _v102_admin(request)
+    media_lists.trakt_disconnect()
+    log_event("warning", "lists", "trakt_disconnected", "Trakt account disconnected")
+    return RedirectResponse("/lists?notice=" + quote("Trakt disconnected"), status_code=303)
+
+
+@app.post("/lists/save")
+async def lists_save(request: Request):
+    _v102_admin(request)
+    form = await request.form()
+    try:
+        raw_id = str(form.get("list_id") or "").strip()
+        list_id = int(raw_id) if raw_id.isdigit() else None
+        saved = media_lists.save_definition(
+            list_id=list_id, name=str(form.get("name") or ""), source_type=str(form.get("source_type") or ""),
+            source_ref=str(form.get("source_ref") or ""), media_type=str(form.get("media_type") or "mixed"),
+            movie_destination=str(form.get("movie_destination") or "auto"), tv_destination=str(form.get("tv_destination") or "auto"),
+            acquisition_strategy=str(form.get("acquisition_strategy") or "automatic"), monitor=_v102_truth(form.get("monitor")),
+            search_automatically=_v102_truth(form.get("search_automatically")), enabled=_v102_truth(form.get("enabled")),
+            sync_interval_hours=int(form.get("sync_interval_hours") or 12),
+        )
+        log_event("info", "lists", "definition_saved", f"List #{saved} saved", {"list_id": saved})
+        return RedirectResponse("/lists?notice=" + quote("List automation saved"), status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/lists?error=" + quote(str(exc)), status_code=303)
+
+
+@app.post("/lists/{list_id}/delete")
+async def lists_delete(request: Request, list_id: int):
+    _v102_admin(request)
+    media_lists.delete_definition(list_id)
+    log_event("warning", "lists", "definition_deleted", f"List #{list_id} deleted")
+    return RedirectResponse("/lists?notice=" + quote("List automation deleted"), status_code=303)
+
+
+@app.get("/lists/{list_id}/preview", response_class=HTMLResponse)
+async def lists_preview(request: Request, list_id: int):
+    _v102_admin(request)
+    defn = media_lists.get_definition(list_id)
+    if not defn:
+        raise HTTPException(404, "List not found")
+    try:
+        preview = await media_lists.sync_definition(defn, preview=True, user_id=int(current_user(request).get("id") or 0))
+        return templates.TemplateResponse("lists.html", await _v102_lists_context(request, preview_list_id=list_id, preview=preview))
+    except Exception as exc:
+        return templates.TemplateResponse("lists.html", await _v102_lists_context(request, error=str(exc), preview_list_id=list_id))
+
+
+@app.post("/lists/{list_id}/sync")
+async def lists_sync(request: Request, list_id: int):
+    user = _v102_admin(request)
+    defn = media_lists.get_definition(list_id)
+    if not defn:
+        raise HTTPException(404, "List not found")
+    try:
+        result = await media_lists.sync_definition(defn, preview=False, user_id=int(user.get("id") or 0))
+        msg = f"List sync complete: {result.get('added', 0)} added, {result.get('unmatched', 0)} unmatched"
+        return RedirectResponse("/lists?notice=" + quote(msg), status_code=303)
+    except Exception as exc:
+        log_event("error", "lists", "manual_sync_failed", str(exc), {"list_id": list_id})
+        return RedirectResponse("/lists?error=" + quote(str(exc)), status_code=303)
+
+
+@app.get("/api/lists")
+async def lists_api(request: Request):
+    _v102_admin(request)
+    return JSONResponse({"lists": media_lists.list_definitions(), "providers": media_lists.provider_state()})
+
+
+@app.get("/aiometadata", response_class=HTMLResponse)
+async def aiometadata_page(request: Request, notice: str = "", error: str = ""):
+    _v102_admin(request)
+    raw = aiometadata_integration.connection(mask=False)
+    state = await aiometadata_integration.page_state()
+    return templates.TemplateResponse("aiometadata.html", {"request": request, "state": state, "raw": raw, "notice": notice, "error": error})
+
+
+@app.post("/aiometadata/save")
+async def aiometadata_save(request: Request):
+    _v102_admin(request)
+    form = await request.form()
+    try:
+        aiometadata_integration.save_connection(str(form.get("url") or ""), str(form.get("user_uuid") or ""), str(form.get("password") or ""), str(form.get("manifest_url") or ""))
+        state = await aiometadata_integration.health()
+        if not state.get("ok"):
+            raise RuntimeError(state.get("reason") or "AIOMetadata health check failed")
+        log_event("info", "aiometadata", "connection_saved", "AIOMetadata connection verified")
+        return RedirectResponse("/aiometadata?notice=" + quote("AIOMetadata saved and health check passed"), status_code=303)
+    except Exception as exc:
+        log_event("warning", "aiometadata", "connection_failed", str(exc))
+        return RedirectResponse("/aiometadata?error=" + quote(str(exc)), status_code=303)
+
+
+@app.get("/api/aiometadata/status")
+async def aiometadata_status_api(request: Request):
+    _v102_admin(request)
+    return JSONResponse(await aiometadata_integration.page_state())
+
+
+@app.get("/maintenance/provider-cleanup", response_class=HTMLResponse)
+async def provider_cleanup_page(request: Request, notice: str = "", error: str = ""):
+    _v102_admin(request)
+    try:
+        preview = await asyncio.to_thread(provider_cleanup_tools.scan_provider_cleanup)
+    except Exception as exc:
+        preview = {"rows": [], "digest": "", "duplicate_groups": 0, "recommended_links": 0, "provider_candidates": 0}
+        error = error or f"Provider dependency scan unavailable: {exc}"
+    return templates.TemplateResponse("provider_cleanup.html", {"request": request, "preview": preview, "notice": notice, "error": error})
+
+
+@app.post("/maintenance/provider-cleanup/apply")
+async def provider_cleanup_apply(request: Request, digest: str = Form(...), action: str = Form("both")):
+    _v102_admin(request)
+    try:
+        result = await provider_cleanup_tools.apply_provider_cleanup(digest, action)
+        deleted = sum(1 for x in result.get("provider_cleanup") or [] if x.get("deleted"))
+        msg = f"Provider cleanup complete: {len(result.get('removed_links') or [])} link(s) removed, {deleted} exact RD source(s) deleted"
+        log_event("warning", "provider_cleanup", "apply", msg, {"action": action})
+        return RedirectResponse("/maintenance/provider-cleanup?notice=" + quote(msg), status_code=303)
+    except Exception as exc:
+        log_event("error", "provider_cleanup", "apply_failed", str(exc), {"action": action})
+        return RedirectResponse("/maintenance/provider-cleanup?error=" + quote(str(exc)), status_code=303)
+# ===== END ARRNEXUS V10.2 FEATURES ===========================================
