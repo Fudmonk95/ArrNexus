@@ -29,7 +29,7 @@ from .db import (
     add_scrape, update_scrape, list_scrapes, ui_pref_get, ui_pref_set,
     update_user_access, requests_today, title_timeline, all_settings, replace_nonsecret_settings, request_rows, update_request_progress,
 )
-from .scanner import scan_source, inspect_item, normalize_title, human_size, invalidate_scan_cache
+from .scanner import scan_source, scan_media_root, inspect_item, normalize_title, human_size, invalidate_scan_cache
 from .routing import decide_movie, decide_tv
 from .arr import RadarrClient, SonarrClient, LidarrClient, ProwlarrClient, ArrError, poster_url
 from .router_service import import_one, route_item, discover_lookup, discover_add, client_for_instance, LanguageRejectedSafe
@@ -101,10 +101,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.4.3-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.4.4-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "10.4.3-beta"
+APP_VERSION = "10.4.4-beta"
 
 
 @app.middleware("http")
@@ -786,6 +786,7 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
                     "language_key": r.get("language_badge_key") or "unchecked",
                     "language_label": r.get("language_badge_label") or "Language unchecked",
                     "state": r.get("state") or "waiting",
+                    "provenance": r.get("provenance") or "DMM / provider source",
                 })
             primary["series_sources"] = sorted(series_sources, key=lambda x: (x["seasons"] or [999], x["name"].lower()))
             primary["series_seasons"] = sorted(seasons)
@@ -1084,7 +1085,16 @@ async def refresh_dashboard(request: Request):
 
 
 async def _build_inbox_snapshot() -> dict:
-    items = await asyncio.to_thread(scan_source)
+    # v10.4.4 treats ArrNexus-recovered media as a first-class DMM Inbox source.
+    # Each top-level recovered folder is one source pack, so separate Tracy
+    # Beaker Season 1/2/3 recoveries join existing Season 4/5 provider packs on
+    # the same series card instead of living in a disconnected recovery view.
+    provider_items, recovered_items = await asyncio.gather(
+        asyncio.to_thread(scan_source),
+        asyncio.to_thread(scan_media_root, archive_media.extraction_root()),
+    )
+    by_path = {x.path: x for x in [*provider_items, *recovered_items]}
+    items = list(by_path.values())
     raw_rows = await enrich_items(items)
     # RD removal can take a moment to disappear from the mounted source tree.
     # Once ArrNexus has an exact provider deletion success, never put that item
@@ -3883,6 +3893,8 @@ async def tv_recovery_split(request: Request):
     allow_estimated = _v102_truth(form.get("allow_estimated")) if '_v102_truth' in globals() else str(form.get("allow_estimated") or "").lower() in {"1","true","yes","on"}
     try:
         result = await asyncio.to_thread(tv_recovery.split_plan, digest, file_path, allow_estimated)
+        invalidate_scan_cache()
+        _INBOX_SNAPSHOT.clear()
         plan = cache_get(f"tv_recovery:plan:{digest}")
         return templates.TemplateResponse("tv_recovery.html", {"request": request, "plan": plan, "result": result, "error": ""})
     except Exception as exc:
@@ -3892,6 +3904,32 @@ async def tv_recovery_split(request: Request):
 
 
 # ===== ARRNEXUS V10.4 ARCHIVED MEDIA RECOVERY ===============================
+
+async def run_archive_inspect_job(job_id: int):
+    job, items = get_job(job_id)
+    if not job:
+        return
+    update_job(job_id, status="running", message="RAR catalogue inspection in progress")
+    completed = failed = 0
+    for ji in items:
+        iid = int(ji["id"])
+        source_path = str(ji.get("source_path") or "")
+        try:
+            update_job_item(iid, status="running", stage="inspect", message="Reading archive catalogue in the background; this page can be left safely")
+            result = await asyncio.to_thread(archive_media.inspect_archive, source_path, force=True)
+            completed += 1
+            update_job_item(
+                iid, status="complete", stage="complete",
+                message=f"Catalogue cached: {result.get('media_count', 0)} video member(s) · {result.get('health', 'unknown')} archive",
+            )
+            log_event("info", "archive_recovery", "inspect_job_complete", f"Inspected {Path(source_path).name}", {"job_id": job_id, "media": result.get("media_count", 0)})
+        except Exception as exc:
+            failed += 1
+            update_job_item(iid, status="error", stage="error", message=str(exc))
+            log_event("error", "archive_recovery", "inspect_job_failed", str(exc), {"source": source_path, "job_id": job_id})
+        update_job(job_id, completed=completed, failed=failed, message=f"{completed} inspected, {failed} failed")
+    update_job(job_id, status="complete_with_errors" if failed else "complete", completed=completed, failed=failed, message=f"Finished: {completed} archive(s) inspected, {failed} failed")
+
 
 async def run_archive_verify_job(job_id: int):
     job, items = get_job(job_id)
@@ -3946,6 +3984,8 @@ async def run_archive_extract_job(job_id: int):
                 expected_fingerprint=str(row.get("fingerprint") or ""), selected_media=selected_media,
             )
             completed += 1
+            invalidate_scan_cache()
+            _INBOX_SNAPSHOT.clear()
             target = str(result.get("target") or "")
             skipped = len(result.get("failed_after_extract") or [])
             update_job_item(iid, status="complete", stage="complete", message=f"Recovered {result.get('recovered', 0)} verified media file(s); {skipped} skipped → {target}")
@@ -3971,10 +4011,13 @@ async def archived_media_page(request: Request, refresh: int = 0, inspect_path: 
         if inspect_path:
             if not is_within_logical(inspect_path, source_root()):
                 raise RuntimeError("Archive path is outside the DMM source root")
-            inspection = await asyncio.to_thread(archive_media.inspect_archive, inspect_path)
-            storage = await asyncio.to_thread(archive_media.storage_state, int((inspection or {}).get("unpacked_size") or 0))
-            if identity_q.strip():
-                identity_results = await media_identity.search_tmdb(identity_q.strip(), identity_type or "tv", limit=12)
+            inspection = await asyncio.to_thread(archive_media.cached_inspection, inspect_path)
+            if inspection is None:
+                page_error = "This archive has not completed a background inspection yet. Start Inspect from the archive list and return when that job finishes."
+            else:
+                storage = await asyncio.to_thread(archive_media.storage_state, int((inspection or {}).get("unpacked_size") or 0))
+                if identity_q.strip():
+                    identity_results = await media_identity.search_tmdb(identity_q.strip(), identity_type or "tv", limit=12)
     except Exception as exc:
         page_error = str(exc)
     return templates.TemplateResponse("archive_media.html", {
@@ -4036,7 +4079,23 @@ async def archived_media_identity(request: Request):
         "source": "tmdb",
     })
     add_activity("media_identity", identity["title"], "Resolved archived source identity via TMDb", source_path)
+    _INBOX_SNAPSHOT.clear()
     return RedirectResponse("/maintenance/archives?inspect_path=" + quote(source_path) + "&notice=" + quote(f"Identity set to {identity['title']}"), status_code=303)
+
+
+@app.post("/maintenance/archives/inspect")
+async def archived_media_inspect(request: Request):
+    require_admin(request)
+    form = await request.form()
+    source_path = str(form.get("source_path") or "").strip()
+    if not is_within_logical(source_path, source_root()):
+        raise HTTPException(400, "Invalid archive source")
+    row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
+    if not row:
+        raise HTTPException(404, "Archive source was not found")
+    jid = create_job("archive_inspect", [{"source_path": source_path, "display_name": Path(source_path).name, "destination_key": "background catalogue"}])
+    _launch(run_archive_inspect_job(jid))
+    return RedirectResponse(f"/jobs/{jid}", status_code=303)
 
 
 @app.post("/maintenance/archives/verify")

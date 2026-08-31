@@ -1,5 +1,22 @@
 # Changelog
 
+## 10.4.4-beta — Unified Recovery & TV Intelligence
+
+- Moved large RAR inspection off the HTTP request path into background `archive_inspect` jobs to prevent Cloudflare 524 timeouts on very large cloud-backed archives.
+- Added cached-inspection review: completed archive catalogues reopen without re-reading the RAR until the stable source/catalogue signature changes.
+- Increased background archive-listing timeout to 30 minutes for slow virtual/debrid sources.
+- Added recovered-media root scanning to DMM Inbox inventory so ArrNexus-recovered packs are first-class Waiting/import sources.
+- Preserved one-source-pack semantics per top-level recovery folder and added provider-vs-recovered provenance to series source-pack detail.
+- Propagated archive TMDb identity onto recovered source fingerprints so Season 1/2/3 recovery packs group with existing seasons under one canonical series card.
+- Added multi-episode filename parsing for `S03E06-7`, `S03E06-E07`, `S03E06E07`, `3x06-07` and archive-style ranges.
+- Canonical TV naming now preserves joined episode ranges instead of silently dropping the trailing episode.
+- Added TMDb TV-season episode-count/runtime lookup with caching. Sonarr remains preferred for owned-series episode counts; TMDb fills gaps and supplies runtime evidence.
+- Advanced TV Recovery now analyses every TV video, not only season-only files, and can flag a nominal single episode whose runtime is approximately 2×/3× a normal episode.
+- Added range-aware split boundaries so an `S03E06-E07` source generates E06 and E07 rather than starting again at E01.
+- Added TV Recovery as a pre-Sonarr import safety gate for joined/combined media.
+- Successfully split recovered combined/joined sources are retained under `.arrnexus-originals` and excluded from future media scans while generated episodes remain visible.
+- Retained v10.4.3 independent per-member RAR verification, Language Guard fixes and DUMB-visible recovered-media storage.
+
 ## 10.4.3-beta — Recovery Pipeline & Language Inbox Hotfix
 
 - Changed RAR verification from one bulk archive test to **one independent extractor test per video member**, so a damaged season/member cannot prevent other media from being verified.

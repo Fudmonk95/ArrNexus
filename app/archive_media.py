@@ -194,6 +194,7 @@ def scan_archives(force: bool = False, limit: int = 500) -> list[dict[str, Any]]
                 "ignored": is_ignored(str(logical), fp),
                 "identity": _archive_identity(str(logical), fp, legacy_fp),
                 "verification": verify if isinstance(verify, dict) else None,
+                "inspection_cached": isinstance(cache_get(_inspection_key(fp)), dict),
                 "extracted": cache_get(f"archive_recovery:extracted:{fp}"),
             })
     except (OSError, PermissionError):
@@ -201,6 +202,30 @@ def scan_archives(force: bool = False, limit: int = 500) -> list[dict[str, Any]]
     rows.sort(key=lambda x: (x["ignored"], x["name"].lower()))
     _SCAN_CACHE = (time.monotonic(), list(rows))
     return rows
+
+
+def cached_inspection(logical_path: str) -> dict[str, Any] | None:
+    """Return a previously completed inspection without touching archive data.
+
+    Large cloud-backed archives must never be synchronously listed on an HTTP
+    request.  The background inspect job populates this cache; the review page
+    only reads it.
+    """
+    if not is_within_logical(logical_path, source_root()):
+        return None
+    actual = view_path(logical_path)
+    if not actual.is_file() or actual.suffix.lower() != ".rar":
+        return None
+    fp = _archive_fingerprint(logical_path, actual)
+    cached = cache_get(_inspection_key(fp))
+    if not isinstance(cached, dict) or cached.get("fingerprint") != fp:
+        return None
+    cached = dict(cached)
+    cached["identity"] = _archive_identity(logical_path, fp, _legacy_archive_fingerprint(actual))
+    verify = cache_get(_verification_key(fp))
+    cached["verification"] = verify if isinstance(verify, dict) and verify.get("catalogue_signature") == cached.get("catalogue_signature") else None
+    cached["cached"] = True
+    return cached
 
 
 def _extractor() -> tuple[str, str]:
@@ -338,11 +363,11 @@ def inspect_archive(logical_path: str, *, force: bool = False) -> dict[str, Any]
     kind, exe = _extractor()
     started = time.monotonic()
     if kind == "7z":
-        proc = subprocess.run([exe, "l", "-slt", "-ba", str(actual)], capture_output=True, text=True, timeout=180, check=False)
+        proc = subprocess.run([exe, "l", "-slt", "-ba", str(actual)], capture_output=True, text=True, timeout=1800, check=False)
         combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
         entries = _parse_7z_listing(proc.stdout or "", str(actual))
     else:
-        proc = subprocess.run([exe, "lb", "-c-", str(actual)], capture_output=True, text=True, timeout=180, check=False)
+        proc = subprocess.run([exe, "lb", "-c-", str(actual)], capture_output=True, text=True, timeout=1800, check=False)
         combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
         entries = [{"path": x.strip(), "size": 0, "packed_size": 0, "attributes": "", "encrypted": False, "crc": ""} for x in (proc.stdout or "").splitlines() if x.strip()]
 
@@ -779,6 +804,12 @@ def extract_archive(logical_path: str, *, expected_fingerprint: str = "", select
     shutil.rmtree(partial, ignore_errors=True)
 
     item = inspect_item(target_logical)
+    # Recovered media is a managed ArrNexus source pack. Carry the archive's
+    # resolved identity onto the recovered folder's own fingerprint so the DMM
+    # Inbox can merge Season 1/2/3 recovery packs with existing provider packs
+    # for the same series instead of displaying separate hash-suffixed cards.
+    if identity:
+        media_identity.save_identity(str(target_logical), item.fingerprint, identity)
     total_videos = len([p for p in target_actual.rglob("*") if p.is_file() and p.suffix.lower() in VIDEO_EXTS])
     log_event("info", "archive_recovery", "extracted", f"Recovered media from {Path(logical_path).name}", {
         "target": str(target_logical), "recovered": len(committed), "videos": total_videos, "skipped": len(failed_after_extract), "7z_exit": proc.returncode,

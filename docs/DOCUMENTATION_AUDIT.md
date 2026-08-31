@@ -2,7 +2,7 @@
 
 This file is generated from `app/main.py` routes and the same `app/help_catalog.py` mapping used by the contextual Help button.
 
-- Application routes/actions audited: **157**
+- Application routes/actions audited: **158**
 - Help topics: **48**
 - Primary private pages receive a contextual Help link from the application shell.
 - Public/auth/bootstrap pages are documented in the Help Centre and user guide even when they do not use the private shell.
@@ -144,6 +144,7 @@ This file is generated from `app/main.py` routes and the same `app/help_catalog.
 | POST | `/maintenance/archives/settings` | `archived_media_settings` | `archived-media` |
 | POST | `/maintenance/archives/ignore` | `archived_media_ignore` | `archived-media` |
 | POST | `/maintenance/archives/identity` | `archived_media_identity` | `archived-media` |
+| POST | `/maintenance/archives/inspect` | `archived_media_inspect` | `archived-media` |
 | POST | `/maintenance/archives/verify` | `archived_media_verify` | `archived-media` |
 | POST | `/maintenance/archives/extract` | `archived_media_extract` | `archived-media` |
 | GET | `/archive-rescue` | `archive_rescue_page` | `archive-rescue` |

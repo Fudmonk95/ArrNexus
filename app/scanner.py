@@ -14,6 +14,12 @@ VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".m2ts", ".webm"}
 AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".alac"}
 EPISODE_RE = re.compile(r"(?i)(?:\bS(?P<s>\d{1,2})E(?P<e>\d{1,3})\b|\b(?P<s2>\d{1,2})x(?P<e2>\d{1,3})\b)")
 ARCHIVE_EPISODE_RE = re.compile(r"(?i)\b(?:season|series|s)\s*0*(?P<s>\d{1,2})\s*(?:episode|ep|e)\s*0*(?P<e>\d{1,3})\b")
+MULTI_EPISODE_PATTERNS = [
+    re.compile(r"(?i)\bS0*(?P<s>\d{1,2})E0*(?P<a>\d{1,3})\s*[-–—]\s*(?:E)?0*(?P<b>\d{1,3})\b"),
+    re.compile(r"(?i)\bS0*(?P<s>\d{1,2})E0*(?P<a>\d{1,3})E0*(?P<b>\d{1,3})\b"),
+    re.compile(r"(?i)\b(?P<s>\d{1,2})x0*(?P<a>\d{1,3})\s*[-–—]\s*(?:\d{1,2}x)?0*(?P<b>\d{1,3})\b"),
+    re.compile(r"(?i)\b(?:season|series)\s*0*(?P<s>\d{1,2})\s*(?:episode|ep|e)\s*0*(?P<a>\d{1,3})\s*[-–—]\s*(?:episode|ep|e)?\s*0*(?P<b>\d{1,3})\b"),
+]
 SEASON_ONLY_RE = re.compile(r"(?i)\b(?:season|series)\s*0*(?P<s>\d{1,2})\b|\bS0*(?P<s2>\d{1,2})(?=\s*(?:complete|pack|season|series|$|[-_.]))")
 SEASON_RANGE_RE = re.compile(r"(?i)\bS0*(?P<a>\d{1,2})\s*[-–—]\s*S?0*(?P<b>\d{1,2})\b")
 YEAR_RE = re.compile(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)")
@@ -59,6 +65,10 @@ def media_files(path: Path | str, exts: set[str]) -> list[Path]:
     else:
         try:
             for p in actual.rglob("*"):
+                # ArrNexus keeps superseded combined source videos for audit/
+                # rollback without letting them re-enter Inbox/import scans.
+                if any(part in {".arrnexus-originals", ".arrnexus-partial"} for part in p.parts):
+                    continue
                 if p.is_file() and p.suffix.lower() in exts:
                     actual_files.append(p)
         except (OSError, PermissionError):
@@ -139,17 +149,38 @@ def fingerprint_files(files: list[Path]) -> str:
     return h.hexdigest()
 
 
-def episode_identity(filename: str) -> tuple[int, int] | None:
-    """Return (season, episode) for standard and archive-style TV names."""
-    m = EPISODE_RE.search(filename)
+def episode_span(filename: str) -> tuple[int, int, int] | None:
+    """Return ``(season, first_episode, last_episode)`` when the name says so.
+
+    v10.4.4 preserves joined-episode ranges such as ``S03E06-7`` instead of
+    silently collapsing them to E06.  Single episodes return the same first and
+    last number.  Runtime analysis can still discover joined episodes whose
+    filename does not advertise the range.
+    """
+    value = str(filename or "")
+    for pattern in MULTI_EPISODE_PATTERNS:
+        m = pattern.search(value)
+        if not m:
+            continue
+        season, first, last = int(m.group("s")), int(m.group("a")), int(m.group("b"))
+        if 0 < season <= 99 and 0 < first <= last <= 999 and last - first <= 50:
+            return season, first, last
+    m = EPISODE_RE.search(value)
     if m:
         season = int(m.group("s") or m.group("s2"))
         episode = int(m.group("e") or m.group("e2"))
-        return season, episode
-    m = ARCHIVE_EPISODE_RE.search(filename)
+        return season, episode, episode
+    m = ARCHIVE_EPISODE_RE.search(value)
     if m:
-        return int(m.group("s")), int(m.group("e"))
+        season, episode = int(m.group("s")), int(m.group("e"))
+        return season, episode, episode
     return None
+
+
+def episode_identity(filename: str) -> tuple[int, int] | None:
+    """Backward-compatible first episode identity. Use ``episode_span`` when ranges matter."""
+    span = episode_span(filename)
+    return (span[0], span[1]) if span else None
 
 
 def season_hints(value: str) -> list[int]:
@@ -225,22 +256,34 @@ def invalidate_scan_cache() -> None:
         _SCAN_CACHE_ROOT = ""
 
 
-def _scan_source_uncached() -> list[ScanItem]:
-    logical_root = Path(source_root())
+def scan_media_root(logical_root: Path | str) -> list[ScanItem]:
+    """Scan one source-pack root, treating each immediate child as one pack.
+
+    This is used for both the provider ``__all__`` tree and the ArrNexus
+    recovered-media root.  Season directories *inside* a recovered archive are
+    therefore not miscounted as separate source packs.
+    """
+    logical_root = Path(logical_root)
     actual_root = view_path(logical_root)
     if not actual_root.exists():
         return []
-    items = []
+    items: list[ScanItem] = []
     try:
         entries = sorted(actual_root.iterdir(), key=lambda x: x.name.lower())
     except OSError:
         return []
     for p in entries:
+        if p.name.endswith(".partial"):
+            continue
         logical = logical_root / p.name
         item = inspect_item(logical)
         if item.video_count:
             items.append(item)
     return items
+
+
+def _scan_source_uncached() -> list[ScanItem]:
+    return scan_media_root(Path(source_root()))
 
 
 def scan_source(force: bool = False) -> list[ScanItem]:

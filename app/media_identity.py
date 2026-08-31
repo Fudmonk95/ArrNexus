@@ -9,12 +9,13 @@ changed provider source cannot silently inherit an administrator's old choice.
 from pathlib import Path
 import hashlib
 import re
+import statistics
 from typing import Any
 
 import httpx
 
 from .db import cache_get, cache_set, setting_get, setting_set
-from .scanner import normalize_title, episode_identity, season_hints, video_files
+from .scanner import normalize_title, episode_identity, episode_span, season_hints, video_files
 
 TMDB_API = "https://api.themoviedb.org/3"
 TMDB_IMAGE = "https://image.tmdb.org/t/p/w342"
@@ -120,6 +121,60 @@ async def search_tmdb(query: str, media_type: str = "tv", *, expected_year: int 
     return out
 
 
+
+async def tmdb_tv_season(tmdb_id: int, season_number: int, *, force: bool = False) -> dict[str, Any]:
+    """Return episode count and runtime evidence for one TMDb TV season.
+
+    Advanced TV Recovery uses this when Sonarr does not yet own the series, and
+    also as runtime evidence even when Sonarr supplies the episode count.  The
+    result is cached because recovered packs from the same series repeatedly ask
+    about the same seasons.
+    """
+    tmdb_id = int(tmdb_id or 0)
+    season_number = int(season_number or 0)
+    if tmdb_id <= 0 or season_number <= 0:
+        return {}
+    cache_key = f"tmdb:tvseason:v1044:{tmdb_id}:{season_number}"
+    if not force:
+        cached = cache_get(cache_key)
+        if isinstance(cached, dict) and cached.get("episode_count") is not None:
+            return cached
+    key = tmdb_api_key()
+    if not key:
+        return {}
+    params = {"api_key": key, "language": "en-GB"}
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        response = await client.get(f"{TMDB_API}/tv/{tmdb_id}/season/{season_number}", params=params)
+    if response.status_code != 200:
+        return {}
+    payload = response.json() or {}
+    episodes = []
+    runtimes = []
+    for row in payload.get("episodes") or []:
+        try:
+            ep_no = int(row.get("episode_number") or 0)
+        except Exception:
+            ep_no = 0
+        try:
+            runtime = int(row.get("runtime") or 0)
+        except Exception:
+            runtime = 0
+        if runtime > 0:
+            runtimes.append(runtime)
+        episodes.append({"episode": ep_no, "runtime": runtime or None, "name": str(row.get("name") or "")[:200]})
+    typical = float(statistics.median(runtimes)) if runtimes else 0.0
+    result = {
+        "tmdb_id": tmdb_id,
+        "season": season_number,
+        "episode_count": len(episodes),
+        "typical_runtime_minutes": typical,
+        "runtime_samples": len(runtimes),
+        "episodes": episodes,
+        "source": "tmdb",
+    }
+    cache_set(cache_key, result)
+    return result
+
 def _safe_title(value: str) -> str:
     text = re.sub(r'[\\/:*?"<>|]+', " ", str(value or "")).strip().rstrip(".")
     return re.sub(r"\s+", " ", text) or "Recovered Media"
@@ -133,9 +188,11 @@ def canonical_media_name(identity: dict[str, Any], original_name: str, fallback_
     if media_type == "movie":
         year = int(identity.get("year") or 0)
         return f"{title} ({year}){suffix}" if year else f"{title}{suffix}"
-    ident = episode_identity(original_name)
-    if ident:
-        return f"{title} - S{ident[0]:02d}E{ident[1]:02d}{suffix}"
+    span = episode_span(original_name)
+    if span:
+        if span[2] > span[1]:
+            return f"{title} - S{span[0]:02d}E{span[1]:02d}-E{span[2]:02d}{suffix}"
+        return f"{title} - S{span[0]:02d}E{span[1]:02d}{suffix}"
     hints = season_hints(original_name) or list(fallback_seasons or [])
     if len(hints) == 1:
         return f"{title} - Season {hints[0]:02d}{suffix}"

@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.4.3--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.4.4--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -61,6 +61,37 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
 
 ---
+
+## 🧠 Version 10.4.4 — Unified Recovery & TV Intelligence
+
+v10.4.4 joins archived-media recovery back into the normal DMM Inbox and makes TV recovery use real series metadata instead of trusting filenames alone.
+
+### Background large-archive inspection
+
+- RAR **Inspect** is now a background job. Large cloud-backed archives such as 100+ GB Power Rangers sources no longer hold an HTTP request open until Cloudflare returns a 524.
+- Completed catalogues are cached by the stable archive fingerprint/catalogue signature and reopened instantly until the archive actually changes.
+- Background inspection allows up to 30 minutes for very large virtual archives while the browser remains responsive.
+
+### Recovered packs are first-class Inbox sources
+
+- `/mnt/debrid/arrnexus-extracted` is scanned alongside the normal DMM/provider source root.
+- Each top-level recovered folder counts as **one source pack**, even when it contains many episode files or generated `Season XX` folders.
+- Recovered source identity is propagated from the TMDb-tagged archive, so separate Tracy Beaker Season 1/2/3 recoveries merge with existing Season 4/5 provider packs on one series card.
+- Source-pack detail shows provenance (`RAR recovered` versus `DMM/provider`) and unioned season coverage.
+
+### Runtime-aware joined episode detection
+
+- Multi-episode names such as `S03E06-7`, `S03E06-E07`, `S03E06E07` and `3x06-07` retain the full range instead of collapsing to E06.
+- Sonarr remains the preferred season episode-count source. TMDb is the fallback when Sonarr does not yet own the show, and TMDb episode runtimes provide an additional sanity check.
+- A file named as one episode can still be flagged for recovery review when its actual `ffprobe` runtime is approximately 2×/3× the normal episode runtime.
+- Combined-season files use Sonarr/TMDb episode counts to build explicit runtime estimates when no chapters exist; runtime estimates always require administrator confirmation.
+- TV import now runs the recovery analysis as a safety gate before Sonarr import, preventing joined/combined media from silently entering the library as one episode.
+
+### One recovered-media storage model
+
+- Generated split episodes stay under the DUMB-visible recovered-media tree.
+- After a recovered combined/joined file is successfully split, the original recovered copy is retained under `.arrnexus-originals` and excluded from future Inbox/import scans; the original provider RAR is also retained.
+- Canonical naming preserves multi-episode ranges before splitting.
 
 ## 🛠️ Version 10.4.3 — Recovery Pipeline & Language Inbox Hotfix
 

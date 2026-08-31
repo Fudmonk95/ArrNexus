@@ -1222,7 +1222,7 @@ Language Guard uses ffprobe against actual stream metadata before a source is li
 
 ## Archived Media Recovery & RAR sources
 
-Archived Media Recovery scans the DMM __all__ tree for RAR/multipart RAR sets that the normal video scanner cannot see. v10.4.3 verifies every video member in its own extractor pass, tolerates harmless Decypharr virtual PID/mtime changes, and can recover good media from a partially damaged archive without unpacking unrelated files.
+Archived Media Recovery scans the DMM __all__ tree for RAR/multipart RAR sets that the normal video scanner cannot see. v10.4.4 runs archive inspection in a background job for very large cloud-backed RARs, verifies every video member independently, and feeds recovered source packs back into the normal DMM Inbox.
 
 ### Before you start
 
@@ -1238,7 +1238,7 @@ Archived Media Recovery scans the DMM __all__ tree for RAR/multipart RAR sets th
 ### How to use it
 
 - Scan __all__ for archives.
-- Inspect an archive; torrent padding is hidden and useful partial catalogues are cached by exact source fingerprint.
+- Start Inspect. Large archives are catalogued in a background job so reverse proxies such as Cloudflare do not time out; completed catalogues reopen from cache.
 - For ambiguous names such as season-4_202405.rar, search TMDb and choose the exact movie/TV identity.
 - Run Verify media files as a background job. Only recognised video members are tested.
 - Return to the archive, choose the verified video members you want and recover them. Failed/unverified members cannot be selected.
@@ -1248,6 +1248,7 @@ Archived Media Recovery scans the DMM __all__ tree for RAR/multipart RAR sets th
 
 - Multipart RAR sets appear once using their first volume.
 - A partial archive can still expose independently verified media members.
+- Recovered top-level folders become normal Inbox source packs and group with provider packs for the same series.
 - Only selected verified video files are persisted; XML, SQLite, artwork, nested archives and torrent padding are ignored.
 - Recovered files pass listed-size and ffprobe video validation before commit.
 - TMDb identity drives canonical title/filename previews without renaming the read-only provider source.
@@ -1309,38 +1310,44 @@ Archive Rescue finds monitored Sonarr gaps, searches the configured Prowlarr Int
 
 ## Advanced TV Recovery & combined-season splitting
 
-Advanced TV Recovery handles archive-style TV names and combined-season videos that cannot be represented by ordinary episode symlinks.
+Advanced TV Recovery analyses every TV video for combined seasons or joined episodes. Filenames are evidence rather than truth: Sonarr season counts, TMDb season counts/runtimes and ffprobe duration are combined before import.
 
 ### Before you start
 
 - ffmpeg/ffprobe are available.
-- The combined source is visible to ArrNexus.
-- Use a writable staging root with enough real storage for split output.
+- The TV source is visible to ArrNexus.
+- TMDb identity is recommended for recovered/archive sources so episode runtimes are available.
 
 ### Setup
 
-1. Configure the Season Split Staging Root on the TV Recovery page.
+1. Keep the recovered-media output root on a DUMB-visible path such as /mnt/debrid/arrnexus-extracted.
 
 ### How to use it
 
-- Analyse a combined-season source.
-- If chapter count exactly matches Sonarr's expected episode count, review the high-confidence chapter plan.
-- Runtime-estimated equal boundaries are lower-confidence and require explicit confirmation; uncertain sources remain manual.
-- Split outputs use FFmpeg stream copy where possible and are ffprobe-verified before being reported complete.
+- Analyse a TV source.
+- Normal single episodes are marked no-split.
+- Explicit ranges such as S03E06-7 are preserved and offered as E06-E07.
+- A nominal single episode whose runtime is about 2x/3x the TMDb typical runtime is flagged as a possible joined file.
+- Sonarr supplies episode counts when the series is owned; TMDb fills counts when Sonarr is not matched and supplies runtime evidence.
+- Runtime-estimated boundaries require explicit confirmation; chapter-perfect plans remain higher confidence.
+- Split outputs use FFmpeg stream copy where possible and are ffprobe-verified.
 
 ### What working looks like
 
-- Generated files have Sonarr-style SxxExx names, valid duration and a retained original source.
+- Generated files have Sonarr-style SxxExx names and remain under the DUMB-visible recovered-media tree.
+- Recovered combined/joined originals are retained under .arrnexus-originals and hidden from future Inbox scans.
 
 ### If it does not work
 
-- If one long source has no chapters, review runtime estimates carefully; intros, adverts or unequal episode lengths can make equal cuts inaccurate.
-- A symlink cannot point to a segment of a file, so split episodes consume real staging storage.
+- If runtime metadata is unavailable, resolve the exact TMDb identity and analyse again.
+- Equal-runtime estimates are still estimates; intros, adverts or unequal episode lengths require review.
+- A symlink cannot point to a segment of a file, so split episodes consume real recovered-media storage.
 
 ### Safety / privacy
 
-- The original combined provider source is never deleted automatically.
-- Stale analysis plans are refused if the source fingerprint changes.
+- TV import runs this analysis as a pre-Sonarr safety gate for joined/combined media.
+- Runtime-only split boundaries are never applied without explicit confirmation.
+- The provider RAR/source is retained.
 
 ### Related guides
 

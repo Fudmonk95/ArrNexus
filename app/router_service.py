@@ -161,9 +161,17 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
     if override not in {"movie", "tv"}:
         override = ""
     item = replace(resolved_item, media_type=override) if override and override != resolved_item.media_type else resolved_item
-    if item.media_type == "tv" and bool(getattr(item, "combined_season", False)):
-        seasons = ", ".join(str(x) for x in (getattr(item, "combined_season_numbers", None) or item.season_numbers or [])) or "unknown"
-        raise ImportErrorSafe(f"Combined-season video detected (season {seasons}). Use Advanced TV Recovery to analyse/split it before Sonarr import.")
+    if item.media_type == "tv":
+        # v10.4.4 makes runtime/episode-span validation a pre-import safety gate,
+        # not merely an optional recovery page. This catches explicit S03E06-7
+        # joins and badly named E06 files whose runtime is ~2 normal episodes.
+        from . import tv_recovery
+        recovery_plan = await tv_recovery.analyse_source(source_path)
+        split_rows = [x for x in (recovery_plan.get("files") or []) if x.get("needs_split")]
+        if split_rows:
+            labels = ", ".join(str(x.get("name") or "TV file") for x in split_rows[:3])
+            more = f" (+{len(split_rows)-3} more)" if len(split_rows) > 3 else ""
+            raise ImportErrorSafe(f"TV Recovery review required before Sonarr import: {labels}{more}. Combined-season video detected or joined-episode media found; split or explicitly review it first.")
     routed = await route_item(item)
     recommended: RouteDecision = routed["decision"]
     chosen = destination_key or recommended.key
