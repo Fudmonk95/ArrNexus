@@ -123,7 +123,7 @@ def main() -> int:
         main_app.templates.env.get_template(template.name)
     with TestClient(main_app.app) as client:
         health = client.get("/api/health")
-        require(health.status_code == 200 and health.json().get("version") in {"10.4.2-beta", "10.4.3-beta", "10.4.4-beta", "10.5.0-beta", "10.5.1-beta", "10.6.0-beta"}, "v10.4.2 health/version")
+        require(health.status_code == 200 and health.json().get("version") in {"10.4.2-beta", "10.4.3-beta", "10.4.4-beta", "10.5.0-beta", "10.5.1-beta", "10.6.0-beta", "10.6.1-beta"}, "v10.4.2 health/version")
         setup = client.post("/setup", data={"username": "v1042validator", "email": "v1042@example.invalid", "display_name": "V10.4.2 Validator", "password": "validation-password-123", "confirm": "validation-password-123"}, follow_redirects=False)
         require(setup.status_code == 303, "v10.4.2 administrator setup")
         page = client.get("/maintenance/archives", follow_redirects=False)
@@ -141,13 +141,13 @@ def main() -> int:
     readme = (root / "README.md").read_text(encoding="utf-8")
     changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
 
-    require(('APP_VERSION = "10.4.2-beta"' in main_source) or ('APP_VERSION = "10.4.3-beta"' in main_source) or ('APP_VERSION = "10.4.4-beta"' in main_source) or ('APP_VERSION = "10.5.0-beta"' in main_source) or (('APP_VERSION = "10.5.1-beta"' in main_source) or ('APP_VERSION = "10.6.0-beta"' in main_source)), "v10.4.2+ application marker missing")
+    require(('APP_VERSION = "10.4.2-beta"' in main_source) or ('APP_VERSION = "10.4.3-beta"' in main_source) or ('APP_VERSION = "10.4.4-beta"' in main_source) or ('APP_VERSION = "10.5.0-beta"' in main_source) or (('APP_VERSION = "10.5.1-beta"' in main_source) or (('APP_VERSION = "10.6.0-beta"' in main_source) or ('APP_VERSION = "10.6.1-beta"' in main_source))), "v10.4.2+ application marker missing")
     require(any(marker in language_source for marker in ("language:v1042:", "language:v1043:", "language:v105:")), "Language Guard cache invalidation marker missing")
     require("reviewed INTEGER" in db_source and "manual review" in job_template.lower(), "Manual Review job counter markers missing")
     require("_existing_target_external" in router_source and "MovieExistsValidator" in router_source, "idempotent existing-Arr import marker missing")
     for marker in ("_catalogue_signature", "virtual /proc view", "catalogue changed during verification", "catalogue changed since verification"):
         require(marker.lower() in archive_source.lower(), f"v10.4.2 archive safety marker missing: {marker}")
-    require((("arrnexus-static-v10.4.2" in sw) or ("arrnexus-static-v10.4.3" in sw) or (("arrnexus-static-v10.4.4" in sw) or ("arrnexus-static-v10.5.0" in sw))) or ("arrnexus-static-v10.5.1" in sw) or ("arrnexus-static-v10.6.0" in sw), "v10.4.2+ service worker marker missing")
+    require((("arrnexus-static-v10.4.2" in sw) or ("arrnexus-static-v10.4.3" in sw) or (("arrnexus-static-v10.4.4" in sw) or ("arrnexus-static-v10.5.0" in sw))) or ("arrnexus-static-v10.5.1" in sw) or ("arrnexus-static-v10.6.0" in sw) or ("arrnexus-static-v10.6.1" in sw), "v10.4.2+ service worker marker missing")
     require("Version 10.4.2" in readme and "Stable Archive Identity Hotfix" in readme, "README missing v10.4.2")
     require("10.4.2-beta — Stable Archive Identity Hotfix" in changelog, "CHANGELOG missing v10.4.2")
     require((root / "docs" / "RELEASE_NOTES_v10.4.2.md").exists(), "v10.4.2 release notes missing")

@@ -170,7 +170,7 @@ def main() -> int:
     guide = (root / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8")
     audit = (root / "docs" / "DOCUMENTATION_AUDIT.md").read_text(encoding="utf-8")
 
-    require(any(f'APP_VERSION = \"{v}\"' in main_source for v in ('10.2.0-beta','10.3.0-beta','10.4.0-beta','10.4.1-beta','10.4.2-beta','10.4.3-beta','10.4.4-beta','10.5.0-beta','10.5.1-beta','10.6.0-beta')), "v10.2+ version string missing")
+    require(any(f'APP_VERSION = \"{v}\"' in main_source for v in ('10.2.0-beta','10.3.0-beta','10.4.0-beta','10.4.1-beta','10.4.2-beta','10.4.3-beta','10.4.4-beta','10.5.0-beta','10.5.1-beta','10.6.0-beta','10.6.1-beta')), "v10.2+ version string missing")
     for marker in ("trakt_watchlist", "trakt_list", "imdb", "tmdb", "plex_watchlist", "simkl", "rss", "json"):
         require(marker in lists_source, f"list adapter missing: {marker}")
     require("_atomic_settings" in lists_source and "refresh_token" in lists_source, "atomic Trakt refresh-token handling missing")
@@ -185,7 +185,7 @@ def main() -> int:
     require('data-appearance="dark"' in css and 'data-appearance="light"' in css and '--bg:#fafafa' in css and '--bg:#030304' in css, "true Dark/Light appearance CSS missing")
     require("arrnexus:appearance" in js, "appearance persistence JavaScript missing")
     require("<details" in providers and "<details" in libraries and " open" not in libraries, "Providers/Libraries are not collapsed summary-first")
-    require((("arrnexus-static-v10.2" in sw) or ("arrnexus-static-v10.3" in sw) or ("arrnexus-static-v10.4" in sw) or ("arrnexus-static-v10.4.1" in sw) or ("arrnexus-static-v10.5.0" in sw)) or ("arrnexus-static-v10.5.1" in sw) or ("arrnexus-static-v10.6.0" in sw), "v10.2+ service-worker cache marker missing")
+    require((("arrnexus-static-v10.2" in sw) or ("arrnexus-static-v10.3" in sw) or ("arrnexus-static-v10.4" in sw) or ("arrnexus-static-v10.4.1" in sw) or ("arrnexus-static-v10.5.0" in sw)) or ("arrnexus-static-v10.5.1" in sw) or ("arrnexus-static-v10.6.0" in sw) or ("arrnexus-static-v10.6.1" in sw), "v10.2+ service-worker cache marker missing")
     require("Version 10.2" in readme and "Lists & Watchlists" in readme and "Provider Duplicate Cleanup" in readme, "README missing v10.2 detail")
     require("Lists & Watchlists" in guide and "AIOMetadata" in guide and "Provider Duplicate Cleanup" in guide, "User Guide missing v10.2 workflows")
     for route in ("/lists", "/api/lists", "/aiometadata", "/api/aiometadata/status", "/maintenance/provider-cleanup"):

@@ -269,51 +269,154 @@ def _normalise_rd_file_path(value: str) -> str:
     return "/".join(x for x in str(value or "").replace("\\", "/").strip("/").split("/") if x).casefold()
 
 
-async def direct_file_metadata_for_source_file(source_pack_path: str, relative_file: str) -> dict:
-    """Resolve one exact DMM/Decypharr source-pack file to RD metadata.
+def _rd_exact_name_variants(value: str) -> set[str]:
+    """Return conservative exact-equivalent names for RD source resolution.
 
-    This does not unrestrict or expose a signed download URL.  It is used by
-    archive recovery to compare the provider-mounted file size with the
-    authoritative Real-Debrid torrent-file size before deciding whether the
-    virtual mount can be trusted.
+    Decypharr can expose a single-file torrent as a directory named after the
+    archive stem (``season-4_202405``) while Real-Debrid reports the torrent
+    filename as ``season-4_202405.rar``.  Treating those two names as exact
+    equivalents is safe because the requested archive file must also resolve
+    uniquely inside the selected torrent before the candidate can be used.
     """
-    matched = await exact_torrent_for_source(source_pack_path, 0)
-    if not matched.get("ok"):
-        raise RealDebridError(str(matched.get("reason") or "Exact Real-Debrid torrent match failed"))
-    torrent = matched.get("torrent") or {}
-    tid = str(torrent.get("id") or "")
-    if not tid:
-        raise RealDebridError("Matched Real-Debrid torrent has no ID")
-    info = await torrent_info(tid)
+    from pathlib import Path
+
+    name = Path(str(value or "").replace("\\", "/").rstrip("/")).name
+    normal = _normalise_torrent_name(name)
+    if not normal:
+        return set()
+    out = {normal}
+    suffix = Path(name).suffix.casefold()
+    if suffix in {".rar", ".zip", ".7z"}:
+        stem = _normalise_torrent_name(Path(name).stem)
+        if stem:
+            out.add(stem)
+    return out
+
+
+def _match_selected_file(info: dict, relative_file: str) -> tuple[dict, str] | None:
     files = [dict(x) for x in ((info or {}).get("files") or []) if int(x.get("selected") or 0) == 1]
     links = [str(x) for x in ((info or {}).get("links") or []) if str(x).strip()]
     if not files or len(files) != len(links):
-        raise RealDebridError("Real-Debrid selected file/link mapping is unavailable or ambiguous")
+        return None
 
     wanted = _normalise_rd_file_path(relative_file)
     if not wanted:
-        raise RealDebridError("Archive relative path is empty")
+        return None
     matches: list[int] = []
     for idx, row in enumerate(files):
         candidate = _normalise_rd_file_path(row.get("path") or "")
         if candidate == wanted or candidate.endswith("/" + wanted):
             matches.append(idx)
     if len(matches) != 1:
-        # Basename fallback is allowed only when unique across the selected
-        # torrent files; this covers mounts that hide one torrent-root folder.
         base = wanted.rsplit("/", 1)[-1]
-        matches = [idx for idx, row in enumerate(files) if _normalise_rd_file_path(row.get("path") or "").rsplit("/", 1)[-1] == base]
+        matches = [
+            idx for idx, row in enumerate(files)
+            if _normalise_rd_file_path(row.get("path") or "").rsplit("/", 1)[-1] == base
+        ]
     if len(matches) != 1:
-        raise RealDebridError(f"Archive file '{relative_file}' did not resolve uniquely inside the exact Real-Debrid torrent")
-
+        return None
     idx = matches[0]
+    return files[idx], links[idx]
+
+
+async def _exact_rd_torrent_file(source_pack_path: str, relative_file: str) -> dict:
+    """Resolve one archive using only exact/equivalent names plus exact file match.
+
+    This is intentionally more tolerant than provider cleanup matching, because
+    Decypharr may strip ``.rar`` from the displayed source-pack directory.  It
+    remains non-fuzzy: a candidate must use an exact name variant and contain
+    exactly one selected file matching the requested relative path/basename.
+    Multiple valid candidates are rejected rather than guessed.
+    """
+    from pathlib import Path
+
+    pack_name = Path(str(source_pack_path or "").replace("\\", "/").rstrip("/")).name
+    file_name = Path(str(relative_file or "").replace("\\", "/")).name
+    pack_variants = _rd_exact_name_variants(pack_name)
+    file_variants = _rd_exact_name_variants(file_name)
+    wanted_names = pack_variants | file_variants
+    if not wanted_names:
+        raise RealDebridError("Archive source has no usable exact Real-Debrid identity")
+
+    rows = await torrents(limit=2000)
+    candidates: list[tuple[int, dict]] = []
+    for row in rows:
+        torrent_name = str(row.get("filename") or row.get("name") or "")
+        normal = _normalise_torrent_name(torrent_name)
+        variants = _rd_exact_name_variants(torrent_name)
+        if normal not in wanted_names and not (variants & wanted_names):
+            continue
+        # Prefer the visible pack name, then the exact archive filename, then
+        # the extension-equivalent stem form.
+        score = 1
+        if normal in pack_variants:
+            score = 3
+        elif normal in file_variants:
+            score = 2
+        candidates.append((score, row))
+
+    if not candidates:
+        raise RealDebridError(
+            f"No exact Real-Debrid torrent matched source pack '{pack_name}' or archive '{file_name}'"
+        )
+
+    resolved: list[dict] = []
+    lookup_errors: list[str] = []
+    for score, torrent in candidates:
+        tid = str(torrent.get("id") or "")
+        if not tid:
+            continue
+        try:
+            info = await torrent_info(tid)
+            match = _match_selected_file(info or {}, relative_file)
+            if match is None:
+                continue
+            file_row, restricted_link = match
+            resolved.append({
+                "score": score,
+                "torrent": torrent,
+                "info": info or {},
+                "file": file_row,
+                "restricted_link": restricted_link,
+            })
+        except Exception as exc:
+            lookup_errors.append(str(exc))
+
+    if not resolved:
+        detail = f" ({lookup_errors[0]})" if lookup_errors else ""
+        raise RealDebridError(
+            f"Exact Real-Debrid torrent candidate(s) did not contain a unique selected file matching '{relative_file}'{detail}"
+        )
+
+    best_score = max(int(x["score"]) for x in resolved)
+    best = [x for x in resolved if int(x["score"]) == best_score]
+    if len(best) != 1:
+        ids = ", ".join(str((x.get("torrent") or {}).get("id") or "?") for x in best[:5])
+        raise RealDebridError(
+            f"{len(best)} exact Real-Debrid torrents matched archive '{relative_file}' ({ids}); direct recovery is ambiguous"
+        )
+    return best[0]
+
+
+async def direct_file_metadata_for_source_file(source_pack_path: str, relative_file: str) -> dict:
+    """Resolve one exact DMM/Decypharr source-pack file to RD metadata.
+
+    The resolver accepts only exact source-pack/archive-name equivalents and an
+    exact selected-file match.  This covers Decypharr's common stem-directory
+    representation without introducing fuzzy title matching.
+    """
+    resolved = await _exact_rd_torrent_file(source_pack_path, relative_file)
+    torrent = resolved.get("torrent") or {}
+    info = resolved.get("info") or {}
+    file_row = resolved.get("file") or {}
+    tid = str(torrent.get("id") or "")
     return {
         "torrent_id": tid,
-        "torrent_filename": str((info or {}).get("filename") or torrent.get("filename") or ""),
-        "file_path": str(files[idx].get("path") or relative_file),
-        "file_bytes": int(files[idx].get("bytes") or 0),
-        "restricted_link": links[idx],
-        "matched_by": str(matched.get("matched_by") or "exact source pack"),
+        "torrent_filename": str(info.get("filename") or torrent.get("filename") or torrent.get("name") or ""),
+        "file_path": str(file_row.get("path") or relative_file),
+        "file_bytes": int(file_row.get("bytes") or 0),
+        "restricted_link": str(resolved.get("restricted_link") or ""),
+        "matched_by": "exact source/archive name + exact selected file",
     }
 
 

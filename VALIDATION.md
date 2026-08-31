@@ -1,10 +1,13 @@
-# ArrNexus v10.6.0-beta Validation
+# ArrNexus v10.6.1-beta Validation
 
-`python3 validate.py` runs the deterministic v10.6 current-layer validator. Release certification also runs the retained historical compatibility chain.
+`python3 validate.py` runs the deterministic v10.6.1 current-layer validator. Release certification also runs the retained historical compatibility chain.
 
-v10.6 validation covers:
+v10.6.1 validation covers:
 
 - Python compilation and Jinja template compilation;
+- exact direct-source resolution when the Decypharr source-pack directory is an extensionless form of the RD archive filename;
+- hard-stop behaviour when provider CRC exists but the authoritative RD original cannot be resolved;
+- proof that provider bytes are not copied in that unresolved-direct state;
 - clean SQLite startup/migration through the retained validators;
 - exact Real-Debrid source-file metadata resolution without exposing signed URLs during preview;
 - provider-mount vs direct-original byte-size mismatch handling;

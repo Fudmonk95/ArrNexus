@@ -105,10 +105,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.6.0-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.6.1-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "10.6.0-beta"
+APP_VERSION = "10.6.1-beta"
 
 
 @app.middleware("http")
@@ -4230,8 +4230,10 @@ async def run_archive_stage_job(job_id: int):
             msg = f"Direct Real-Debrid original re-tested locally; {still} member(s) still fail - archive damage confirmed"
         elif recovered:
             msg = f"Complete local staging passed {recovered} previously failed member(s) - provider read-path issue"
+        elif classification == "provider_staging_inconclusive":
+            msg = f"Mounted-provider local copy still reproduced {still} failed member(s); result is inconclusive until the direct original is verified"
         else:
-            msg = f"Complete local staging reproduced {still} failed member(s)"
+            msg = f"Archive re-test completed with {still} failed member(s)"
         update_job_item(iid, status="complete", stage=classification or "complete", message=msg, result={"classification": classification, "recovered_locally": result.get("recovered_locally") or [], "still_failed": result.get("still_failed") or []})
         update_job(job_id, status="complete", completed=1, message=msg)
     except CancelledOperation as exc:

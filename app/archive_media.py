@@ -898,7 +898,7 @@ def _copy_http_resumable(
             headers = {"Range": f"bytes={offset}-"} if offset else {}
             try:
                 timeout = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=30.0)
-                with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": "ArrNexus/10.6.0"}) as client:
+                with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": "ArrNexus/10.6.1"}) as client:
                     with client.stream("GET", url, headers=headers) as response:
                         if response.status_code >= 400:
                             raise RuntimeError(f"direct HTTPS staging returned HTTP {response.status_code}")
@@ -1006,6 +1006,29 @@ def stage_and_reverify(
         and all(int(direct_sizes.get(src.name) or 0) > 0 for src in volumes)
     )
     direct_total = sum(direct_sizes.values()) if direct_complete else 0
+
+    # A provider-side CRC failure is not authoritative once Real-Debrid is
+    # connected.  The Queen's Nose field case proved Decypharr can present a
+    # stable but shorter/different byte stream while a direct RD download is
+    # healthy.  Therefore never silently fall back to copying the mounted RAR
+    # after failed provider verification: either resolve the exact original or
+    # stop with an explicit inconclusive/direct-resolution error.
+    from . import realdebrid as rd
+    rd_connected = bool(rd.connected())
+    if provider_failed and rd_connected and not direct_complete:
+        detail = direct_resolution_error or "exact Real-Debrid archive metadata was unavailable"
+        failure = {
+            "ok": False,
+            "source": logical_path,
+            "fingerprint": plan["fingerprint"],
+            "classification": "direct_source_unresolved",
+            "error": f"Provider CRC result is not authoritative. Direct Real-Debrid original could not be resolved: {detail}",
+            "mounted_size": provider_total,
+            "direct_size": 0,
+            "source_retained": True,
+        }
+        cache_set(_local_stage_key(plan["fingerprint"]), failure)
+        raise RuntimeError(str(failure["error"]))
     size_mismatches = [
         {
             "volume": src.name,
@@ -1205,7 +1228,7 @@ def stage_and_reverify(
     if authoritative_direct:
         classification = "provider_mount_untrusted_direct_verified" if not still_failed else "confirmed_direct_archive_damage"
     else:
-        classification = "virtual_source_read_path" if recovered_locally else "genuine_crc_or_archive_damage"
+        classification = "virtual_source_read_path" if recovered_locally else "provider_staging_inconclusive"
 
     merged_result = {
         "logical_path": logical_path,

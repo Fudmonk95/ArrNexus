@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.6.0--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.6.1--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -61,6 +61,16 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
 
 ---
+
+## 🩹 Version 10.6.1 — Authoritative RAR Direct-Source Hotfix
+
+v10.6.1 fixes the live recovery path exposed after Queen's Nose still reproduced a CRC failure in v10.6.0. The v10.6.0 job had silently fallen back to copying the Decypharr-mounted RAR when exact Real-Debrid resolution failed. That mounted representation is already proven non-byte-identical to the valid direct download, so it can never confirm archive damage.
+
+- **No silent provider fallback after CRC** — when Real-Debrid is connected and provider verification has failed, ArrNexus must resolve/download the exact RD original or stop as inconclusive.
+- **Safer exact resolver variants** — direct lookup accepts the Decypharr pack name, the exact archive filename and extension-equivalent stem names, then still requires a unique exact selected-file match inside the torrent.
+- **Ambiguity remains a hard stop** — no fuzzy title matching or guessed torrent/file is used for archive recovery.
+- **Clear diagnosis** — direct-resolution failure is shown explicitly; a repeated CRC from a copied provider mount is never labelled genuine damage.
+- **Authoritative confirmation only** — `confirmed_direct_archive_damage` is possible only after the directly downloaded Real-Debrid original itself reproduces the failed member locally.
 
 ## 🛟 Version 10.6.0 — Rescue Expansion & Direct Archive Integrity
 

@@ -84,11 +84,13 @@
         <strong>Provider archive verification anomaly.</strong> A CRC failure through Decypharr/DUMB does not prove the original RAR is damaged. ArrNexus will prefer the exact Real-Debrid original when it can resolve the backing file, download it to the local recovery disk, verify the complete local copy, and use only that verified copy for recovery. It never ignores failed bytes.
         <br><small>Mounted archive volume set: {{ stage_state.mounted_size|human_size }} · recovery storage free: {{ stage_state.free|human_size }} · {{ 'enough space' if stage_state.enough else 'NOT enough space' }}.</small>
         {% if stage_state.provider_mount_untrusted %}<br><strong>Provider mount:</strong> <span class="tag red">Untrusted</span>{% if stage_state.direct_size %} · mounted {{ stage_state.mounted_size }} bytes · direct original {{ stage_state.direct_size }} bytes · difference {{ stage_state.size_difference }} bytes{% endif %}{% endif %}
+        {% if stage_state.direct_error %}<br><strong>Direct Real-Debrid resolution:</strong> <span class="tag amber">Unavailable</span> <small>{{ stage_state.direct_error }}</small>{% endif %}
         {% if stage_state.classification %}<br><strong>Previous direct/local re-test:</strong>
           {% if stage_state.classification=='provider_mount_untrusted_direct_verified' %}the exact Real-Debrid original was downloaded and locally verified; the provider mount is not trusted for archive recovery
           {% elif stage_state.classification=='confirmed_direct_archive_damage' %}the exact Real-Debrid original was downloaded, but one or more members still failed locally; damage is confirmed against the direct source
           {% elif stage_state.classification=='virtual_source_read_path' %}provider/virtual read-path issue; failed members passed after complete local staging
-          {% elif stage_state.classification=='genuine_crc_or_archive_damage' %}CRC/archive damage was reproduced on the complete local copy when a direct original was unavailable
+          {% elif stage_state.classification=='provider_staging_inconclusive' %}the mounted-provider copy still failed locally; this is inconclusive until the direct Real-Debrid original can be verified
+          {% elif stage_state.classification=='direct_source_unresolved' %}the provider result is not authoritative because ArrNexus could not resolve the exact direct Real-Debrid original
           {% elif stage_state.classification=='provider_io_failure' %}provider source could not be read reliably and the exact direct source could not be staged
           {% else %}local/direct staging failed before verification completed{% endif %}
           {% if stage_state.last_error %}<br><small>{{ stage_state.last_error }}</small>{% endif %}

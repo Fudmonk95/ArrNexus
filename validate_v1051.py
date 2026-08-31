@@ -72,9 +72,9 @@ def main() -> int:
     # guess when the torrent contains several files.
     import asyncio
     from app import realdebrid as rd
-    old_exact, old_info, old_unrestrict = rd.exact_torrent_for_source, rd.torrent_info, rd.unrestrict_link
-    async def fake_exact(source_pack_path: str, source_size_bytes: int = 0):
-        return {"ok": True, "torrent": {"id": "rd-test", "filename": "Tracy Pack"}, "matched_by": "exact filename"}
+    old_torrents, old_info, old_unrestrict = rd.torrents, rd.torrent_info, rd.unrestrict_link
+    async def fake_torrents(limit: int = 250):
+        return [{"id": "rd-test", "filename": "Tracy Pack"}]
     async def fake_info(tid: str):
         return {
             "filename": "Tracy Pack",
@@ -87,11 +87,11 @@ def main() -> int:
     async def fake_unrestrict(link: str):
         require(link.endswith("/rar"), "RD resolver selected the wrong torrent link")
         return {"download": "https://download.invalid/exact-rar", "filesize": 12345, "id": "download-id"}
-    rd.exact_torrent_for_source, rd.torrent_info, rd.unrestrict_link = fake_exact, fake_info, fake_unrestrict
+    rd.torrents, rd.torrent_info, rd.unrestrict_link = fake_torrents, fake_info, fake_unrestrict
     try:
         resolved = asyncio.run(rd.direct_download_for_source_file("/mnt/debrid/decypharr/__all__/Tracy Pack", "Season 1.rar"))
     finally:
-        rd.exact_torrent_for_source, rd.torrent_info, rd.unrestrict_link = old_exact, old_info, old_unrestrict
+        rd.torrents, rd.torrent_info, rd.unrestrict_link = old_torrents, old_info, old_unrestrict
     require(resolved["download"] == "https://download.invalid/exact-rar", "exact RD HTTPS fallback did not resolve")
     require(resolved["file_bytes"] == 12345, "exact RD HTTPS fallback size metadata missing")
 
@@ -155,10 +155,10 @@ def main() -> int:
     main_source = (root / "app/main.py").read_text(encoding="utf-8")
     archive_source = (root / "app/archive_media.py").read_text(encoding="utf-8")
     archive_tpl = (root / "app/templates/archive_media.html").read_text(encoding="utf-8")
-    require(any(v in main_source for v in ('APP_VERSION = "10.5.1-beta"', 'APP_VERSION = "10.6.0-beta"')), "v10.5.1+ application marker missing")
+    require(any(v in main_source for v in ('APP_VERSION = \"10.5.1-beta\"', 'APP_VERSION = \"10.6.0-beta\"', 'APP_VERSION = \"10.6.1-beta\"')), "v10.5.1+ application marker missing")
     require("ProviderStageReadError" in archive_source and "os.pread" in archive_source, "resilient provider staging implementation missing")
     require("provider_io_failure" in archive_source and "provider source could not be read reliably" in archive_tpl, "provider-I/O classification UI missing")
-    require(any(x in (root / "app/static/sw.js").read_text() for x in ("arrnexus-static-v10.5.1", "arrnexus-static-v10.6.0")), "v10.5.1+ service worker marker missing")
+    require(any(x in (root / "app/static/sw.js").read_text() for x in ("arrnexus-static-v10.5.1", "arrnexus-static-v10.6.0", "arrnexus-static-v10.6.1")), "v10.5.1+ service worker marker missing")
     jobs_tpl = (root / "app/templates/jobs.html").read_text(encoding="utf-8")
     job_tpl = (root / "app/templates/job.html").read_text(encoding="utf-8")
     review_tpl = (root / "app/templates/job_review.html").read_text(encoding="utf-8")

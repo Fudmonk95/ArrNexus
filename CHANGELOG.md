@@ -1,5 +1,14 @@
 # Changelog
 
+## 10.6.1-beta - Authoritative RAR Direct-Source Hotfix
+
+- Fix v10.6.0 silently falling back to the Decypharr-mounted RAR when direct Real-Debrid resolution failed after provider CRC errors.
+- When Real-Debrid is connected and provider verification has failed, require the exact direct original; unresolved direct mapping now stops as `direct_source_unresolved` and leaves the provider result inconclusive.
+- Expand exact direct-source matching to safely handle Decypharr stem folders such as `season-4_202405` backed by an RD torrent/file named `season-4_202405.rar`.
+- Continue to require a unique exact selected-file match inside the exact/equivalent torrent candidate; ambiguous matches are refused.
+- Rename provider-only repeated failures to `provider_staging_inconclusive`; only the direct RD original can establish `confirmed_direct_archive_damage`.
+- Surface direct-resolution errors in Archived Media Recovery so operators can see why authoritative verification was unavailable.
+
 ## 10.6.0-beta - Rescue Expansion, Direct Archive Integrity & Updater UX
 
 - Expand **Archive Rescue** to scan and search both monitored Sonarr gaps and monitored Radarr movies through the configured Prowlarr Internet Archive indexer.

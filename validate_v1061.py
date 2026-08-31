@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-"""ArrNexus v10.6.0-beta rescue/updater/direct-archive validator."""
+"""ArrNexus v10.6.1-beta authoritative direct-source archive validator."""
 
 import asyncio
 import os
@@ -17,10 +17,10 @@ def require(ok: bool, message: str) -> None:
 
 def main() -> int:
     root = Path(__file__).resolve().parent
-    td = Path(tempfile.mkdtemp(prefix="arrnexus-v106-validate-"))
+    td = Path(tempfile.mkdtemp(prefix="arrnexus-v1061-validate-"))
     os.environ["DB_PATH"] = str(td / "router.db")
     os.environ["DB_DIR"] = str(td)
-    os.environ["SESSION_SECRET"] = "v106-validator"
+    os.environ["SESSION_SECRET"] = "v1061-validator"
     os.environ["ARRNEXUS_SELF_UPDATE"] = "0"
 
     from app import db
@@ -51,6 +51,30 @@ def main() -> int:
         require(direct["download"] == "https://download.invalid/original", "RD direct resolver did not unrestrict exact file")
     finally:
         rd.torrents, rd.torrent_info, rd.unrestrict_link = old_torrents, old_info, old_unrestrict
+
+    # ------------------------------------------------------------------
+    # v10.6.1 field regression: Decypharr can expose an extensionless source
+    # folder while RD reports a single-file torrent/archive with .rar.  This
+    # must resolve as an exact equivalent, never as fuzzy title matching.
+    # ------------------------------------------------------------------
+    old_torrents, old_info = rd.torrents, rd.torrent_info
+    async def stem_torrents(limit: int = 250):
+        return [{"id": "queen-rd", "filename": "season-4_202405.rar"}]
+    async def stem_info(tid: str):
+        return {
+            "filename": "season-4_202405.rar",
+            "files": [{"id": 1, "path": "/season-4_202405.rar", "bytes": 3544189222, "selected": 1}],
+            "links": ["https://host.invalid/queen-rar"],
+        }
+    rd.torrents, rd.torrent_info = stem_torrents, stem_info
+    try:
+        stem_meta = asyncio.run(rd.direct_file_metadata_for_source_file(
+            "/mnt/debrid/decypharr/__all__/season-4_202405", "season-4_202405.rar"
+        ))
+        require(stem_meta["torrent_id"] == "queen-rd", "extension-equivalent RD torrent was not resolved")
+        require(stem_meta["file_bytes"] == 3544189222, "authoritative Queen's Nose byte size was not retained")
+    finally:
+        rd.torrents, rd.torrent_info = old_torrents, old_info
 
     # ------------------------------------------------------------------
     # Real-world regression model: provider mount advertises a different
@@ -134,6 +158,56 @@ def main() -> int:
     require(staged["verification"]["members"][0]["verification_source"] == "direct_realdebrid", "direct verification source was not authoritative")
 
     # ------------------------------------------------------------------
+    # If provider verification has failed and RD is connected, failure to
+    # resolve the direct original must STOP.  Provider bytes must never be
+    # copied and then mislabelled as confirmed/genuine damage.
+    # ------------------------------------------------------------------
+    old_attrs = {}
+    patch_names = [
+        "inspect_archive", "view_path", "logical_from_view", "_archive_volume_actual_paths",
+        "source_root", "storage_state", "cache_get", "cache_set",
+        "_rd_direct_metadata_descriptor", "_copy_provider_file_resilient",
+    ]
+    for name in patch_names:
+        old_attrs[name] = getattr(am, name)
+    old_rd_connected = rd.connected
+    unresolved_cache = {
+        am._verification_key(plan["fingerprint"]): {
+            "members": [{"path": "Season 1.mp4", "status": "failed", "error": "CRC Failed"}],
+            "failed_count": 1,
+        }
+    }
+    provider_copy_calls = {"count": 0}
+    def should_not_copy(*args, **kwargs):
+        provider_copy_calls["count"] += 1
+        raise AssertionError("provider mount was copied after direct-original resolution failure")
+    am.inspect_archive = lambda *a, **k: plan
+    am.view_path = fake_view
+    am.logical_from_view = lambda _p: Path(logical)
+    am._archive_volume_actual_paths = lambda _p: [provider]
+    am.source_root = lambda: "/mnt/debrid/decypharr/__all__"
+    am.storage_state = lambda n=0: {"enough": True, "free": 10_000, "total": 20_000, "required": int(n)}
+    am.cache_get = lambda key: unresolved_cache.get(key)
+    am.cache_set = lambda key, value: unresolved_cache.__setitem__(key, value)
+    am._rd_direct_metadata_descriptor = lambda _p: (_ for _ in ()).throw(RuntimeError("No exact RD torrent matched source/archive"))
+    am._copy_provider_file_resilient = should_not_copy
+    rd.connected = lambda: True
+    unresolved_error = ""
+    try:
+        try:
+            am.stage_and_reverify(logical, expected_fingerprint=plan["fingerprint"])
+        except RuntimeError as exc:
+            unresolved_error = str(exc)
+    finally:
+        rd.connected = old_rd_connected
+        for name, value in old_attrs.items():
+            setattr(am, name, value)
+    require("not authoritative" in unresolved_error and "could not be resolved" in unresolved_error, "unresolved direct source did not stop authoritatively")
+    require(provider_copy_calls["count"] == 0, "provider copy fallback still ran after direct resolution failed")
+    unresolved_state = unresolved_cache.get(am._local_stage_key(plan["fingerprint"])) or {}
+    require(unresolved_state.get("classification") == "direct_source_unresolved", "unresolved direct state was not persisted")
+
+    # ------------------------------------------------------------------
     # Radarr/Sonarr missing scans: both services must exist and active queue
     # state must be surfaced rather than blindly creating duplicate rescue.
     # ------------------------------------------------------------------
@@ -172,7 +246,7 @@ def main() -> int:
     arr_rescue_tpl = (root / "app/templates/arr_rescue.html").read_text(encoding="utf-8")
     app_js = (root / "app/static/app.js").read_text(encoding="utf-8")
     updater_source = (root / "app/updater.py").read_text(encoding="utf-8")
-    require(any(v in main_source for v in ('APP_VERSION = \"10.6.0-beta\"', 'APP_VERSION = \"10.6.1-beta\"')), "v10.6 application marker missing")
+    require('APP_VERSION = "10.6.1-beta"' in main_source, "v10.6 application marker missing")
     require("provider_mount_untrusted_direct_verified" in archive_source and "Verify original directly" in archive_tpl, "direct-original archive recovery UI/logic missing")
     require("direct_file_metadata_for_source_file" in archive_source or "_rd_direct_metadata_descriptor" in archive_source, "RD authoritative-size comparison missing")
     require("Missing Radarr media" in archive_rescue_tpl and "Missing Sonarr media" in archive_rescue_tpl, "Archive Rescue does not cover both Arr services")
@@ -180,7 +254,7 @@ def main() -> int:
     require("data-update-open" in base_tpl and "compareVersions" in app_js and "completedUpdate" in app_js, "version badge/update modal fix missing")
     require("Cache-Control" in main_source and "no-store" in main_source, "update API no-cache protection missing")
     require("version_key(latest) > version_key(current_version)" in updater_source, "server updater can still offer the running version")
-    require(any(x in (root / "app/static/sw.js").read_text(encoding="utf-8") for x in ("arrnexus-static-v10.6.0", "arrnexus-static-v10.6.1")), "v10.6 service-worker cache marker missing")
+    require("arrnexus-static-v10.6.1" in (root / "app/static/sw.js").read_text(encoding="utf-8"), "v10.6 service-worker cache marker missing")
 
     # Compile every Jinja template so new rescue/integrity markup cannot ship
     # with a syntax error.
@@ -208,11 +282,11 @@ def main() -> int:
             require(client.get("/radarr-rescue").status_code == 200, "Radarr Rescue route failed")
             require(client.get("/archive-rescue").status_code == 200, "Archive Rescue route failed")
             health = client.get("/api/health")
-            require(health.status_code == 200 and health.json().get("version") in {"10.6.0-beta", "10.6.1-beta"}, "v10.6 health/version failed")
+            require(health.status_code == 200 and health.json().get("version") == "10.6.1-beta", "v10.6 health/version failed")
     finally:
         ar.internet_archive_indexers = old_indexers
 
-    print("PASS: ArrNexus v10.6 adds Radarr/Sonarr rescue, Radarr Archive Rescue, direct Real-Debrid original verification for untrusted provider RARs, and corrected self-update UX")
+    print("PASS: ArrNexus v10.6.1 requires authoritative Real-Debrid originals after provider CRC, resolves safe extension-equivalent archive names, and retains v10.6 rescue/updater behaviour")
     return 0
 
 
