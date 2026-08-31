@@ -45,7 +45,7 @@ def main() -> int:
     # testing of the remaining recoverable media.
     import app.archive_media as am
     calls: list[list[str]] = []
-    original_run = am.subprocess.run
+    original_run = am.run_cancellable
 
     def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
@@ -55,7 +55,7 @@ def main() -> int:
         return SimpleNamespace(returncode=2, stdout=f"T {member}\n", stderr="ERRORS:\nUnexpected end of archive\n")
 
     try:
-        am.subprocess.run = fake_run
+        am.run_cancellable = fake_run
         media = [
             {"path": "Season 1.mp4", "size": 101},
             {"path": "Season 2.mp4", "size": 102},
@@ -63,7 +63,7 @@ def main() -> int:
         ]
         result = am._verify_media_members_independently("7z", "7z", Path("/fake/source.rar"), media)
     finally:
-        am.subprocess.run = original_run
+        am.run_cancellable = original_run
     require(len(calls) == 3 and [x[-1] for x in calls] == [x["path"] for x in media], "RAR verification is not one command per media member")
     require(result["verified_count"] == 2 and result["failed_count"] == 1 and result["untested_count"] == 0, "independent RAR verification did not isolate the CRC-broken member")
     require(result.get("verification_mode") == "per_member", "RAR verification mode marker missing")
@@ -71,11 +71,11 @@ def main() -> int:
     # Bernard's Watch field case: mixed explicit fail + undefined audio is
     # uncertainty at source level, not a confirmed/destructive rejection.
     import app.language_guard as lg
-    require("language:v1043:" in lg._cache_key("/mnt/debrid/decypharr/__all__/Bernards Watch", "fp", lg.LanguagePolicy()), "Language Guard cache namespace not bumped to v1043")
+    require(any(marker in lg._cache_key("/mnt/debrid/decypharr/__all__/Bernards Watch", "fp", lg.LanguagePolicy()) for marker in ("language:v1043:", "language:v105:")), "Language Guard cache namespace is older than v10.4.3")
     original_files, original_probe, original_sidecar = lg.video_files, lg._ffprobe, lg._matching_external_english_subtitle
     try:
         lg.video_files = lambda p: [Path("/virtual/E01.mkv"), Path("/virtual/E02.mkv")]
-        def fake_probe(path, timeout):
+        def fake_probe(path, timeout, **kwargs):
             if path.name == "E01.mkv":
                 return {"streams": [{"codec_type": "audio", "tags": {"language": "fra"}, "disposition": {"default": 1}}]}
             return {"streams": [{"codec_type": "audio", "tags": {"language": "und"}, "disposition": {"default": 1}}]}
@@ -106,7 +106,7 @@ def main() -> int:
         main_app.templates.env.get_template(template.name)
     with TestClient(main_app.app) as client:
         health = client.get("/api/health")
-        require(health.status_code == 200 and health.json().get("version") in {"10.4.3-beta", "10.4.4-beta"}, "v10.4.3 health/version")
+        require(health.status_code == 200 and health.json().get("version") in {"10.4.3-beta", "10.4.4-beta", "10.5.0-beta"}, "v10.4.3 health/version")
         setup = client.post("/setup", data={"username": "v1043validator", "email": "v1043@example.invalid", "display_name": "V10.4.3 Validator", "password": "validation-password-123", "confirm": "validation-password-123"}, follow_redirects=False)
         require(setup.status_code == 303, "v10.4.3 administrator setup")
         landing = client.get("/", follow_redirects=False)
@@ -122,14 +122,14 @@ def main() -> int:
     readme = (root / "README.md").read_text(encoding="utf-8")
     changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
 
-    require(any(v in main_source for v in ('APP_VERSION = "10.4.3-beta"', 'APP_VERSION = "10.4.4-beta"')), "v10.4.3+ application marker missing")
+    require(any(v in main_source for v in ('APP_VERSION = "10.4.3-beta"', 'APP_VERSION = "10.4.4-beta"', 'APP_VERSION = "10.5.0-beta"')), "v10.4.3+ application marker missing")
     require("_verify_media_members_independently" in archive_source and '"verification_mode": "per_member"' in archive_source, "per-member RAR verification markers missing")
-    require("language:v1043:" in language_source, "v10.4.3 Language Guard cache marker missing")
+    require(("language:v1043:" in language_source) or ("language:v105:" in language_source), "v10.4.3+ Language Guard cache marker missing")
     require("unknown or truncated or errors" in language_source, "unknown-first Language Guard aggregation marker missing")
     require("_language_attention_row" in main_source and "language_enriched = dedupe_rows" in main_source, "Language Inbox unresolved-before-grouping marker missing")
     require("archive_media.extraction_root()" in tv_source and "outdir_logical" in tv_source and "view_path(outdir_logical)" in tv_source, "DUMB-visible split-output markers missing")
     require("/data/split-cache" in tv_source and "legacy" in tv_source.lower(), "legacy split-cache migration marker missing")
-    require(("arrnexus-static-v10.4.3" in sw) or ("arrnexus-static-v10.4.4" in sw), "v10.4.3+ service worker marker missing")
+    require(("arrnexus-static-v10.4.3" in sw) or (("arrnexus-static-v10.4.4" in sw) or ("arrnexus-static-v10.5.0" in sw)), "v10.4.3+ service worker marker missing")
     require("Version 10.4.3" in readme and "Recovery Pipeline & Language Inbox Hotfix" in readme, "README missing v10.4.3")
     require("10.4.3-beta — Recovery Pipeline & Language Inbox Hotfix" in changelog, "CHANGELOG missing v10.4.3")
     require((root / "docs" / "RELEASE_NOTES_v10.4.3.md").exists(), "v10.4.3 release notes missing")

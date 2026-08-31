@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import sqlite3
+from pathlib import Path
 import os
 import hashlib
 import hmac
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     failed INTEGER NOT NULL DEFAULT 0,
     rejected INTEGER NOT NULL DEFAULT 0,
     reviewed INTEGER NOT NULL DEFAULT 0,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
     message TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -64,6 +66,7 @@ CREATE TABLE IF NOT EXISTS job_items (
     stage TEXT NOT NULL DEFAULT 'queued',
     destination_key TEXT,
     message TEXT,
+    result_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
@@ -282,6 +285,14 @@ def _migrate(conn: sqlite3.Connection):
     job_cols = _columns(conn, "jobs")
     if job_cols and "reviewed" not in job_cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 0")
+    # v10.5 cooperative job control persists cancellation requests so worker
+    # threads/processes can stop safely without treating the operation as failed.
+    job_cols = _columns(conn, "jobs")
+    if job_cols and "cancel_requested" not in job_cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0")
+    item_cols = _columns(conn, "job_items")
+    if item_cols and "result_json" not in item_cols:
+        conn.execute("ALTER TABLE job_items ADD COLUMN result_json TEXT NOT NULL DEFAULT '{}'")
 
 
 def init_db():
@@ -423,23 +434,32 @@ def recent_activity(limit: int = 30):
 def create_job(kind: str, items: list[dict]) -> int:
     with db() as conn:
         cur = conn.execute(
-            "INSERT INTO jobs(kind,status,total,completed,failed,rejected,reviewed,message,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
-            (kind, "queued", len(items), 0, 0, 0, 0, "Queued", _utcnow()),
+            "INSERT INTO jobs(kind,status,total,completed,failed,rejected,reviewed,cancel_requested,message,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (kind, "queued", len(items), 0, 0, 0, 0, 0, "Queued", _utcnow()),
         )
         jid = int(cur.lastrowid)
         for item in items:
             conn.execute(
-                "INSERT INTO job_items(job_id,source_path,display_name,status,stage,destination_key,message,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                (jid, item.get("source_path"), item.get("display_name"), "queued", "queued", item.get("destination_key"), "Waiting", _utcnow()),
+                "INSERT INTO job_items(job_id,source_path,display_name,status,stage,destination_key,message,result_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (jid, str(item.get("source_path") or ""), str(item.get("display_name") or Path(str(item.get("source_path") or "")).name or "Job item"), "queued", "queued", str(item.get("destination_key") or ""), "Waiting", json.dumps(item.get("result") or {}), _utcnow()),
             )
         return jid
+
+
+def _job_item_dict(row) -> dict:
+    out = dict(row)
+    try:
+        out["result"] = json.loads(out.get("result_json") or "{}")
+    except Exception:
+        out["result"] = {}
+    return out
 
 
 def get_job(job_id: int):
     with db() as conn:
         job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         items = conn.execute("SELECT * FROM job_items WHERE job_id=? ORDER BY id", (job_id,)).fetchall()
-    return rowdict(job), [dict(x) for x in items]
+    return rowdict(job), [_job_item_dict(x) for x in items]
 
 
 def recent_jobs(limit: int = 20):
@@ -448,7 +468,7 @@ def recent_jobs(limit: int = 20):
 
 
 def update_job(job_id: int, **fields):
-    allowed = {"status", "total", "completed", "failed", "rejected", "reviewed", "message"}
+    allowed = {"status", "total", "completed", "failed", "rejected", "reviewed", "cancel_requested", "message"}
     pairs = [(k, v) for k, v in fields.items() if k in allowed]
     if not pairs:
         return
@@ -459,7 +479,9 @@ def update_job(job_id: int, **fields):
 
 
 def update_job_item(item_id: int, **fields):
-    allowed = {"status", "stage", "destination_key", "message"}
+    allowed = {"status", "stage", "destination_key", "message", "result_json"}
+    if "result" in fields:
+        fields["result_json"] = json.dumps(fields.pop("result") or {}, sort_keys=True)
     pairs = [(k, v) for k, v in fields.items() if k in allowed]
     if not pairs:
         return
@@ -468,6 +490,60 @@ def update_job_item(item_id: int, **fields):
     with db() as conn:
         conn.execute(f"UPDATE job_items SET {sql} WHERE id=?", vals)
 
+
+
+def add_job_item(job_id: int, *, source_path: str = "", display_name: str = "", status: str = "queued", stage: str = "queued", destination_key: str = "", message: str = "", result: dict | None = None) -> int:
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO job_items(job_id,source_path,display_name,status,stage,destination_key,message,result_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (int(job_id), source_path, display_name, status, stage, destination_key, message, json.dumps(result or {}, sort_keys=True), _utcnow()),
+        )
+        return int(cur.lastrowid)
+
+
+def job_cancel_requested(job_id: int) -> bool:
+    with db() as conn:
+        row = conn.execute("SELECT cancel_requested,status FROM jobs WHERE id=?", (int(job_id),)).fetchone()
+    return bool(row and (int(row["cancel_requested"] or 0) or str(row["status"] or "") in {"cancelling", "cancelled"}))
+
+
+def request_job_cancel(job_id: int) -> bool:
+    with db() as conn:
+        row = conn.execute("SELECT status FROM jobs WHERE id=?", (int(job_id),)).fetchone()
+        if not row:
+            return False
+        status = str(row["status"] or "")
+        if status not in {"queued", "running", "cancelling"}:
+            return False
+        if status == "queued":
+            conn.execute("UPDATE jobs SET cancel_requested=1,status='cancelled',message='Cancelled before start',updated_at=? WHERE id=?", (_utcnow(), int(job_id)))
+            conn.execute("UPDATE job_items SET status='cancelled',stage='cancelled',message='Cancelled before start',updated_at=? WHERE job_id=? AND status='queued'", (_utcnow(), int(job_id)))
+        else:
+            conn.execute("UPDATE jobs SET cancel_requested=1,status='cancelling',message='Cancellation requested; stopping safely',updated_at=? WHERE id=?", (_utcnow(), int(job_id)))
+        return True
+
+
+def mark_remaining_job_items_cancelled(job_id: int, message: str = "Cancelled") -> None:
+    with db() as conn:
+        conn.execute(
+            "UPDATE job_items SET status='cancelled',stage='cancelled',message=?,updated_at=? WHERE job_id=? AND status IN ('queued','running')",
+            (message, _utcnow(), int(job_id)),
+        )
+
+
+def remove_job(job_id: int) -> bool:
+    with db() as conn:
+        row = conn.execute("SELECT status FROM jobs WHERE id=?", (int(job_id),)).fetchone()
+        if not row or str(row["status"] or "") in {"queued", "running", "cancelling"}:
+            return False
+        conn.execute("DELETE FROM jobs WHERE id=?", (int(job_id),))
+        return True
+
+
+def clear_finished_jobs() -> int:
+    with db() as conn:
+        cur = conn.execute("DELETE FROM jobs WHERE status NOT IN ('queued','running','cancelling')")
+        return int(cur.rowcount or 0)
 
 def list_rules(media_type: str | None = None):
     with db() as conn:

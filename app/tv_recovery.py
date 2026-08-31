@@ -16,7 +16,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-from typing import Any
+from typing import Any, Callable
 
 from .db import cache_get, cache_set, setting_get, setting_set, log_event, add_activity
 from .namespace import view_path, is_within_logical
@@ -24,6 +24,7 @@ from .paths import source_root, dumb_root
 from . import archive_media, media_identity
 from .scanner import inspect_item, video_files, season_hints, episode_span
 from .router_service import existing_match_any, _client_for_instance, primary_client
+from .process_control import run_cancellable, CancelledOperation
 
 
 def staging_root() -> Path:
@@ -45,7 +46,7 @@ def save_staging_root(value: str) -> None:
     setting_set("tv_recovery.staging_root", str(path))
 
 
-def _probe(logical: Path) -> dict[str, Any]:
+def _probe(logical: Path, cancel_check: Callable[[], bool] | None = None) -> dict[str, Any]:
     actual = view_path(logical)
     cmd = [
         "ffprobe", "-v", "error", "-show_entries",
@@ -53,7 +54,7 @@ def _probe(logical: Path) -> dict[str, Any]:
         "-of", "json", str(actual),
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90, check=False)
+        proc = run_cancellable(cmd, capture_output=True, text=True, timeout=90, check=False, cancel_check=cancel_check)
     except FileNotFoundError as exc:
         raise RuntimeError("ffprobe is not installed in the ArrNexus container") from exc
     if proc.returncode != 0:
@@ -241,7 +242,7 @@ def _file_analysis(*, logical: Path, probe: dict[str, Any], season: int, span: t
     }
 
 
-async def analyse_source(source_path: str) -> dict[str, Any]:
+async def analyse_source(source_path: str, cancel_check: Callable[[], bool] | None = None) -> dict[str, Any]:
     if not (
         is_within_logical(source_path, source_root())
         or is_within_logical(source_path, archive_media.extraction_root())
@@ -257,6 +258,8 @@ async def analyse_source(source_path: str) -> dict[str, Any]:
     all_files = video_files(source_path)
     seasons = set(item.season_numbers or [])
     for logical in all_files:
+        if cancel_check and cancel_check():
+            raise CancelledOperation("TV recovery analysis cancelled")
         span = episode_span(logical.name)
         if span:
             seasons.add(span[0])
@@ -268,11 +271,13 @@ async def analyse_source(source_path: str) -> dict[str, Any]:
     files: list[dict[str, Any]] = []
 
     for logical in all_files:
+        if cancel_check and cancel_check():
+            raise CancelledOperation("TV recovery analysis cancelled")
         span = episode_span(logical.name)
         season = _season_from_file(logical.name, fallback_season)
         if not season:
             continue
-        probe = _probe(logical)
+        probe = _probe(logical, cancel_check=cancel_check)
         sonarr_expected = int((sonarr.get("expected") or {}).get(season) or 0)
         tmdb_season = ((tmdb.get("seasons") or {}).get(season) or {})
         tmdb_expected = int(tmdb_season.get("episode_count") or 0)
@@ -312,9 +317,9 @@ def _safe_name(value: str) -> str:
     return text or "TV Recovery"
 
 
-def _verify_file(path: Path) -> float:
+def _verify_file(path: Path, cancel_check: Callable[[], bool] | None = None) -> float:
     cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
+    proc = run_cancellable(cmd, capture_output=True, text=True, timeout=60, check=False, cancel_check=cancel_check)
     if proc.returncode != 0:
         raise RuntimeError(f"Generated file failed ffprobe: {path.name}")
     try:
@@ -348,7 +353,7 @@ def _archive_superseded_recovered_source(source: Path) -> str | None:
     return str(hidden_logical)
 
 
-def split_plan(digest: str, file_path: str, allow_estimated: bool = False) -> dict[str, Any]:
+def split_plan(digest: str, file_path: str, allow_estimated: bool = False, cancel_check: Callable[[], bool] | None = None) -> dict[str, Any]:
     plan = cache_get(f"tv_recovery:plan:{digest}")
     if not isinstance(plan, dict):
         raise RuntimeError("TV Recovery plan expired; analyse the source again")
@@ -356,7 +361,7 @@ def split_plan(digest: str, file_path: str, allow_estimated: bool = False) -> di
     if not row:
         raise RuntimeError("Selected TV file is not part of this recovery plan")
     source = Path(str(row["path"]))
-    current_probe = _probe(source)
+    current_probe = _probe(source, cancel_check=cancel_check)
     if _file_signature(source, current_probe.get("duration") or 0) != str(row.get("source_signature") or ""):
         raise RuntimeError("Selected TV file changed after analysis; analyse it again before splitting")
     if not row.get("needs_split") or str(row.get("mode") or "") == "single":
@@ -383,6 +388,8 @@ def split_plan(digest: str, file_path: str, allow_estimated: bool = False) -> di
 
     outputs = []
     for b in row.get("boundaries") or []:
+        if cancel_check and cancel_check():
+            raise CancelledOperation("TV episode split cancelled")
         ep = int(b.get("episode") or 0)
         start = float(b.get("start") or 0)
         end = float(b.get("end") or 0)
@@ -397,11 +404,15 @@ def split_plan(digest: str, file_path: str, allow_estimated: bool = False) -> di
             "ffmpeg", "-y", "-v", "error", "-ss", f"{start:.3f}", "-i", str(actual),
             "-t", f"{end-start:.3f}", "-map", "0", "-c", "copy", "-avoid_negative_ts", "make_zero", str(tmp),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=max(180, int((end - start) * 1.75)), check=False)
+        try:
+            proc = run_cancellable(cmd, capture_output=True, text=True, timeout=max(180, int((end - start) * 1.75)), check=False, cancel_check=cancel_check)
+        except CancelledOperation:
+            tmp.unlink(missing_ok=True)
+            raise
         if proc.returncode != 0:
             tmp.unlink(missing_ok=True)
             raise RuntimeError(f"FFmpeg split failed for S{season:02d}E{ep:02d}: {' '.join((proc.stderr or '').split())[:500]}")
-        duration = _verify_file(tmp)
+        duration = _verify_file(tmp, cancel_check=cancel_check)
         tmp.replace(output)
         outputs.append({"episode": ep, "path": str(output_logical), "duration": duration, "expected_duration": end - start})
 

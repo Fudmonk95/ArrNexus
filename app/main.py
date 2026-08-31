@@ -22,7 +22,8 @@ from .config import settings
 from .db import (
     init_db, recent_imports, latest_import_by_source, successful_imports_by_source, latest_success_for_source,
     set_item_state, item_states, recent_activity, add_activity,
-    create_job, get_job, recent_jobs, update_job, update_job_item,
+    create_job, get_job, recent_jobs, update_job, update_job_item, add_job_item,
+    job_cancel_requested, request_job_cancel, mark_remaining_job_items_cancelled, remove_job, clear_finished_jobs,
     list_rules, save_rule, delete_rule, mark_import_undone, cache_get, cache_set,
     authenticate_user, get_user, update_user, setting_get, setting_set, activity_by_day, request_map, list_users, create_user, delete_user, create_password_reset, consume_password_reset,
     user_count, log_event, list_logs, log_sources, list_mounts, save_mount, delete_mount,
@@ -32,7 +33,7 @@ from .db import (
 from .scanner import scan_source, scan_media_root, inspect_item, normalize_title, human_size, invalidate_scan_cache
 from .routing import decide_movie, decide_tv
 from .arr import RadarrClient, SonarrClient, LidarrClient, ProwlarrClient, ArrError, poster_url
-from .router_service import import_one, route_item, discover_lookup, discover_add, client_for_instance, LanguageRejectedSafe
+from .router_service import import_one, import_grouped_tv_sources, route_item, discover_lookup, discover_add, client_for_instance, LanguageRejectedSafe
 from .importer import ImportErrorSafe, unlink_created, scan_broken_symlinks, repair_broken_symlink
 from .namespace import view_path, is_within_logical, namespace_status, NamespaceError
 from .instances import discover_instances, invalidate_instance_cache
@@ -73,7 +74,7 @@ from .decypharr import DecypharrClient
 from .language_guard import (
     cached_language_result, inspect_source_languages, load_language_policy,
     save_language_policy, result_badge as language_result_badge,
-    set_language_override, language_override,
+    set_language_override, language_override, language_checks_enabled, set_language_checks_enabled,
 )
 from .providers import list_provider_states, save_provider, provider_definition, categories as provider_categories, migrate_legacy_providers
 from .readiness import stack_readiness
@@ -93,6 +94,8 @@ from . import archive_rescue
 from . import tv_recovery
 from . import archive_media
 from . import media_identity
+from . import tv_source_selection
+from .process_control import CancelledOperation
 
 BASE = Path(__file__).resolve().parent
 app = FastAPI(title="ArrNexus")
@@ -101,10 +104,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.4.4-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.5.0-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "10.4.4-beta"
+APP_VERSION = "10.5.0-beta"
 
 
 @app.middleware("http")
@@ -689,7 +692,11 @@ async def enrich_items(items):
             canonical_key = f"movie:{normalize_title(display_title)}:{display_year or 0}"
         language_guard = cached_language_result(item.path, item.fingerprint)
         language_badge_key, language_badge_label = language_result_badge(language_guard)
-        if language_guard is None and state in {"language_rejected", "language_issue", "language_review"}:
+        if not language_checks_enabled():
+            language_badge_key, language_badge_label = "disabled", "Language Checks OFF"
+            if state in {"language_rejected", "language_rejected_removed", "language_issue", "language_review"}:
+                state = "linked" if linked_paths else "waiting"
+        elif language_guard is None and state in {"language_rejected", "language_issue", "language_review"}:
             language_badge_key, language_badge_label = "recheck_required", "Re-check required"
         return {
             "item": item,
@@ -723,41 +730,64 @@ async def enrich_items(items):
     return await asyncio.gather(*(one(x) for x in items))
 
 
-def dedupe_rows(rows: list[dict]) -> list[dict]:
-    """Collapse multiple RD torrents for the same title into one useful card.
+def _linked_tv_seasons(paths: list[str]) -> list[int]:
+    seasons: set[int] = set()
+    for value in paths or []:
+        text = str(value)
+        m = re.search(r"(?:/|\\)Season[ ._-]?(\d{1,2})(?:/|\\)", text, re.I)
+        if not m:
+            m = re.search(r"\bS(\d{1,2})E\d{1,3}\b", Path(text).name, re.I)
+        if m:
+            seasons.add(int(m.group(1)))
+    return sorted(seasons)
 
-    The best available source (resolution, then size) becomes the selectable
-    source, while title-level managed/imported state is aggregated from every
-    duplicate. This means an already imported 1080p copy plus a new 2160p copy
-    appears once and can correctly surface as an upgrade.
-    """
+
+def dedupe_rows(rows: list[dict]) -> list[dict]:
+    """Collapse duplicates while keeping TV source selection season-aware."""
     groups: dict[str, list[dict]] = {}
     for row in rows:
         groups.setdefault(row.get("canonical_key") or row["item"].path, []).append(row)
     out = []
     state_rank = {"imported": 4, "linked": 3, "waiting": 2, "ignored": 1}
-    for group in groups.values():
-        # Prefer a usable current-policy source for import, but aggregate the
-        # language state across every grouped provider copy for display/cleanup.
+    lang_on = language_checks_enabled()
+    for raw_group in groups.values():
         language_rank = {"pass": 6, "disabled": 5, "unchecked": 4, "recheck_required": 3, "unknown": 2, "probe_failed": 1, "fail": 0}
         group = sorted(
-            group,
-            key=lambda r: (language_rank.get(r.get("language_badge_key"), 2), r["item"].quality or 0, r["item"].size_bytes or 0, state_rank.get(r.get("state"), 0)),
-            reverse=True,
+            raw_group,
+            key=lambda r: (
+                language_rank.get(r.get("language_badge_key"), 2) if lang_on else 5,
+                r["item"].quality or 0, r["item"].size_bytes or 0,
+                state_rank.get(r.get("state"), 0),
+            ), reverse=True,
         )
+
+        tv_selection = None
+        if group and group[0]["item"].media_type == "tv" and len(group) > 1:
+            try:
+                tv_selection = tv_source_selection.describe_group_sources([r["item"].path for r in group])
+                preferred_counts: dict[str, int] = {}
+                for path in (tv_selection.get("preferred_by_season") or {}).values():
+                    preferred_counts[str(path)] = preferred_counts.get(str(path), 0) + 1
+                if preferred_counts:
+                    preferred_path = max(preferred_counts, key=lambda x: preferred_counts[x])
+                    group = sorted(group, key=lambda r: (r["item"].path == preferred_path, r["item"].quality or 0, r["item"].size_bytes or 0), reverse=True)
+            except Exception:
+                tv_selection = None
+
         primary = group[0]
         managed = [r for r in group if r.get("state") in {"imported", "linked"} or r.get("linked_paths")]
-        # Persistent historical states do not count as a current rejection.
-        # Only a current-policy fail may present as Language rejected.
-        rejected_rows = [r for r in group if r.get("language_badge_key") == "fail"]
-        language_counts = {}
+        rejected_rows = [r for r in group if lang_on and r.get("language_badge_key") == "fail"]
+        language_counts: dict[str, int] = {}
         for row in group:
-            key = str(row.get("language_badge_key") or "unchecked")
+            key = "disabled" if not lang_on else str(row.get("language_badge_key") or "unchecked")
             language_counts[key] = language_counts.get(key, 0) + 1
         primary["language_group_counts"] = language_counts
-        primary["rejected_sources"] = [r["item"].path for r in group if r.get("language_badge_key") == "fail" and bool((r.get("language_guard") or {}).get("destructive_safe"))]
-        primary["recheck_sources"] = [r["item"].path for r in group if r.get("language_badge_key") == "recheck_required"]
-        if language_counts.get("fail"):
+        primary["rejected_sources"] = [] if not lang_on else [r["item"].path for r in group if r.get("language_badge_key") == "fail" and bool((r.get("language_guard") or {}).get("destructive_safe"))]
+        primary["recheck_sources"] = [] if not lang_on else [r["item"].path for r in group if r.get("language_badge_key") == "recheck_required"]
+        if not lang_on:
+            primary["language_badge_key"] = "disabled"
+            primary["language_badge_label"] = "Language Checks OFF"
+        elif language_counts.get("fail"):
             n = language_counts["fail"]
             primary["language_badge_key"] = "fail"
             primary["language_badge_label"] = f"{n} rejected source{'s' if n != 1 else ''}" if len(group) > 1 else "Language rejected"
@@ -768,42 +798,59 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
         elif language_counts.get("unknown") or language_counts.get("probe_failed"):
             primary["language_badge_key"] = "unknown"
             primary["language_badge_label"] = "Manual review"
-        ignored = len(group) and all(r.get("state") == "ignored" for r in group)
+
+        ignored = bool(group) and all(r.get("state") == "ignored" for r in group)
         primary["duplicate_count"] = len(group)
         primary["duplicate_sources"] = [r["item"].path for r in group]
         if primary["item"].media_type == "tv":
+            annotations = {str(x.get("path")): x for x in ((tv_selection or {}).get("sources") or [])}
             series_sources = []
             seasons = set()
             for r in group:
                 nums = list(r["item"].season_numbers or [])
                 seasons.update(nums)
+                ann = annotations.get(r["item"].path, {})
                 series_sources.append({
-                    "path": r["item"].path,
-                    "name": r["item"].name,
-                    "seasons": nums,
-                    "video_count": r["item"].video_count,
-                    "quality": r["item"].quality,
-                    "language_key": r.get("language_badge_key") or "unchecked",
-                    "language_label": r.get("language_badge_label") or "Language unchecked",
-                    "state": r.get("state") or "waiting",
-                    "provenance": r.get("provenance") or "DMM / provider source",
+                    "path": r["item"].path, "name": r["item"].name, "seasons": nums,
+                    "video_count": r["item"].video_count, "quality": r["item"].quality,
+                    "language_key": "disabled" if not lang_on else (r.get("language_badge_key") or "unchecked"),
+                    "language_label": "Language Checks OFF" if not lang_on else (r.get("language_badge_label") or "Language unchecked"),
+                    "state": r.get("state") or "waiting", "provenance": r.get("provenance") or "DMM / provider source",
+                    "selection_status": ann.get("selection_status") or "candidate",
+                    "preferred_seasons": ann.get("preferred_seasons") or [],
+                    "superseded_seasons": ann.get("superseded_seasons") or [],
+                    "recovery_seasons": ann.get("recovery_seasons") or [],
+                    "individual_count": int(ann.get("individual_count") or 0),
+                    "recovery_count": int(ann.get("recovery_count") or 0),
                 })
             primary["series_sources"] = sorted(series_sources, key=lambda x: (x["seasons"] or [999], x["name"].lower()))
-            primary["series_seasons"] = sorted(seasons)
+            primary["series_seasons"] = sorted(seasons | set((tv_selection or {}).get("seasons") or []))
             primary["source_pack_count"] = len(group)
+            primary["preferred_by_season"] = (tv_selection or {}).get("preferred_by_season") or {}
+
         primary["imported_copy_count"] = len(managed)
         primary["linked_paths"] = sorted({p for r in group for p in (r.get("linked_paths") or [])})
         primary["existing"] = primary.get("existing") or next((r.get("existing") for r in group if r.get("existing")), None)
         primary["instance"] = primary.get("instance") or next((r.get("instance") for r in group if r.get("instance")), None)
         primary["existing_resolution"] = max([int(r.get("existing_resolution") or 0) for r in group], default=0)
         primary["changed"] = any(bool(r.get("changed")) for r in group)
+
         if ignored:
             primary["state"] = "ignored"
         elif managed:
-            primary["state"] = "imported"
+            if primary["item"].media_type == "tv":
+                linked_seasons = _linked_tv_seasons(primary["linked_paths"])
+                expected_preferred = sorted(int(x) for x in (primary.get("preferred_by_season") or {}).keys())
+                primary["imported_seasons"] = linked_seasons
+                primary["pending_seasons"] = sorted(set(expected_preferred) - set(linked_seasons))
+                # A superseded inferior source pack never forces Waiting. Only
+                # a genuinely unimported preferred season makes this partial.
+                primary["state"] = "partial" if primary["pending_seasons"] else "imported"
+            else:
+                primary["state"] = "imported"
         elif rejected_rows:
             primary["state"] = "language_rejected"
-        elif language_counts.get("recheck_required") or language_counts.get("unknown") or language_counts.get("probe_failed"):
+        elif lang_on and (language_counts.get("recheck_required") or language_counts.get("unknown") or language_counts.get("probe_failed")):
             primary["state"] = "language_review"
         else:
             primary["state"] = "waiting"
@@ -1111,6 +1158,8 @@ def _language_attention_row(row: dict) -> bool:
     duplicate title has other unresolved provider copies. Grouping for the
     Language tab therefore happens *after* resolved copies are removed.
     """
+    if not language_checks_enabled():
+        return False
     return str(row.get("language_badge_key") or "unchecked") in {"fail", "probe_failed", "unknown", "recheck_required"}
 
 
@@ -1137,7 +1186,7 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
     counts = {
         "all": len(enriched),
         "waiting": sum(1 for x in enriched if x["state"] == "waiting"),
-        "imported": sum(1 for x in enriched if x["state"] in {"imported", "linked"}),
+        "imported": sum(1 for x in enriched if x["state"] in {"imported", "linked", "partial"}),
         "ignored": sum(1 for x in enriched if x["state"] == "ignored"),
         "duplicate": sum(1 for x in enriched if x.get("duplicate_count", 1) > 1),
         "upgrade": sum(1 for x in enriched if x.get("upgrade")),
@@ -1149,7 +1198,7 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
         elif status == "duplicate":
             enriched = [x for x in enriched if x.get("duplicate_count", 1) > 1]
         elif status == "imported":
-            enriched = [x for x in enriched if x["state"] in {"imported", "linked"}]
+            enriched = [x for x in enriched if x["state"] in {"imported", "linked", "partial"}]
         elif status == "language":
             enriched = language_enriched
         else:
@@ -1168,6 +1217,7 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
         "tv_roots": tv_roots(),
         "q": q, "status": status, "media_type": media_type, "view": view,
         "snapshot_age": snapshot_age, "snapshot_refreshing": refreshing,
+        "language_policy": load_language_policy(),
     })
 
 
@@ -1206,7 +1256,7 @@ async def item_detail(request: Request, path: str, identity_q: str = "", identit
             jf = {"configured": True, "found": False, "items": [], "error": str(exc)}
         state = (item_states().get(item.path) or {}).get("state", "")
         language = cached_language_result(item.path, item.fingerprint)
-        recheck_required = language is None and state in {"language_rejected", "language_issue", "language_review"}
+        recheck_required = language_checks_enabled() and language is None and state in {"language_rejected", "language_issue", "language_review"}
         return templates.TemplateResponse("item.html", {
             "request": request, "item": item, "display_title": display_title, "display_year": display_year,
             "existing": routed["existing"], "instance": routed["existing_instance"], "lookup": routed["lookup"],
@@ -1336,11 +1386,18 @@ async def run_import_job(job_id: int):
     job, job_items = get_job(job_id)
     if not job:
         return
+    group_map = cache_get(f"import_job:group_sources:{job_id}") or {}
     update_job(job_id, status="running", message="Import in progress")
     completed = failed = rejected = reviewed = 0
+    cancelled = False
+    cancel_check = lambda: job_cancel_requested(job_id)
     for ji in job_items:
         iid = int(ji["id"])
-        source_path = ji["source_path"]
+        source_path = str(ji["source_path"])
+        if cancel_check():
+            cancelled = True
+            update_job_item(iid, status="cancelled", stage="cancelled", message="Cancelled before this item started")
+            break
         try:
             update_job_item(iid, status="running", stage="identifying", message="Identifying and routing")
             item = inspect_item(source_path)
@@ -1354,47 +1411,61 @@ async def run_import_job(job_id: int):
             else:
                 selected_type = override or item.media_type
                 update_job_item(iid, destination_key=f"{selected_type}:{dest}", stage="linking", message=f"Manual route {selected_type}:{dest}")
-            result = await import_one(source_path, dest, media_type_override=override or None)
-            update_job_item(iid, status="complete", stage="complete", message=f"Imported to {result['arr_instance']} / {result['destination_key']}")
-            log_event("info","import","item_complete",Path(source_path).name,{"job_id":job_id,"destination":result.get("destination_key"),"arr_instance":result.get("arr_instance")})
-            completed += 1
+
+            grouped_sources = list((group_map.get(source_path) or [])) if isinstance(group_map, dict) else []
+            if item.media_type == "tv" and len(grouped_sources) > 1:
+                update_job_item(iid, stage="season_plan", message=f"Choosing preferred episodes across {len(grouped_sources)} source packs")
+                result = await import_grouped_tv_sources(grouped_sources, dest, primary_source=source_path, cancel_check=cancel_check)
+                plan = result.get("plan") or {}
+                summary = str(plan.get("summary") or "Season-aware TV import complete")
+                imported = len(result.get("created") or [])
+                if imported:
+                    completed += 1
+                    update_job_item(iid, status="complete", stage="partial_complete" if plan.get("recovery_seasons") or plan.get("unavailable_seasons") else "complete", message=summary, result=plan)
+                    log_event("info", "import", "grouped_tv_complete", summary, {"job_id": job_id, "source": source_path, "created": imported})
+                else:
+                    reviewed += 1
+                    update_job_item(iid, status="review", stage="tv_recovery_required", message=summary or "No safe individual episodes are currently importable", result=plan)
+            else:
+                result = await import_one(source_path, dest, media_type_override=override or None, cancel_check=cancel_check)
+                update_job_item(iid, status="complete", stage="complete", message=f"Imported to {result['arr_instance']} / {result['destination_key']}", result={"created": len(result.get("created") or []), "language_checks": result.get("language_checks")})
+                log_event("info", "import", "item_complete", Path(source_path).name, {"job_id": job_id, "destination": result.get("destination_key"), "arr_instance": result.get("arr_instance")})
+                completed += 1
+        except CancelledOperation as exc:
+            cancelled = True
+            update_job_item(iid, status="cancelled", stage="cancelled", message=str(exc) or "Cancelled")
+            log_event("info", "jobs", "item_cancelled", str(exc), {"job_id": job_id, "source": source_path})
+            break
         except LanguageRejectedSafe as exc:
             cleanup = getattr(exc, "cleanup", {}) or {}
             manual_review = bool(getattr(exc, "manual_review", False))
             if manual_review:
-                cleanup_text = "Manual review required · source retained"
-                stage = "language_review"
-                event = "item_review"
+                cleanup_text, stage, event = "Manual review required · source retained", "language_review", "item_review"
             else:
                 cleanup_text = "Rejected Debrid source removed" if cleanup.get("deleted") else "Rejected source retained"
-                stage = "language_rejected"
-                event = "item_rejected"
-            # Manual Review is a protected/uncertain outcome, not a confirmed
-            # language rejection. Keep the item blocked, but report it separately.
+                stage, event = "language_rejected", "item_rejected"
             update_job_item(iid, status="review" if manual_review else "rejected", stage=stage, message=f"{str(exc)} · {cleanup_text}")
-            log_event("warning","language_guard",event,str(exc),{"job_id":job_id,"source":source_path,"provider_deleted":bool(cleanup.get("deleted")),"manual_review":manual_review})
-            if manual_review:
-                reviewed += 1
-            else:
-                rejected += 1
+            log_event("warning", "language_guard", event, str(exc), {"job_id": job_id, "source": source_path, "provider_deleted": bool(cleanup.get("deleted")), "manual_review": manual_review})
+            if manual_review: reviewed += 1
+            else: rejected += 1
         except Exception as exc:
             update_job_item(iid, status="error", stage="error", message=str(exc))
-            log_event("error","import","item_failed",str(exc),{"job_id":job_id,"source":source_path})
+            log_event("error", "import", "item_failed", str(exc), {"job_id": job_id, "source": source_path})
             failed += 1
-        _INBOX_SNAPSHOT.clear()
-        invalidate_scan_cache()
-        invalidate_library_cache()
-        update_job(job_id, completed=completed, failed=failed, rejected=rejected, reviewed=reviewed, message=f"{completed} complete, {reviewed} manual review, {rejected} language rejected, {failed} failed")
+        _INBOX_SNAPSHOT.clear(); invalidate_scan_cache(); invalidate_library_cache()
+        update_job(job_id, completed=completed, failed=failed, rejected=rejected, reviewed=reviewed, message=f"{completed} complete, {reviewed} review, {rejected} language rejected, {failed} failed")
+
+    if cancelled or job_cancel_requested(job_id):
+        mark_remaining_job_items_cancelled(job_id, "Cancelled by user")
+        update_job(job_id, status="cancelled", completed=completed, failed=failed, rejected=rejected, reviewed=reviewed, message=f"Cancelled: {completed} completed safely before cancellation")
+        _INBOX_SNAPSHOT.clear(); invalidate_scan_cache(); invalidate_library_cache()
+        return
+
     final_status = "complete_with_errors" if failed else ("complete_with_rejections" if rejected else ("complete_with_reviews" if reviewed else "complete"))
-    update_job(job_id, status=final_status, completed=completed, failed=failed, rejected=rejected, reviewed=reviewed, message=f"Finished: {completed} complete, {reviewed} manual review, {rejected} language rejected, {failed} failed")
-    log_event("warning" if (failed or rejected or reviewed) else "info","import","job_finished",f"Job #{job_id}: {completed} complete, {reviewed} manual review, {rejected} language rejected, {failed} failed",{"job_id":job_id,"completed":completed,"reviewed":reviewed,"rejected":rejected,"failed":failed})
+    update_job(job_id, status=final_status, completed=completed, failed=failed, rejected=rejected, reviewed=reviewed, message=f"Finished: {completed} complete, {reviewed} review, {rejected} language rejected, {failed} failed")
+    log_event("warning" if (failed or rejected or reviewed) else "info", "import", "job_finished", f"Job #{job_id}: {completed} complete, {reviewed} review, {rejected} language rejected, {failed} failed", {"job_id": job_id})
     try:
-        await send_notification(
-            f"ArrNexus import job #{job_id}",
-            f"{completed} completed, {reviewed} manual review, {rejected} language rejected, {failed} failed.",
-            "warning" if (failed or rejected or reviewed) else "info",
-            "import_job",
-        )
+        await send_notification(f"ArrNexus import job #{job_id}", f"{completed} completed, {reviewed} review, {rejected} language rejected, {failed} failed.", "warning" if (failed or rejected or reviewed) else "info", "import_job")
     except Exception:
         pass
 
@@ -1488,6 +1559,8 @@ async def run_language_cleanup_job(job_id: int):
 @app.post("/inbox/language-scan")
 async def inbox_language_scan(request: Request):
     require_auth(request)
+    if not language_checks_enabled():
+        return RedirectResponse("/inbox?notice=" + quote("Language Checks are OFF — no ffprobe language scan was started"), status_code=303)
     form = await request.form()
     scope = str(form.get("scope") or "selected").strip().lower()
     force = str(form.get("force") or "").lower() in {"1", "true", "yes", "on"}
@@ -1506,7 +1579,7 @@ async def inbox_language_scan(request: Request):
     valid = []
     seen = set()
     for path in candidates:
-        if path in seen or not is_within_logical(path, source_root()):
+        if path in seen or not _managed_media_source(path):
             continue
         seen.add(path)
         valid.append({"source_path": path, "display_name": Path(path).name, "destination_key": "language"})
@@ -1520,6 +1593,8 @@ async def inbox_language_scan(request: Request):
 @app.post("/inbox/language-delete")
 async def inbox_language_delete(request: Request):
     require_auth(request)
+    if not language_checks_enabled():
+        raise HTTPException(409, "Language Checks are OFF; provider deletion based on language state is disabled")
     form = await request.form()
     single = str(form.get("single_source_path") or "").strip()
     paths = [single] if single else [str(x) for x in form.getlist("source_path")]
@@ -1552,6 +1627,20 @@ async def bulk_import(request: Request):
     if not valid:
         raise HTTPException(400, "No valid source paths")
     jid = create_job("bulk_import", valid)
+    # The checkbox represents the grouped Inbox card, but v10.5 stores every
+    # underlying TV source pack on the job so the worker can choose per season.
+    try:
+        snapshot, _age, _refreshing = await _INBOX_SNAPSHOT.get(_build_inbox_snapshot)
+        group_sources = {}
+        for entry in valid:
+            source = entry["source_path"]
+            row = next((x for x in (snapshot.get("rows") or []) if x.get("item") and x["item"].path == source), None)
+            if row and row["item"].media_type == "tv" and len(row.get("series_sources") or []) > 1:
+                group_sources[source] = [str(x.get("path")) for x in row.get("series_sources") or [] if str(x.get("path") or "")]
+        if group_sources:
+            cache_set(f"import_job:group_sources:{jid}", group_sources)
+    except Exception as exc:
+        log_event("warning", "import", "group_plan_cache_failed", str(exc), {"job_id": jid})
     _launch(run_import_job(jid))
     log_event("info","import","bulk_job_started",f"Import job #{jid} started with {len(valid)} item(s)",{"job_id":jid,"destination":destination})
     if request.headers.get("x-requested-with") == "ArrNexus" or "application/json" in request.headers.get("accept",""):
@@ -1585,6 +1674,13 @@ async def single_import(
             "source": "tmdb" if tid else "administrator", "confidence": 100,
         })
     jid = create_job("import", [{"source_path": source_path, "display_name": Path(source_path).name, "destination_key": destination_key}])
+    try:
+        snapshot, _age, _refreshing = await _INBOX_SNAPSHOT.get(_build_inbox_snapshot)
+        row = next((x for x in (snapshot.get("rows") or []) if x.get("item") and x["item"].path == source_path), None)
+        if row and row["item"].media_type == "tv" and len(row.get("series_sources") or []) > 1:
+            cache_set(f"import_job:group_sources:{jid}", {source_path: [str(x.get("path")) for x in row["series_sources"] if str(x.get("path") or "")]})
+    except Exception:
+        pass
     _launch(run_import_job(jid))
     log_event("info","import","job_started",f"Import job #{jid} started",{"job_id":jid,"source":source_path,"destination":destination_key})
     if request.headers.get("x-requested-with") == "ArrNexus" or "application/json" in request.headers.get("accept",""):
@@ -1607,6 +1703,30 @@ async def job_page(request: Request, job_id: int):
     return templates.TemplateResponse("job.html", {"request": request, "job": job, "items": items})
 
 
+@app.post("/jobs/{job_id}/cancel")
+async def cancel_job(request: Request, job_id: int):
+    require_auth(request)
+    if not request_job_cancel(job_id):
+        raise HTTPException(409, "Job is already finished or cannot be cancelled")
+    log_event("info", "jobs", "cancel_requested", f"Cancellation requested for job #{job_id}", {"job_id": job_id})
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@app.post("/jobs/{job_id}/remove")
+async def remove_finished_job(request: Request, job_id: int):
+    require_auth(request)
+    if not remove_job(job_id):
+        raise HTTPException(409, "Only finished jobs can be removed")
+    return RedirectResponse("/jobs", status_code=303)
+
+
+@app.post("/jobs/clear-finished")
+async def clear_finished_job_history(request: Request):
+    require_auth(request)
+    removed = clear_finished_jobs()
+    return RedirectResponse("/jobs?notice=" + quote(f"Cleared {removed} finished job(s); no media was changed"), status_code=303)
+
+
 @app.get("/api/jobs/{job_id}")
 async def job_api(request: Request, job_id: int):
     require_auth(request)
@@ -1619,7 +1739,7 @@ async def job_api(request: Request, job_id: int):
 @app.get("/api/jobs-active")
 async def active_jobs_api(request: Request):
     require_auth(request)
-    rows=[dict(x) for x in recent_jobs(20) if x["status"] in {"queued","running"}]
+    rows=[dict(x) for x in recent_jobs(20) if x["status"] in {"queued","running","cancelling"}]
     return {"jobs":rows}
 
 
@@ -2120,6 +2240,22 @@ async def settings_user_delete(request: Request, user_id: int):
     except Exception as exc:
         return RedirectResponse(f"/settings?notice={quote(str(exc))}", status_code=303)
 
+
+
+@app.post("/settings/language-checks")
+async def settings_language_checks(request: Request):
+    require_auth(request)
+    form = await request.form()
+    enabled = str(form.get("enabled") or "false").lower() in {"1", "true", "yes", "on"}
+    set_language_checks_enabled(enabled)
+    _INBOX_SNAPSHOT.clear()
+    log_event("info", "language_guard", "master_toggle", f"Language Checks {'ON' if enabled else 'OFF'}")
+    return_to = str(form.get("return_to") or "/inbox")
+    if not return_to.startswith("/") or return_to.startswith("//"):
+        return_to = "/inbox"
+    message = "Language Checks ON" if enabled else "Language Checks OFF — imports will bypass Language Guard"
+    sep = "&" if "?" in return_to else "?"
+    return RedirectResponse(return_to + sep + "notice=" + quote(message), status_code=303)
 
 
 @app.post("/settings/language-guard")
@@ -3884,118 +4020,149 @@ async def tv_recovery_staging(request: Request):
         return RedirectResponse("/tv-recovery/analyse?path=" + quote(path) + "&error=" + quote(str(exc)), status_code=303)
 
 
-@app.post("/tv-recovery/split", response_class=HTMLResponse)
+async def run_tv_split_job(job_id: int):
+    job, items = get_job(job_id)
+    if not job or not items:
+        return
+    cfg = cache_get(f"tv_recovery:job:{job_id}") or {}
+    item = items[0]
+    iid = int(item["id"])
+    cancel_check = lambda: job_cancel_requested(job_id)
+    update_job(job_id, status="running", message="TV Recovery split in progress")
+    try:
+        update_job_item(iid, status="running", stage="ffmpeg_split", message="Generating and ffprobe-verifying episode files")
+        result = await asyncio.to_thread(
+            tv_recovery.split_plan,
+            str(cfg.get("digest") or ""), str(cfg.get("file_path") or ""), bool(cfg.get("allow_estimated")),
+            cancel_check=cancel_check,
+        )
+        update_job_item(iid, status="complete", stage="complete", message=f"Generated {len(result.get('created') or [])} verified episode file(s)", result=result)
+        update_job(job_id, status="complete", completed=1, message="TV Recovery split complete")
+        invalidate_scan_cache(); invalidate_library_cache(); _INBOX_SNAPSHOT.clear()
+    except CancelledOperation as exc:
+        update_job_item(iid, status="cancelled", stage="cancelled", message=str(exc))
+        mark_remaining_job_items_cancelled(job_id, "Cancelled by user")
+        update_job(job_id, status="cancelled", message="TV Recovery split cancelled; completed outputs were retained")
+        invalidate_scan_cache(); invalidate_library_cache(); _INBOX_SNAPSHOT.clear()
+    except Exception as exc:
+        update_job_item(iid, status="error", stage="error", message=str(exc))
+        update_job(job_id, status="complete_with_errors", failed=1, message=str(exc))
+
+
+@app.post("/tv-recovery/split")
 async def tv_recovery_split(request: Request):
     require_admin(request)
     form = await request.form()
     digest = str(form.get("digest") or "")
     file_path = str(form.get("file_path") or "")
     allow_estimated = _v102_truth(form.get("allow_estimated")) if '_v102_truth' in globals() else str(form.get("allow_estimated") or "").lower() in {"1","true","yes","on"}
-    try:
-        result = await asyncio.to_thread(tv_recovery.split_plan, digest, file_path, allow_estimated)
-        invalidate_scan_cache()
-        _INBOX_SNAPSHOT.clear()
-        plan = cache_get(f"tv_recovery:plan:{digest}")
-        return templates.TemplateResponse("tv_recovery.html", {"request": request, "plan": plan, "result": result, "error": ""})
-    except Exception as exc:
-        plan = cache_get(f"tv_recovery:plan:{digest}")
-        return templates.TemplateResponse("tv_recovery.html", {"request": request, "plan": plan, "result": None, "error": str(exc)}, status_code=400)
-
+    plan = cache_get(f"tv_recovery:plan:{digest}") or {}
+    source_path = str(plan.get("source_path") or plan.get("path") or "")
+    if not source_path:
+        raise HTTPException(400, "TV Recovery plan expired; analyse the source again")
+    jid = create_job("tv_split", [{"source_path": source_path, "display_name": Path(file_path).name or Path(source_path).name, "destination_key": "generated episodes"}])
+    cache_set(f"tv_recovery:job:{jid}", {"digest": digest, "file_path": file_path, "allow_estimated": allow_estimated})
+    _launch(run_tv_split_job(jid))
+    return RedirectResponse(f"/jobs/{jid}", status_code=303)
 
 
 # ===== ARRNEXUS V10.4 ARCHIVED MEDIA RECOVERY ===============================
 
 async def run_archive_inspect_job(job_id: int):
     job, items = get_job(job_id)
-    if not job:
-        return
+    if not job: return
     update_job(job_id, status="running", message="RAR catalogue inspection in progress")
     completed = failed = 0
+    cancel_check = lambda: job_cancel_requested(job_id)
     for ji in items:
-        iid = int(ji["id"])
-        source_path = str(ji.get("source_path") or "")
+        iid = int(ji["id"]); source_path = str(ji.get("source_path") or "")
         try:
             update_job_item(iid, status="running", stage="inspect", message="Reading archive catalogue in the background; this page can be left safely")
-            result = await asyncio.to_thread(archive_media.inspect_archive, source_path, force=True)
+            result = await asyncio.to_thread(archive_media.inspect_archive, source_path, force=True, cancel_check=cancel_check)
             completed += 1
-            update_job_item(
-                iid, status="complete", stage="complete",
-                message=f"Catalogue cached: {result.get('media_count', 0)} video member(s) · {result.get('health', 'unknown')} archive",
-            )
-            log_event("info", "archive_recovery", "inspect_job_complete", f"Inspected {Path(source_path).name}", {"job_id": job_id, "media": result.get("media_count", 0)})
+            update_job_item(iid, status="complete", stage="complete", message=f"Catalogue cached: {result.get('media_count', 0)} video member(s) · {result.get('health', 'unknown')} archive", result={"media_count": result.get("media_count", 0), "health": result.get("health")})
+        except CancelledOperation as exc:
+            update_job_item(iid, status="cancelled", stage="cancelled", message=str(exc)); mark_remaining_job_items_cancelled(job_id); update_job(job_id, status="cancelled", completed=completed, failed=failed, message="Archive inspection cancelled"); return
         except Exception as exc:
-            failed += 1
-            update_job_item(iid, status="error", stage="error", message=str(exc))
-            log_event("error", "archive_recovery", "inspect_job_failed", str(exc), {"source": source_path, "job_id": job_id})
+            failed += 1; update_job_item(iid, status="error", stage="error", message=str(exc)); log_event("error", "archive_recovery", "inspect_job_failed", str(exc), {"source": source_path, "job_id": job_id})
         update_job(job_id, completed=completed, failed=failed, message=f"{completed} inspected, {failed} failed")
     update_job(job_id, status="complete_with_errors" if failed else "complete", completed=completed, failed=failed, message=f"Finished: {completed} archive(s) inspected, {failed} failed")
 
 
 async def run_archive_verify_job(job_id: int):
     job, items = get_job(job_id)
-    if not job:
-        return
+    if not job: return
     update_job(job_id, status="running", message="RAR media verification in progress")
     completed = failed = 0
+    cancel_check = lambda: job_cancel_requested(job_id)
     for ji in items:
-        iid = int(ji["id"])
-        source_path = str(ji.get("source_path") or "")
+        iid = int(ji["id"]); source_path = str(ji.get("source_path") or "")
         try:
-            update_job_item(iid, status="running", stage="verify", message="Testing video members only; support files and torrent padding are ignored")
+            update_job_item(iid, status="running", stage="verify", message="Testing video members independently; support files and torrent padding are ignored")
             row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
-            if not row:
-                raise RuntimeError("RAR source is no longer present in the DMM source tree")
-            def _progress(done: int, total: int, member: str, member_status: str):
+            if not row: raise RuntimeError("RAR source is no longer present in the DMM source tree")
+            def _progress(done, total, member, member_status):
                 update_job_item(iid, status="running", stage="archive_verify", message=f"Verified {done}/{total}: {Path(member).name} · {member_status}")
-            result = await asyncio.to_thread(archive_media.verify_archive_media, source_path, expected_fingerprint=str(row.get("fingerprint") or ""), progress=_progress)
+            result = await asyncio.to_thread(archive_media.verify_archive_media, source_path, expected_fingerprint=str(row.get("fingerprint") or ""), progress=_progress, cancel_check=cancel_check)
             completed += 1
-            update_job_item(
-                iid, status="complete", stage="complete",
-                message=f"Verified {result.get('verified_count', 0)} media file(s); {result.get('failed_count', 0)} failed; {result.get('untested_count', 0)} unverified",
-            )
-            log_event("info", "archive_recovery", "verify_job_complete", f"Verified {Path(source_path).name}", {"job_id": job_id, "verified": result.get("verified_count", 0), "failed": result.get("failed_count", 0)})
+            update_job_item(iid, status="complete", stage="complete", message=f"Verified {result.get('verified_count', 0)} media file(s); {result.get('failed_count', 0)} failed; {result.get('untested_count', 0)} unverified", result={"verified": result.get("verified_count"), "failed": result.get("failed_count"), "unverified": result.get("untested_count")})
+        except CancelledOperation as exc:
+            update_job_item(iid, status="cancelled", stage="cancelled", message=str(exc)); mark_remaining_job_items_cancelled(job_id); update_job(job_id, status="cancelled", completed=completed, failed=failed, message="Archive verification cancelled"); return
         except Exception as exc:
-            failed += 1
-            update_job_item(iid, status="error", stage="error", message=str(exc))
-            log_event("error", "archive_recovery", "verify_job_failed", str(exc), {"source": source_path, "job_id": job_id})
+            failed += 1; update_job_item(iid, status="error", stage="error", message=str(exc)); log_event("error", "archive_recovery", "verify_job_failed", str(exc), {"source": source_path, "job_id": job_id})
         update_job(job_id, completed=completed, failed=failed, message=f"{completed} verified, {failed} failed")
     update_job(job_id, status="complete_with_errors" if failed else "complete", completed=completed, failed=failed, message=f"Finished: {completed} archive(s) verified, {failed} failed")
 
 
 async def run_archive_extract_job(job_id: int):
     job, items = get_job(job_id)
-    if not job:
-        return
+    if not job: return
     selection = cache_get(f"archive_recovery:job_selection:{job_id}") or {}
     selected_media = [str(x) for x in (selection.get("media_paths") or []) if str(x)] if isinstance(selection, dict) else []
     update_job(job_id, status="running", message="Verified media recovery in progress")
     completed = failed = 0
+    cancel_check = lambda: job_cancel_requested(job_id)
     for ji in items:
-        iid = int(ji["id"])
-        source_path = str(ji.get("source_path") or "")
+        iid = int(ji["id"]); source_path = str(ji.get("source_path") or "")
         try:
-            update_job_item(iid, status="running", stage="inspect", message="Revalidating stable archive identity, media catalogue, verification state and free space")
+            update_job_item(iid, status="running", stage="inspect", message="Revalidating archive identity, verification state and free space")
             row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
-            if not row:
-                raise RuntimeError("RAR source is no longer present in the DMM source tree")
+            if not row: raise RuntimeError("RAR source is no longer present in the DMM source tree")
             update_job_item(iid, stage="extract", message="Recovering selected verified video members only")
-            result = await asyncio.to_thread(
-                archive_media.extract_archive, source_path,
-                expected_fingerprint=str(row.get("fingerprint") or ""), selected_media=selected_media,
-            )
-            completed += 1
-            invalidate_scan_cache()
-            _INBOX_SNAPSHOT.clear()
-            target = str(result.get("target") or "")
-            skipped = len(result.get("failed_after_extract") or [])
-            update_job_item(iid, status="complete", stage="complete", message=f"Recovered {result.get('recovered', 0)} verified media file(s); {skipped} skipped → {target}")
-            log_event("info", "archive_recovery", "job_complete", f"Recovered {Path(source_path).name}", {"target": target, "job_id": job_id, "recovered": result.get("recovered", 0), "skipped": skipped})
+            result = await asyncio.to_thread(archive_media.extract_archive, source_path, expected_fingerprint=str(row.get("fingerprint") or ""), selected_media=selected_media, cancel_check=cancel_check)
+            completed += 1; invalidate_scan_cache(); _INBOX_SNAPSHOT.clear()
+            target = str(result.get("target") or ""); skipped = len(result.get("failed_after_extract") or [])
+            update_job_item(iid, status="complete", stage="complete", message=f"Recovered {result.get('recovered', 0)} verified media file(s); {skipped} skipped → {target}", result={"target": target, "recovered": result.get("recovered", 0), "skipped": skipped})
+        except CancelledOperation as exc:
+            update_job_item(iid, status="cancelled", stage="cancelled", message=str(exc)); mark_remaining_job_items_cancelled(job_id); update_job(job_id, status="cancelled", completed=completed, failed=failed, message="Archive recovery cancelled; original archive and completed recovery files retained"); return
         except Exception as exc:
-            failed += 1
-            update_job_item(iid, status="error", stage="error", message=str(exc))
-            log_event("error", "archive_recovery", "job_failed", str(exc), {"source": source_path, "job_id": job_id})
+            failed += 1; update_job_item(iid, status="error", stage="error", message=str(exc)); log_event("error", "archive_recovery", "job_failed", str(exc), {"source": source_path, "job_id": job_id})
         update_job(job_id, completed=completed, failed=failed, message=f"{completed} recovered, {failed} failed")
     update_job(job_id, status="complete_with_errors" if failed else "complete", completed=completed, failed=failed, message=f"Finished: {completed} recovered, {failed} failed")
+
+
+async def run_archive_stage_job(job_id: int):
+    job, items = get_job(job_id)
+    if not job or not items: return
+    ji = items[0]; iid = int(ji["id"]); source_path = str(ji.get("source_path") or "")
+    cfg = cache_get(f"archive_recovery:stage_job:{job_id}") or {}
+    cancel_check = lambda: job_cancel_requested(job_id)
+    update_job(job_id, status="running", message="Copying archive to local recovery storage for CRC re-test")
+    try:
+        def _progress(done, total, name, stage):
+            pct = int((done / total) * 100) if total else 0
+            update_job_item(iid, status="running", stage="local_stage", message=f"Staging {Path(name).name}: {human_size(done)} / {human_size(total)} ({pct}%)")
+        result = await asyncio.to_thread(archive_media.stage_and_reverify, source_path, expected_fingerprint=str(cfg.get("fingerprint") or ""), progress=_progress, cancel_check=cancel_check)
+        classification = str(result.get("classification") or "")
+        recovered = len(result.get("recovered_locally") or [])
+        still = len(result.get("still_failed") or [])
+        msg = (f"Local staging passed {recovered} previously failed member(s) — provider read-path issue" if recovered else f"Local staging confirmed damage; {still} member(s) still fail")
+        update_job_item(iid, status="complete", stage=classification or "complete", message=msg, result={"classification": classification, "recovered_locally": result.get("recovered_locally") or [], "still_failed": result.get("still_failed") or []})
+        update_job(job_id, status="complete", completed=1, message=msg)
+    except CancelledOperation as exc:
+        update_job_item(iid, status="cancelled", stage="cancelled", message=str(exc)); mark_remaining_job_items_cancelled(job_id); update_job(job_id, status="cancelled", message="Local staging cancelled; partial local copy removed")
+    except Exception as exc:
+        update_job_item(iid, status="error", stage="error", message=str(exc)); update_job(job_id, status="complete_with_errors", failed=1, message=str(exc))
 
 
 @app.get("/maintenance/archives", response_class=HTMLResponse)
@@ -4006,6 +4173,7 @@ async def archived_media_page(request: Request, refresh: int = 0, inspect_path: 
     identity_results = []
     page_error = error
     storage = None
+    stage_state = None
     try:
         rows = await asyncio.to_thread(archive_media.scan_archives, bool(refresh), 1000)
         if inspect_path:
@@ -4016,6 +4184,9 @@ async def archived_media_page(request: Request, refresh: int = 0, inspect_path: 
                 page_error = "This archive has not completed a background inspection yet. Start Inspect from the archive list and return when that job finishes."
             else:
                 storage = await asyncio.to_thread(archive_media.storage_state, int((inspection or {}).get("unpacked_size") or 0))
+                verification = (inspection or {}).get("verification") or {}
+                if int(verification.get("failed_count") or 0) > 0:
+                    stage_state = await asyncio.to_thread(archive_media.local_stage_state, inspect_path)
                 if identity_q.strip():
                     identity_results = await media_identity.search_tmdb(identity_q.strip(), identity_type or "tv", limit=12)
     except Exception as exc:
@@ -4023,7 +4194,7 @@ async def archived_media_page(request: Request, refresh: int = 0, inspect_path: 
     return templates.TemplateResponse("archive_media.html", {
         "request": request, "rows": rows, "inspection": inspection,
         "identity_results": identity_results, "identity_q": identity_q, "identity_type": identity_type,
-        "notice": notice, "error": page_error, "storage": storage,
+        "notice": notice, "error": page_error, "storage": storage, "stage_state": stage_state,
         "recovery_root": archive_media.extraction_root(),
         "max_extract_gb": int(archive_media.max_extract_bytes() / 1024**3),
         "tmdb_configured": media_identity.tmdb_configured(),
@@ -4110,6 +4281,29 @@ async def archived_media_verify(request: Request):
         raise HTTPException(404, "Archive source was not found")
     jid = create_job("archive_verify", [{"source_path": source_path, "display_name": Path(source_path).name, "destination_key": "media-only verification"}])
     _launch(run_archive_verify_job(jid))
+    return RedirectResponse(f"/jobs/{jid}", status_code=303)
+
+
+@app.post("/maintenance/archives/stage-retry")
+async def archived_media_stage_retry(request: Request):
+    require_admin(request)
+    form = await request.form()
+    source_path = str(form.get("source_path") or "").strip()
+    confirm = str(form.get("confirm_stage") or "").lower() in {"1", "true", "yes", "on"}
+    if not confirm:
+        raise HTTPException(400, "Local staging requires explicit confirmation")
+    if not is_within_logical(source_path, source_root()):
+        raise HTTPException(400, "Invalid archive source")
+    state = await asyncio.to_thread(archive_media.local_stage_state, source_path)
+    if not state.get("enough"):
+        raise HTTPException(409, "Not enough free recovery storage to stage this archive")
+    row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
+    verification = (row or {}).get("verification") or {}
+    if int(verification.get("failed_count") or 0) < 1:
+        raise HTTPException(409, "Local staging retry is only offered when provider verification has failed media members")
+    jid = create_job("archive_stage", [{"source_path": source_path, "display_name": Path(source_path).name, "destination_key": "local CRC re-test"}])
+    cache_set(f"archive_recovery:stage_job:{jid}", {"fingerprint": str(state.get("fingerprint") or "")})
+    _launch(run_archive_stage_job(jid))
     return RedirectResponse(f"/jobs/{jid}", status_code=303)
 
 

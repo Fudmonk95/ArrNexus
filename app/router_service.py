@@ -17,6 +17,8 @@ from .library import invalidate_library_cache
 from . import realdebrid as rd
 from .db import log_import, add_activity, learn_exact_route, track_request, request_map, set_item_state
 from . import media_identity
+from .process_control import CancelledOperation
+from . import tv_source_selection
 
 
 class LanguageRejectedSafe(ImportErrorSafe):
@@ -154,24 +156,49 @@ async def _existing_target_external(client, service: str, candidate: dict) -> di
             return row
     return None
 
-async def import_one(source_path: str, destination_key: str | None = None, candidate_index: int = -1, media_type_override: str | None = None) -> dict:
+async def import_one(
+    source_path: str,
+    destination_key: str | None = None,
+    candidate_index: int = -1,
+    media_type_override: str | None = None,
+    *,
+    selected_files: list[str] | None = None,
+    cancel_check=None,
+) -> dict:
+    """Import one source, optionally restricting a TV pack to selected episodes.
+
+    v10.5 deliberately treats Language Checks OFF as a hard bypass: no ffprobe
+    language inspection is started and stale Language Guard cache/state cannot
+    block this import. TV selected_files are produced by the season-aware group
+    planner, so combined files can remain pending while safe episodes import.
+    """
+    if cancel_check and cancel_check():
+        raise CancelledOperation("Import cancelled before identification")
     detected_item = inspect_item(source_path)
     resolved_item, identity = media_identity.apply_to_item(detected_item)
     override = str(media_type_override or "").strip().lower()
     if override not in {"movie", "tv"}:
         override = ""
     item = replace(resolved_item, media_type=override) if override and override != resolved_item.media_type else resolved_item
+
     if item.media_type == "tv":
-        # v10.4.4 makes runtime/episode-span validation a pre-import safety gate,
-        # not merely an optional recovery page. This catches explicit S03E06-7
-        # joins and badly named E06 files whose runtime is ~2 normal episodes.
         from . import tv_recovery
-        recovery_plan = await tv_recovery.analyse_source(source_path)
-        split_rows = [x for x in (recovery_plan.get("files") or []) if x.get("needs_split")]
+        recovery_plan = await tv_recovery.analyse_source(source_path, cancel_check=cancel_check)
+        selected = {str(x) for x in (selected_files or [])}
+        split_rows = [
+            x for x in (recovery_plan.get("files") or [])
+            if x.get("needs_split") and (not selected or str(x.get("path") or "") in selected)
+        ]
         if split_rows:
             labels = ", ".join(str(x.get("name") or "TV file") for x in split_rows[:3])
             more = f" (+{len(split_rows)-3} more)" if len(split_rows) > 3 else ""
-            raise ImportErrorSafe(f"TV Recovery review required before Sonarr import: {labels}{more}. Combined-season video detected or joined-episode media found; split or explicitly review it first.")
+            raise ImportErrorSafe(
+                f"TV Recovery review required before Sonarr import: {labels}{more}. "
+                "Combined-season video detected or joined-episode media found."
+            )
+
+    if cancel_check and cancel_check():
+        raise CancelledOperation("Import cancelled before Arr matching")
     routed = await route_item(item)
     recommended: RouteDecision = routed["decision"]
     chosen = destination_key or recommended.key
@@ -185,7 +212,6 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
     existing_inst = routed["existing_instance"]
     target_client, target_inst = client_for_destination(service, chosen)
 
-    # Existing Arr ownership wins. We never create a duplicate in another specialist Arr.
     if existing:
         client = _client_for_instance(existing_inst) if existing_inst and existing_inst.api_key else target_client
         arr_item = existing
@@ -199,9 +225,6 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
         idx = candidate_index if 0 <= candidate_index < len(lookup) else 0
         candidate = lookup[idx]
         client = target_client
-        # External IDs are authoritative. If the movie/series is already in the
-        # target Arr, reuse it instead of POSTing a duplicate and surfacing the
-        # normal MovieExistsValidator/SeriesExistsValidator 400 as a failure.
         arr_item = await _existing_target_external(client, service, candidate)
         if arr_item is None:
             try:
@@ -209,9 +232,8 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
             except ArrError as exc:
                 text = str(exc)
                 duplicate = any(token in text for token in (
-                    "MovieExistsValidator", "SeriesExistsValidator",
-                    "already been added", "already configured for an existing movie",
-                    "already configured for an existing series",
+                    "MovieExistsValidator", "SeriesExistsValidator", "already been added",
+                    "already configured for an existing movie", "already configured for an existing series",
                 ))
                 if not duplicate:
                     raise
@@ -225,18 +247,22 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
     else:
         dest_dir = arr_item.get("path") or f"{root}/{arr_item['title']}"
 
-    # v10.1 Language Guard: inspect the actual DMM/Decypharr media before a
-    # library symlink is created. A policy rejection is a controlled outcome,
-    # not an application failure. If enabled, cleanup deletes only an exactly
-    # identified Real-Debrid torrent; fuzzy/ambiguous matches are never touched.
-    language = await asyncio.to_thread(inspect_source_languages, source_path, item.fingerprint, False)
+    # Master Language Checks OFF is intentionally evaluated before any probe.
     policy = load_language_policy()
+    language = {"status": "disabled", "compliant": True, "summary": "Language Checks OFF — imports will bypass Language Guard"}
+    if policy.enabled:
+        language = await asyncio.to_thread(
+            inspect_source_languages,
+            source_path,
+            item.fingerprint,
+            False,
+            selected_files=selected_files if item.media_type == "tv" else None,
+            cancel_check=cancel_check,
+        )
     if policy.enabled and not bool(language.get("compliant")):
         reason = str(language.get("summary") or "Language policy not met")
         manual_review = str(language.get("status") or "") == "unknown"
         replacement_started = False
-        # Unknown/probe-failed media is held for review rather than treated as
-        # proven non-English.  Do not trigger replacement or provider cleanup.
         if policy.auto_upgrade_search and not manual_review:
             try:
                 await client.search(int(arr_item["id"]))
@@ -249,10 +275,7 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
         cleanup = {"ok": False, "deleted": False, "reason": "Source retained for manual review" if manual_review else "Rejected-source cleanup disabled"}
         original_provider_source = is_within_logical(source_path, source_root())
         if policy.remove_rejected_debrid and not original_provider_source:
-            cleanup = {
-                "ok": False, "deleted": False,
-                "reason": "Provider cleanup is not applicable to ArrNexus recovered media; the original archive/provider source is retained",
-            }
+            cleanup = {"ok": False, "deleted": False, "reason": "Provider cleanup is not applicable to ArrNexus recovered media; the original archive/provider source is retained"}
         elif policy.remove_rejected_debrid and not manual_review and bool(language.get("destructive_safe")):
             try:
                 cleanup = await rd.delete_source_torrent_exact(source_path, item.size_bytes)
@@ -264,8 +287,7 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
         if cleanup.get("deleted"):
             reason += f"; rejected Real-Debrid source removed (torrent {cleanup.get('torrent_id')})"
             state = "language_rejected_removed"
-            invalidate_scan_cache()
-            invalidate_library_cache()
+            invalidate_scan_cache(); invalidate_library_cache()
         elif manual_review:
             reason += "; source retained — no destructive cleanup is allowed for uncertain/probe-failed results"
             state = "language_review"
@@ -284,52 +306,78 @@ async def import_one(source_path: str, destination_key: str | None = None, candi
         add_activity("language_guard", item.title_guess, reason, source_path)
         raise LanguageRejectedSafe(
             f"Language Guard {'requires manual review' if manual_review else 'blocked import'}: {reason}",
-            cleanup=cleanup, replacement_started=replacement_started, manual_review=manual_review
+            cleanup=cleanup, replacement_started=replacement_started, manual_review=manual_review,
         )
 
+    if cancel_check and cancel_check():
+        raise CancelledOperation("Import cancelled before library linking")
     if service == "radarr":
-        created = import_movie_source(source_path, dest_dir, arr_item.get("title", item.title_guess), arr_item.get("year") or item.year_guess)
+        created = import_movie_source(source_path, dest_dir, arr_item.get("title", item.title_guess), arr_item.get("year") or item.year_guess, cancel_check=cancel_check)
         await client.rescan(int(arr_item["id"]))
     else:
-        created = import_tv_source(source_path, dest_dir, arr_item.get("title", item.title_guess))
+        created = import_tv_source(
+            source_path, dest_dir, arr_item.get("title", item.title_guess),
+            selected_files=selected_files, cancel_check=cancel_check,
+        )
         await client.rescan(int(arr_item["id"]))
 
     invalidate_library_cache()
-
-    # User overrides teach the router an exact-title preference.
     if destination_key and destination_key != recommended.key:
         learn_exact_route(item.media_type, item.title_guess, destination_key)
 
     arr_instance_name = existing_inst.instance if existing_inst else (target_inst.instance if target_inst else "configured-main")
+    subset_note = f" from selected season-aware files ({len(selected_files)})" if selected_files else ""
     import_id = log_import(
-        source_path=source_path,
-        source_name=item.name,
-        media_type=item.media_type,
-        destination_key=actual_destination_key,
-        destination_path=dest_dir,
-        arr_name=service,
-        arr_instance=arr_instance_name,
-        arr_id=arr_item.get("id"),
-        status="complete",
-        note=f"Created/verified {len(created)} symlink(s)",
-        created_paths=created,
-        source_fingerprint=item.fingerprint,
-        source_quality=item.quality,
+        source_path=source_path, source_name=item.name, media_type=item.media_type,
+        destination_key=actual_destination_key, destination_path=dest_dir, arr_name=service,
+        arr_instance=arr_instance_name, arr_id=arr_item.get("id"), status="complete",
+        note=f"Created/verified {len(created)} symlink(s){subset_note}", created_paths=created,
+        source_fingerprint=item.fingerprint, source_quality=item.quality,
     )
     add_activity("import", item.title_guess, f"{service}/{arr_instance_name} → {actual_destination_key} ({len(created)} links)", source_path)
     return {
-        "ok": True,
-        "import_id": import_id,
-        "item": item.dict(),
-        "detected_media_type": detected_item.media_type,
-        "media_type_override": override,
-        "identity_override": identity,
-        "destination_key": actual_destination_key,
-        "destination_path": dest_dir,
-        "created": created,
-        "arr": service,
-        "arr_instance": arr_instance_name,
-        "arr_id": arr_item.get("id"),
+        "ok": True, "import_id": import_id, "item": item.dict(), "detected_media_type": detected_item.media_type,
+        "media_type_override": override, "identity_override": identity, "destination_key": actual_destination_key,
+        "destination_path": dest_dir, "created": created, "arr": service, "arr_instance": arr_instance_name,
+        "arr_id": arr_item.get("id"), "language_checks": "on" if policy.enabled else "off",
+    }
+
+
+async def import_grouped_tv_sources(
+    source_paths: list[str],
+    destination_key: str | None = None,
+    *,
+    primary_source: str = "",
+    cancel_check=None,
+) -> dict:
+    """Import every safe season/episode in a grouped TV series independently."""
+    plan = await tv_source_selection.build_import_plan(source_paths, cancel_check=cancel_check)
+    results: list[dict] = []
+    created: list[str] = []
+    chosen_destination = destination_key
+    for source_path, selected in (plan.get("selected_by_source") or {}).items():
+        if cancel_check and cancel_check():
+            raise CancelledOperation("Grouped TV import cancelled")
+        if not selected:
+            continue
+        result = await import_one(
+            source_path, chosen_destination, media_type_override="tv",
+            selected_files=list(selected), cancel_check=cancel_check,
+        )
+        chosen_destination = result.get("destination_key") or chosen_destination
+        results.append(result)
+        created.extend(result.get("created") or [])
+
+    for season in plan.get("seasons") or []:
+        status = str(season.get("status") or "")
+        if int(season.get("selected_count") or 0) > 0:
+            season["status"] = "imported" if status == "ready" else "partial_imported"
+    plan["summary"] = tv_source_selection.plan_summary(plan, imported=True)
+    return {
+        "ok": bool(created), "created": created, "results": results, "plan": plan,
+        "destination_key": chosen_destination or "auto",
+        "arr_instance": next((x.get("arr_instance") for x in results if x.get("arr_instance")), "sonarr"),
+        "primary_source": primary_source or (source_paths[0] if source_paths else ""),
     }
 
 

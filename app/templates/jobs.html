@@ -1,1 +1,22 @@
-{% extends 'base.html' %}{% block heading %}Import Jobs{% endblock %}{% block content %}<div class="panel"><div class="panelhead"><div><h2>Import history</h2><p>Completed jobs stay here as an audit trail; failures keep their exact reason.</p></div></div><div class="job-list">{% for j in jobs %}<a class="job-summary" href="/jobs/{{ j.id }}"><div><span class="tag state-{{ j.status }}">{{ j.status|replace('_',' ') }}</span><strong>Job #{{ j.id }} · {{ j.kind|replace('_',' ')|title }}</strong><small>{{ j.message }}</small></div><div class="job-numbers"><strong>{{ j.completed }}/{{ j.total }}</strong><span>{{ j.reviewed or 0 }} review · {{ j.rejected or 0 }} rejected · {{ j.failed }} failed</span></div></a>{% else %}<div class="empty">No import jobs yet.</div>{% endfor %}</div></div>{% endblock %}
+{% extends 'base.html' %}
+{% block heading %}Import Jobs{% endblock %}
+{% block content %}
+<div class="panel">
+  <div class="panelhead">
+    <div><h2>Import & recovery history</h2><p>Active jobs can be cancelled safely. Removing history never removes media, recovered episodes or library links.</p></div>
+    <form method="post" action="/jobs/clear-finished" onsubmit="return confirm('Clear all finished, failed and cancelled job history? Media files and symlinks are not changed.')"><button class="btn small ghost">Clear finished jobs</button></form>
+  </div>
+  {% if request.query_params.get('notice') %}<div class="notice">{{ request.query_params.get('notice') }}</div>{% endif %}
+  <div class="job-list">
+  {% for j in jobs %}
+    <div class="job-summary">
+      <a href="/jobs/{{ j.id }}" class="job-summary-main"><div><span class="tag state-{{ j.status }}">{{ j.status|replace('_',' ') }}</span><strong>Job #{{ j.id }} · {{ j.kind|replace('_',' ')|title }}</strong><small>{{ j.message }}</small></div><div class="job-numbers"><strong>{{ j.completed }}/{{ j.total }}</strong><span>{{ j.reviewed or 0 }} review · {{ j.rejected or 0 }} rejected · {{ j.failed }} failed</span></div></a>
+      <div class="card-actions">
+        {% if j.status in ['queued','running','cancelling'] %}<form method="post" action="/jobs/{{ j.id }}/cancel"><button class="btn small danger" {{ 'disabled' if j.status=='cancelling' }}>{{ 'Cancelling…' if j.status=='cancelling' else 'Cancel job' }}</button></form>
+        {% else %}<form method="post" action="/jobs/{{ j.id }}/remove" onsubmit="return confirm('Remove only this job history record? No media will be removed.')"><button class="btn small ghost">Remove job</button></form>{% endif %}
+      </div>
+    </div>
+  {% else %}<div class="empty">No import or recovery jobs yet.</div>{% endfor %}
+  </div>
+</div>
+{% endblock %}

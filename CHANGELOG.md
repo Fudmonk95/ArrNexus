@@ -1,5 +1,17 @@
 # Changelog
 
+## 10.5.0-beta — Recovery Control & Reliable Imports
+
+- Added a persistent user-facing Language Checks ON/OFF master toggle. OFF bypasses import-time language probing, stale language blocks and language-triggered provider cleanup while retaining policy/cache state.
+- Added safe cooperative job cancellation plus clear-finished and individual job-history removal.
+- Added cancellable subprocess control for 7-Zip, ffprobe and ffmpeg with terminate-then-kill fallback.
+- Fixed source-link indexing so `/mnt/debrid/arrnexus-extracted` symlink targets mark recovered Inbox sources as imported.
+- Added season/episode-aware grouped TV source selection with superseded-source annotation and partial mixed-season imports.
+- Added explicit local RAR staging + CRC re-verification with storage-space checks, background progress and cancellation.
+- Moved Advanced TV Recovery splitting into background Import Jobs.
+- Retained provider archives, recovered outputs, `.arrnexus-originals` exclusions, exact-source overrides and non-destructive cleanup guarantees.
+
+
 ## 10.4.4-beta — Unified Recovery & TV Intelligence
 
 - Moved large RAR inspection off the HTTP request path into background `archive_inspect` jobs to prevent Cloudflare 524 timeouts on very large cloud-backed archives.

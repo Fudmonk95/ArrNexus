@@ -2,7 +2,7 @@
 
 This file is generated from `app/main.py` routes and the same `app/help_catalog.py` mapping used by the contextual Help button.
 
-- Application routes/actions audited: **158**
+- Application routes/actions audited: **163**
 - Help topics: **48**
 - Primary private pages receive a contextual Help link from the application shell.
 - Public/auth/bootstrap pages are documented in the Help Centre and user guide even when they do not use the private shell.
@@ -38,6 +38,9 @@ This file is generated from `app/main.py` routes and the same `app/help_catalog.
 | POST | `/import` | `single_import` | `dmm-inbox` |
 | GET | `/jobs` | `jobs_page` | `jobs` |
 | GET | `/jobs/{job_id}` | `job_page` | `jobs` |
+| POST | `/jobs/{job_id}/cancel` | `cancel_job` | `jobs` |
+| POST | `/jobs/{job_id}/remove` | `remove_finished_job` | `jobs` |
+| POST | `/jobs/clear-finished` | `clear_finished_job_history` | `jobs` |
 | GET | `/api/jobs/{job_id}` | `job_api` | `jobs` |
 | GET | `/api/jobs-active` | `active_jobs_api` | `jobs` |
 | GET | `/logs` | `logs_page` | `logs` |
@@ -70,6 +73,7 @@ This file is generated from `app/main.py` routes and the same `app/help_catalog.
 | POST | `/settings/general` | `settings_general` | `settings` |
 | POST | `/settings/users/add` | `settings_user_add` | `settings` |
 | POST | `/settings/users/delete/{user_id}` | `settings_user_delete` | `settings` |
+| POST | `/settings/language-checks` | `settings_language_checks` | `language-guard` |
 | POST | `/settings/language-guard` | `settings_language_guard` | `language-guard` |
 | POST | `/settings/policy` | `settings_policy` | `settings` |
 | POST | `/settings/acquisition` | `settings_acquisition` | `settings` |
@@ -146,6 +150,7 @@ This file is generated from `app/main.py` routes and the same `app/help_catalog.
 | POST | `/maintenance/archives/identity` | `archived_media_identity` | `archived-media` |
 | POST | `/maintenance/archives/inspect` | `archived_media_inspect` | `archived-media` |
 | POST | `/maintenance/archives/verify` | `archived_media_verify` | `archived-media` |
+| POST | `/maintenance/archives/stage-retry` | `archived_media_stage_retry` | `archived-media` |
 | POST | `/maintenance/archives/extract` | `archived_media_extract` | `archived-media` |
 | GET | `/archive-rescue` | `archive_rescue_page` | `archive-rescue` |
 | GET | `/archive-rescue/release/{token}` | `archive_rescue_release` | `archive-rescue` |

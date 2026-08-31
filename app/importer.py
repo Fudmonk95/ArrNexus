@@ -1,11 +1,13 @@
 from __future__ import annotations
 from pathlib import Path
+from typing import Callable
 import json
 import os
 from .scanner import video_files, episode_season, episode_identity
 from .namespace import view_path, logical_from_view
 from .config import settings
 from .paths import movie_roots, tv_roots, lidarr_root, source_root
+from .process_control import CancelledOperation
 
 
 class ImportErrorSafe(RuntimeError):
@@ -41,7 +43,7 @@ def _safe_media_name(value: str) -> str:
     return "".join(ch for ch in value if ch not in "\\/:*?\"<>|" and ord(ch) >= 32).strip().rstrip(".")
 
 
-def import_movie_source(source: str, destination_dir: str, canonical_title: str = "", year: int | None = None) -> list[str]:
+def import_movie_source(source: str, destination_dir: str, canonical_title: str = "", year: int | None = None, cancel_check: Callable[[], bool] | None = None) -> list[str]:
     src = Path(source)
     dest = Path(destination_dir)
     files = video_files(src)
@@ -53,6 +55,8 @@ def import_movie_source(source: str, destination_dir: str, canonical_title: str 
     if year and f"({year})" not in base:
         base = f"{base} ({year})"
     for idx, f in enumerate(files, start=1):
+        if cancel_check and cancel_check():
+            raise CancelledOperation("Movie import cancelled")
         suffix = f.suffix.lower() or f.suffix
         clean = f"{base}{suffix}" if len(files) == 1 else f"{base} - Part {idx:02d}{suffix}"
         out = dest / clean
@@ -62,21 +66,24 @@ def import_movie_source(source: str, destination_dir: str, canonical_title: str 
     return created
 
 
-def import_tv_source(source: str, series_path: str, canonical_title: str = "") -> list[str]:
-    src = Path(source)
+def import_tv_files(files: list[Path | str], series_path: str, canonical_title: str = "", cancel_check: Callable[[], bool] | None = None) -> list[str]:
     series = Path(series_path)
-    files = video_files(src)
-    if not files:
-        raise ImportErrorSafe("No video files found")
-    created = []
+    logical_files = [Path(x) for x in files]
+    if not logical_files:
+        raise ImportErrorSafe("No TV episode files selected")
+    created: list[str] = []
     show = _safe_media_name(canonical_title or series.name)
-    used = set()
-    for idx, f in enumerate(files, start=1):
-        season = episode_season(f.name)
-        if season is None:
-            raise ImportErrorSafe(f"Cannot determine season from: {f.name}")
+    used: set[str] = set()
+    for idx, f in enumerate(logical_files, start=1):
+        if cancel_check and cancel_check():
+            # Never roll back already-valid symlinks on cancellation. The user
+            # explicitly asked for completed episode work to remain intact.
+            raise CancelledOperation("TV import cancelled")
         ident = episode_identity(f.name)
-        token = f"S{ident[0]:02d}E{ident[1]:02d}" if ident else f"S{season:02d}E{idx:02d}"
+        if not ident:
+            raise ImportErrorSafe(f"Cannot determine individual episode identity from: {f.name}")
+        season = int(ident[0])
+        token = f"S{ident[0]:02d}E{ident[1]:02d}"
         clean = f"{show} - {token}{f.suffix.lower()}"
         if clean.lower() in used:
             clean = f"{show} - {token} - {idx:02d}{f.suffix.lower()}"
@@ -86,6 +93,12 @@ def import_tv_source(source: str, series_path: str, canonical_title: str = "") -
         if result in {"created", "exists"}:
             created.append(str(dest))
     return created
+
+
+def import_tv_source(source: str, series_path: str, canonical_title: str = "", selected_files: list[str] | None = None, cancel_check: Callable[[], bool] | None = None) -> list[str]:
+    src = Path(source)
+    files = [Path(x) for x in selected_files] if selected_files else video_files(src)
+    return import_tv_files(files, series_path, canonical_title, cancel_check=cancel_check)
 
 
 def unlink_created(paths: list[str]) -> tuple[int, list[str]]:

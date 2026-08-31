@@ -17,13 +17,14 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .db import cache_get, cache_set, setting_get, setting_set, log_event, add_activity
 from .namespace import view_path, logical_from_view, is_within_logical
 from .paths import source_root, dumb_root
 from .scanner import VIDEO_EXTS, inspect_item
 from . import media_identity
+from .process_control import run_cancellable, CancelledOperation
 
 ARCHIVE_EXTS = {".rar"}
 NESTED_ARCHIVE_EXTS = {".rar", ".zip", ".7z", ".tar", ".gz", ".bz2", ".xz"}
@@ -334,7 +335,7 @@ def identity_required_for_name(value: str) -> bool:
     return len(re.sub(r"[^a-z0-9]+", "", stem)) < 6
 
 
-def inspect_archive(logical_path: str, *, force: bool = False) -> dict[str, Any]:
+def inspect_archive(logical_path: str, *, force: bool = False, cancel_check: Callable[[], bool] | None = None) -> dict[str, Any]:
     """List an archive without extracting it.
 
     A non-zero 7-Zip status no longer destroys a useful listing.  If media
@@ -363,11 +364,11 @@ def inspect_archive(logical_path: str, *, force: bool = False) -> dict[str, Any]
     kind, exe = _extractor()
     started = time.monotonic()
     if kind == "7z":
-        proc = subprocess.run([exe, "l", "-slt", "-ba", str(actual)], capture_output=True, text=True, timeout=1800, check=False)
+        proc = run_cancellable([exe, "l", "-slt", "-ba", str(actual)], capture_output=True, text=True, timeout=1800, check=False, cancel_check=cancel_check)
         combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
         entries = _parse_7z_listing(proc.stdout or "", str(actual))
     else:
-        proc = subprocess.run([exe, "lb", "-c-", str(actual)], capture_output=True, text=True, timeout=1800, check=False)
+        proc = run_cancellable([exe, "lb", "-c-", str(actual)], capture_output=True, text=True, timeout=1800, check=False, cancel_check=cancel_check)
         combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
         entries = [{"path": x.strip(), "size": 0, "packed_size": 0, "attributes": "", "encrypted": False, "crc": ""} for x in (proc.stdout or "").splitlines() if x.strip()]
 
@@ -503,7 +504,7 @@ def _parse_7z_test_output(stdout: str, stderr: str, media: list[dict[str, Any]],
     }
 
 
-def _verify_media_members_independently(kind: str, exe: str, actual: Path, media: list[dict[str, Any]], progress=None) -> dict[str, Any]:
+def _verify_media_members_independently(kind: str, exe: str, actual: Path, media: list[dict[str, Any]], progress=None, cancel_check: Callable[[], bool] | None = None) -> dict[str, Any]:
     """Verify each video member in its own extractor invocation.
 
     Damaged RARs can terminate a multi-member ``7z t`` pass after one bad tail
@@ -517,12 +518,14 @@ def _verify_media_members_independently(kind: str, exe: str, actual: Path, media
     total = len(media)
 
     for index, row in enumerate(media, start=1):
+        if cancel_check and cancel_check():
+            raise CancelledOperation("Archive verification cancelled")
         member = str(row.get("path") or "")
         status_row = {**row, "status": "untested", "error": "Not independently verified", "test_exit_code": None}
         try:
             if kind == "7z":
                 cmd = [exe, "t", "-bb1", "-spd", str(actual), member]
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60 * 60 * 2, check=False)
+                proc = run_cancellable(cmd, capture_output=True, text=True, timeout=60 * 60 * 2, check=False, cancel_check=cancel_check)
                 parsed = _parse_7z_test_output(proc.stdout or "", proc.stderr or "", [row], proc.returncode)
                 parsed_row = (parsed.get("members") or [status_row])[0]
                 status_row = {**parsed_row, "test_exit_code": int(proc.returncode)}
@@ -530,7 +533,7 @@ def _verify_media_members_independently(kind: str, exe: str, actual: Path, media
                 exit_codes.append(int(proc.returncode))
             else:
                 cmd = [exe, "t", "-c-", str(actual), member]
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60 * 60 * 2, check=False)
+                proc = run_cancellable(cmd, capture_output=True, text=True, timeout=60 * 60 * 2, check=False, cancel_check=cancel_check)
                 ok = proc.returncode == 0
                 status_row = {
                     **row,
@@ -572,9 +575,9 @@ def _verify_media_members_independently(kind: str, exe: str, actual: Path, media
     }
 
 
-def verify_archive_media(logical_path: str, *, expected_fingerprint: str = "", progress=None) -> dict[str, Any]:
+def verify_archive_media(logical_path: str, *, expected_fingerprint: str = "", progress=None, cancel_check: Callable[[], bool] | None = None) -> dict[str, Any]:
     """Test every video member independently and cache recovery eligibility."""
-    plan = inspect_archive(logical_path, force=True)
+    plan = inspect_archive(logical_path, force=True, cancel_check=cancel_check)
     if expected_fingerprint and plan.get("fingerprint") != expected_fingerprint:
         raise RuntimeError("RAR source size/path changed after preview; inspect it again")
     if plan.get("password_protected"):
@@ -588,12 +591,12 @@ def verify_archive_media(logical_path: str, *, expected_fingerprint: str = "", p
     actual = view_path(logical_path)
     kind, exe = _extractor()
     started = time.monotonic()
-    parsed = _verify_media_members_independently(kind, exe, actual, media, progress=progress)
+    parsed = _verify_media_members_independently(kind, exe, actual, media, progress=progress, cancel_check=cancel_check)
 
     # Decypharr can legitimately change virtual mtime/PID while the same source
     # is mounted. Re-list after the potentially long verification and compare
     # the archive catalogue itself instead of virtual filesystem metadata.
-    final_plan = inspect_archive(logical_path, force=True)
+    final_plan = inspect_archive(logical_path, force=True, cancel_check=cancel_check)
     if final_plan.get("catalogue_signature") != plan.get("catalogue_signature"):
         raise RuntimeError("RAR media catalogue changed during verification; inspect and verify it again")
 
@@ -611,6 +614,187 @@ def verify_archive_media(logical_path: str, *, expected_fingerprint: str = "", p
     })
     return result
 
+
+
+def _local_stage_key(fingerprint: str) -> str:
+    return f"archive_recovery:local_stage:v105:{fingerprint}"
+
+
+def _archive_volume_actual_paths(first: Path) -> list[Path]:
+    """Return the physical volume set required to read the archive locally."""
+    name = first.name
+    part = re.match(r"(?i)^(.*)\.part0*1\.rar$", name)
+    if part:
+        rows = sorted(first.parent.glob(part.group(1) + ".part*.rar"), key=lambda x: x.name.lower())
+        return rows or [first]
+    if first.suffix.lower() == ".rar":
+        stem = first.name[:-4]
+        legacy = sorted(
+            [p for p in first.parent.iterdir() if p.is_file() and re.fullmatch(re.escape(stem) + r"\.r\d\d", p.name, re.I)],
+            key=lambda x: x.name.lower(),
+        )
+        return [first, *legacy]
+    return [first]
+
+
+def local_stage_state(logical_path: str) -> dict[str, Any]:
+    if not is_within_logical(logical_path, source_root()):
+        raise RuntimeError("Archive is outside the configured DMM source root")
+    actual = view_path(logical_path)
+    if not actual.is_file() or actual.suffix.lower() != ".rar":
+        raise RuntimeError("RAR source is not available")
+    fp = _archive_fingerprint(logical_path, actual)
+    volumes = _archive_volume_actual_paths(actual)
+    total = sum(int(p.stat().st_size) for p in volumes if p.exists())
+    storage = storage_state(total)
+    cached = cache_get(_local_stage_key(fp))
+    staged = str((cached or {}).get("staged_archive") or "") if isinstance(cached, dict) else ""
+    return {
+        "fingerprint": fp,
+        "size": total,
+        "volume_count": len(volumes),
+        "free": int(storage.get("free") or 0),
+        "required": total,
+        "enough": bool(storage.get("enough")),
+        "staged_archive": staged,
+        "staged_available": bool(staged and view_path(staged).is_file()),
+        "classification": str((cached or {}).get("classification") or "") if isinstance(cached, dict) else "",
+    }
+
+
+def stage_and_reverify(
+    logical_path: str,
+    *,
+    expected_fingerprint: str = "",
+    progress=None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Copy a cloud/virtual RAR to recovery storage and re-test it locally.
+
+    A local pass upgrades only the affected member's verification eligibility;
+    the original provider source is retained and never modified or deleted.
+    """
+    plan = inspect_archive(logical_path, force=True, cancel_check=cancel_check)
+    if expected_fingerprint and plan.get("fingerprint") != expected_fingerprint:
+        raise RuntimeError("RAR source changed after preview; inspect it again")
+    actual = view_path(logical_path)
+    volumes = _archive_volume_actual_paths(actual)
+    total = sum(int(p.stat().st_size) for p in volumes if p.exists())
+    space = storage_state(total)
+    if not space.get("enough"):
+        raise RuntimeError("Not enough free recovery storage to stage this archive locally")
+
+    stage_root_logical = Path(extraction_root()) / ".arrnexus-staging" / str(plan["fingerprint"])[:16]
+    stage_root_actual = view_path(stage_root_logical)
+    stage_root_actual.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    try:
+        for src in volumes:
+            if cancel_check and cancel_check():
+                raise CancelledOperation("Local archive staging cancelled")
+            dst = stage_root_actual / src.name
+            tmp = dst.with_name(dst.name + ".partial")
+            tmp.unlink(missing_ok=True)
+            with src.open("rb") as rf, tmp.open("wb") as wf:
+                while True:
+                    if cancel_check and cancel_check():
+                        raise CancelledOperation("Local archive staging cancelled")
+                    chunk = rf.read(8 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    wf.write(chunk)
+                    copied += len(chunk)
+                    if progress:
+                        try:
+                            progress(copied, total, src.name, "copy")
+                        except Exception:
+                            pass
+                wf.flush()
+                os.fsync(wf.fileno())
+            if tmp.stat().st_size != src.stat().st_size:
+                tmp.unlink(missing_ok=True)
+                raise RuntimeError(f"Local staging size mismatch for {src.name}")
+            tmp.replace(dst)
+    except CancelledOperation:
+        shutil.rmtree(stage_root_actual, ignore_errors=True)
+        raise
+    except Exception:
+        shutil.rmtree(stage_root_actual, ignore_errors=True)
+        raise
+
+    staged_first = stage_root_actual / actual.name
+    if not staged_first.is_file():
+        shutil.rmtree(stage_root_actual, ignore_errors=True)
+        raise RuntimeError("Local staging did not produce the first RAR volume")
+
+    kind, exe = _extractor()
+    local = _verify_media_members_independently(
+        kind, exe, staged_first, list(plan.get("media") or []), progress=None, cancel_check=cancel_check,
+    )
+    original = cache_get(_verification_key(plan["fingerprint"]))
+    original_members = {
+        str(x.get("path") or ""): dict(x)
+        for x in ((original or {}).get("members") or [])
+    } if isinstance(original, dict) else {}
+    local_members = {str(x.get("path") or ""): dict(x) for x in (local.get("members") or [])}
+
+    merged: list[dict[str, Any]] = []
+    recovered_locally: list[str] = []
+    still_failed: list[str] = []
+    for media_row in plan.get("media") or []:
+        member = str(media_row.get("path") or "")
+        old = original_members.get(member) or {**media_row, "status": "untested", "error": "Not previously verified"}
+        retry = local_members.get(member) or {**media_row, "status": "untested", "error": "Local verification unavailable"}
+        if old.get("status") == "verified":
+            chosen = {**old, "verification_source": old.get("verification_source") or "provider"}
+        elif retry.get("status") == "verified":
+            chosen = {**retry, "status": "verified", "error": "", "verification_source": "local_staging", "provider_status": old.get("status")}
+            recovered_locally.append(member)
+        else:
+            chosen = {**retry, "verification_source": "local_staging", "provider_status": old.get("status")}
+            if retry.get("status") == "failed" or old.get("status") == "failed":
+                still_failed.append(member)
+        merged.append(chosen)
+
+    merged_result = {
+        "logical_path": logical_path,
+        "fingerprint": plan["fingerprint"],
+        "catalogue_signature": plan["catalogue_signature"],
+        "tested_at": time.time(),
+        "seconds": 0,
+        "members": merged,
+        "verified_count": sum(1 for x in merged if x.get("status") == "verified"),
+        "failed_count": sum(1 for x in merged if x.get("status") == "failed"),
+        "untested_count": sum(1 for x in merged if x.get("status") == "untested"),
+        "issues": list(local.get("issues") or []),
+        "exit_code": int(local.get("exit_code") or 0),
+        "verification_mode": "provider_plus_local_staging",
+        "local_staging": True,
+        "recovered_locally": recovered_locally,
+        "still_failed": still_failed,
+    }
+    cache_set(_verification_key(plan["fingerprint"]), merged_result)
+    staged_logical = stage_root_logical / actual.name
+    classification = "virtual_source_read_path" if recovered_locally else "genuine_crc_or_archive_damage"
+    result = {
+        "ok": True,
+        "source": logical_path,
+        "fingerprint": plan["fingerprint"],
+        "staged_archive": str(staged_logical),
+        "staged_root": str(stage_root_logical),
+        "size": total,
+        "volume_count": len(volumes),
+        "classification": classification,
+        "recovered_locally": recovered_locally,
+        "still_failed": still_failed,
+        "verification": merged_result,
+        "source_retained": True,
+    }
+    cache_set(_local_stage_key(plan["fingerprint"]), result)
+    log_event("info" if recovered_locally else "warning", "archive_recovery", "local_stage_reverify", f"Local staging re-test completed for {Path(logical_path).name}", {
+        "classification": classification, "recovered_locally": len(recovered_locally), "still_failed": len(still_failed), "size": total,
+    })
+    return result
 
 def _target_logical(logical_path: str, fingerprint: str, identity: dict[str, Any] | None) -> Path:
     title = (identity or {}).get("title") or Path(logical_path).stem
@@ -648,14 +832,14 @@ def _post_extract_rename(actual_root: Path, identity: dict[str, Any] | None) -> 
     return changes
 
 
-def _ffprobe_media(path: Path) -> tuple[bool, str]:
+def _ffprobe_media(path: Path, cancel_check: Callable[[], bool] | None = None) -> tuple[bool, str]:
     exe = shutil.which("ffprobe")
     if not exe:
         return False, "ffprobe is not installed"
     try:
-        proc = subprocess.run(
+        proc = run_cancellable(
             [exe, "-v", "error", "-show_entries", "stream=codec_type:format=duration", "-of", "json", str(path)],
-            capture_output=True, text=True, timeout=120, check=False,
+            capture_output=True, text=True, timeout=120, check=False, cancel_check=cancel_check,
         )
     except subprocess.TimeoutExpired:
         return False, "ffprobe timed out"
@@ -681,7 +865,7 @@ def _unique_target(path: Path) -> Path:
     raise RuntimeError(f"Could not choose a unique recovered filename for {path.name}")
 
 
-def extract_archive(logical_path: str, *, expected_fingerprint: str = "", selected_media: list[str] | None = None) -> dict[str, Any]:
+def extract_archive(logical_path: str, *, expected_fingerprint: str = "", selected_media: list[str] | None = None, cancel_check: Callable[[], bool] | None = None) -> dict[str, Any]:
     """Extract only explicitly verified video members.
 
     Archive-level exit codes are not used as the final success criterion for a
@@ -689,7 +873,7 @@ def extract_archive(logical_path: str, *, expected_fingerprint: str = "", select
     available) and pass ffprobe before it is committed to persistent recovery
     storage.
     """
-    plan = inspect_archive(logical_path, force=True)
+    plan = inspect_archive(logical_path, force=True, cancel_check=cancel_check)
     if expected_fingerprint and plan["fingerprint"] != expected_fingerprint:
         raise RuntimeError("RAR source size/path changed after preview; scan/inspect it again")
     if plan.get("password_protected"):
@@ -725,6 +909,13 @@ def extract_archive(logical_path: str, *, expected_fingerprint: str = "", select
         raise RuntimeError("Not enough free space in the recovered media source root")
 
     actual_archive = view_path(logical_path)
+    local_stage = cache_get(_local_stage_key(plan["fingerprint"]))
+    if any(str(verified_rows[x].get("verification_source") or "") == "local_staging" for x in requested):
+        staged_logical = str((local_stage or {}).get("staged_archive") or "") if isinstance(local_stage, dict) else ""
+        staged_actual = view_path(staged_logical) if staged_logical else None
+        if not staged_actual or not staged_actual.is_file():
+            raise RuntimeError("Locally staged verification is no longer available; retry local staging before recovery")
+        actual_archive = staged_actual
     identity = plan.get("identity")
     target_logical = _target_logical(logical_path, plan["fingerprint"], identity)
     target_actual = view_path(target_logical)
@@ -738,7 +929,13 @@ def extract_archive(logical_path: str, *, expected_fingerprint: str = "", select
         cmd = [exe, "x", "-y", "-spd", f"-o{partial}", str(actual_archive)] + requested
     else:
         cmd = [exe, "x", "-o+", str(actual_archive)] + requested + [str(partial) + os.sep]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60 * 60 * 6, check=False)
+    try:
+        proc = run_cancellable(cmd, capture_output=True, text=True, timeout=60 * 60 * 6, check=False, cancel_check=cancel_check)
+    except CancelledOperation:
+        # Only the operation-local staging directory is removed. Provider RARs,
+        # committed recovered files and existing library symlinks are untouched.
+        shutil.rmtree(partial, ignore_errors=True)
+        raise
     extract_issues = _archive_issue_lines(proc.stdout or "", proc.stderr or "")
 
     resolved = partial.resolve()
@@ -768,7 +965,7 @@ def extract_archive(logical_path: str, *, expected_fingerprint: str = "", select
             failed_after_extract.append({"path": member, "error": f"Recovered size {candidate.stat().st_size} does not match expected {expected_size}"})
             candidate.unlink(missing_ok=True)
             continue
-        ok, reason = _ffprobe_media(candidate)
+        ok, reason = _ffprobe_media(candidate, cancel_check=cancel_check)
         if not ok:
             failed_after_extract.append({"path": member, "error": reason})
             candidate.unlink(missing_ok=True)

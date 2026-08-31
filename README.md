@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.4.4--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.5.0--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -61,6 +61,19 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
 
 ---
+
+## 🛟 Version 10.5.0 — Recovery Control & Reliable Imports
+
+v10.5.0 is the field-reliability release for damaged/cloud-backed TV packs. It keeps the v10.4 recovery architecture but gives the operator control over language checks, long-running jobs, CRC re-tests and mixed-season imports.
+
+- **Language Checks master switch** — turn Language Guard fully ON or OFF from the Inbox or Settings. OFF performs no import-time ffprobe language scan and stale unknown/re-check state cannot block import.
+- **Cancellable jobs** — import, archive inspection/verification/extraction, local CRC staging and TV Recovery splitting cooperatively cancel. Child processes terminate first and are killed only if needed.
+- **Season-aware grouped TV import** — chooses the strongest individual episode source per season/episode, imports safe seasons immediately and leaves combined/CRC-damaged seasons in recovery-required state.
+- **Recovered-media import detection** — library symlinks into `/mnt/debrid/arrnexus-extracted` now count exactly like provider-source links, fixing successful recoveries that remained Waiting.
+- **Superseded source packs** — inferior overlapping packs are shown as covered by the preferred source rather than hijacking grouped imports. Provider media is never deleted implicitly.
+- **Local CRC staging** — failed provider RAR members can be explicitly staged to the recovery disk and re-verified. A local pass is classified as a virtual/provider read-path issue; a repeated failure stays CRC-damaged.
+
+The logical recovery root remains `/mnt/debrid/arrnexus-extracted`; `.arrnexus-originals` remains excluded from Inbox/import scans.
 
 ## 🧠 Version 10.4.4 — Unified Recovery & TV Intelligence
 

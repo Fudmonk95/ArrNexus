@@ -19,11 +19,13 @@ import json
 from pathlib import Path
 import re
 import subprocess
+from typing import Callable
 from typing import Any
 
 from .db import cache_get, cache_set, setting_get, setting_set
 from .namespace import view_path
 from .scanner import video_files
+from .process_control import run_cancellable
 
 
 ENGLISH_CODES = {
@@ -52,6 +54,16 @@ def _bool_setting(key: str, default: bool) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def language_checks_enabled() -> bool:
+    return _bool_setting("language.enabled", True)
+
+
+def set_language_checks_enabled(enabled: bool) -> None:
+    # This is the v10.5 user-facing master control. All other Language Guard
+    # policy settings and cached results are deliberately retained untouched.
+    setting_set("language.enabled", "true" if enabled else "false")
+
+
 def load_language_policy() -> LanguagePolicy:
     try:
         max_files = max(1, min(1000, int(setting_get("language.max_files", "300") or 300)))
@@ -62,7 +74,7 @@ def load_language_policy() -> LanguagePolicy:
     except Exception:
         timeout = 20
     return LanguagePolicy(
-        enabled=_bool_setting("language.enabled", True),
+        enabled=language_checks_enabled(),
         require_english_audio=_bool_setting("language.require_english_audio", True),
         require_english_subtitles=_bool_setting("language.require_english_subtitles", False),
         require_default_english_audio=_bool_setting("language.require_default_english_audio", False),
@@ -224,7 +236,7 @@ def _matching_external_english_subtitle(video_logical: Path) -> bool:
     return False
 
 
-def _ffprobe(logical_file: Path, timeout_seconds: int) -> dict:
+def _ffprobe(logical_file: Path, timeout_seconds: int, cancel_check: Callable[[], bool] | None = None) -> dict:
     actual = view_path(logical_file)
     cmd = [
         "ffprobe", "-v", "error",
@@ -232,7 +244,7 @@ def _ffprobe(logical_file: Path, timeout_seconds: int) -> dict:
         "-of", "json", str(actual),
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds, check=False)
+        proc = run_cancellable(cmd, capture_output=True, text=True, timeout=timeout_seconds, check=False, cancel_check=cancel_check)
     except FileNotFoundError as exc:
         raise RuntimeError("ffprobe is not installed in the ArrNexus container") from exc
     except subprocess.TimeoutExpired as exc:
@@ -252,10 +264,11 @@ def _policy_fingerprint(policy: LanguagePolicy) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
-def _cache_key(source_path: str, fingerprint: str, policy: LanguagePolicy) -> str:
+def _cache_key(source_path: str, fingerprint: str, policy: LanguagePolicy, selection_key: str = "") -> str:
     ident = hashlib.sha256(source_path.encode("utf-8", errors="replace")).hexdigest()[:24]
     fp = (fingerprint or "nofingerprint")[:32]
-    return f"language:v1043:{ident}:{fp}:{_policy_fingerprint(policy)}"
+    selected = f":sel:{selection_key[:20]}" if selection_key else ""
+    return f"language:v105:{ident}:{fp}:{_policy_fingerprint(policy)}{selected}"
 
 
 def _override_key(source_path: str, fingerprint: str) -> str:
@@ -279,11 +292,19 @@ def set_language_override(source_path: str, fingerprint: str, *, english: bool, 
 
 def cached_language_result(source_path: str, fingerprint: str = "") -> dict | None:
     policy = load_language_policy()
+    if not policy.enabled:
+        return {
+            "status": "disabled", "compliant": True, "enabled": False,
+            "summary": "Language Checks OFF — imports will bypass Language Guard", "files": [], "missing": [],
+        }
     row = cache_get(_cache_key(source_path, fingerprint, policy))
     return row if isinstance(row, dict) else None
 
 
-def inspect_source_languages(source_path: str, fingerprint: str = "", force: bool = False) -> dict:
+def inspect_source_languages(
+    source_path: str, fingerprint: str = "", force: bool = False,
+    *, selected_files: list[str] | None = None, cancel_check: Callable[[], bool] | None = None,
+) -> dict:
     """Probe every video in a DMM source up to the configured safety ceiling.
 
     If a source exceeds max_files it is deliberately *not* considered compliant;
@@ -294,7 +315,7 @@ def inspect_source_languages(source_path: str, fingerprint: str = "", force: boo
     if not policy.enabled:
         return {
             "status": "disabled", "compliant": True, "enabled": False,
-            "summary": "Language Guard disabled", "files": [], "missing": [],
+            "summary": "Language Checks OFF — imports will bypass Language Guard", "files": [], "missing": [],
         }
     override = language_override(source_path, fingerprint)
     if override:
@@ -307,13 +328,20 @@ def inspect_source_languages(source_path: str, fingerprint: str = "", force: boo
             "checked_at": override.get("updated_at"),
         }
 
-    key = _cache_key(source_path, fingerprint, policy)
+    requested = [str(x) for x in (selected_files or []) if str(x)]
+    selection_key = hashlib.sha256("\n".join(sorted(requested)).encode("utf-8", errors="replace")).hexdigest() if requested else ""
+    key = _cache_key(source_path, fingerprint, policy, selection_key)
     if not force:
         cached = cache_get(key)
         if isinstance(cached, dict):
             return cached
 
-    files = video_files(Path(source_path))
+    all_files = video_files(Path(source_path))
+    if requested:
+        requested_set = {str(Path(x)) for x in requested}
+        files = [x for x in all_files if str(x) in requested_set]
+    else:
+        files = all_files
     if not files:
         result = {
             "status": "unknown", "compliant": False, "enabled": True,
@@ -329,7 +357,7 @@ def inspect_source_languages(source_path: str, fingerprint: str = "", force: boo
     errors: list[str] = []
     for logical in selected:
         try:
-            payload = _ffprobe(logical, policy.probe_timeout_seconds)
+            payload = _ffprobe(logical, policy.probe_timeout_seconds, cancel_check=cancel_check)
             evaluated = evaluate_probe_payload(
                 payload, policy, external_english_subtitles=_matching_external_english_subtitle(logical)
             )

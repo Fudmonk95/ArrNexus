@@ -141,7 +141,7 @@ def main() -> int:
         main_app.templates.env.get_template(template.name)
     with TestClient(main_app.app) as client:
         health = client.get("/api/health")
-        require(health.status_code == 200 and health.json().get("version") in {"10.4.1-beta", "10.4.2-beta", "10.4.3-beta", "10.4.4-beta"}, "v10.4.1 health/version")
+        require(health.status_code == 200 and health.json().get("version") in {"10.4.1-beta", "10.4.2-beta", "10.4.3-beta", "10.4.4-beta", "10.5.0-beta"}, "v10.4.1 health/version")
         setup = client.post("/setup", data={"username":"v1041validator","email":"v1041@example.invalid","display_name":"V10.4.1 Validator","password":"validation-password-123","confirm":"validation-password-123"}, follow_redirects=False)
         require(setup.status_code == 303, "v10.4.1 administrator setup")
         page = client.get("/maintenance/archives", follow_redirects=False)
@@ -157,7 +157,7 @@ def main() -> int:
     guide = (root/"docs"/"USER_GUIDE.md").read_text(encoding="utf-8")
     audit = (root/"docs"/"DOCUMENTATION_AUDIT.md").read_text(encoding="utf-8")
 
-    require(any(v in main_source for v in ('APP_VERSION = "10.4.1-beta"', 'APP_VERSION = "10.4.2-beta"', 'APP_VERSION = "10.4.3-beta"', 'APP_VERSION = "10.4.4-beta"')), "v10.4.1+ version marker missing")
+    require(any(v in main_source for v in ('APP_VERSION = "10.4.1-beta"', 'APP_VERSION = "10.4.2-beta"', 'APP_VERSION = "10.4.3-beta"', 'APP_VERSION = "10.4.4-beta"', 'APP_VERSION = "10.5.0-beta"')), "v10.4.1+ version marker missing")
     for marker in ('run_archive_verify_job', '/maintenance/archives/verify', 'selected_media = [str(x) for x in form.getlist("media_path")'):
         require(marker in main_source, f"v10.4.1 main marker missing: {marker}")
     for marker in ('_is_padding_member', '_parse_7z_test_output', 'verify_archive_media', 'verified video members', '_ffprobe_media', 'media_only'):
@@ -165,7 +165,7 @@ def main() -> int:
     for marker in ('Media-only archive catalogue', 'Verify media files', 'Recover selected verified media', 'Recovered media source root', 'torrent padding'):
         require(marker in archive_tpl, f"v10.4.1 Archive Recovery UI marker missing: {marker}")
     require('Back to Archived Media Recovery' in job_tpl, "archive background jobs lack a return path")
-    require(('arrnexus-static-v10.4.1' in sw) or ('arrnexus-static-v10.4.2' in sw) or ('arrnexus-static-v10.4.3' in sw) or ('arrnexus-static-v10.4.4' in sw), "v10.4.1+ service-worker cache marker missing")
+    require(('arrnexus-static-v10.4.1' in sw) or ('arrnexus-static-v10.4.2' in sw) or ('arrnexus-static-v10.4.3' in sw) or ('arrnexus-static-v10.4.4' in sw) or ('arrnexus-static-v10.5.0' in sw), "v10.4.1+ service-worker cache marker missing")
     require('Version 10.4.1' in readme and 'Selective RAR Recovery Hotfix' in readme, "README missing v10.4.1")
     require('Verify media files' in guide and '/maintenance/archives/verify' in audit, "docs missing v10.4.1 verification workflow")
     require((root/"docs"/"RELEASE_NOTES_v10.4.1.md").exists(), "v10.4.1 release notes missing")

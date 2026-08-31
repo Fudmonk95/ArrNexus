@@ -6,6 +6,7 @@ import threading
 import time
 from .config import settings
 from .paths import source_root
+from .db import setting_get
 from .namespace import view_path, logical_from_view
 from .importer import all_library_roots
 
@@ -28,6 +29,9 @@ def invalidate_library_cache() -> None:
 
 def provider_from_target(target: str) -> str:
     t = target.lower()
+    recovery = (setting_get("archive_recovery.root", "/mnt/debrid/arrnexus-extracted") or "/mnt/debrid/arrnexus-extracted").rstrip("/").lower()
+    if t == recovery or t.startswith(recovery + "/"):
+        return "ArrNexus Recovery"
     if "/decypharr/" in t:
         return "Real-Debrid"
     if "/nzbdav/" in t or "/.ids/" in t:
@@ -46,7 +50,7 @@ def inventory_roots(sample_limit: int = 5, force: bool = False) -> list[dict]:
         try:
             actual = view_path(logical)
             dirs = [p for p in actual.iterdir() if p.is_dir()] if actual.exists() else []
-            providers = {"Real-Debrid": 0, "Usenet": 0, "Unknown": 0}
+            providers = {"Real-Debrid": 0, "Usenet": 0, "ArrNexus Recovery": 0, "Unknown": 0}
             symlinks = 0
             for p in actual.rglob("*") if actual.exists() else []:
                 if p.is_symlink():
@@ -68,15 +72,27 @@ def inventory_roots(sample_limit: int = 5, force: bool = False) -> list[dict]:
     return out
 
 
+def _managed_source_roots() -> list[str]:
+    provider = source_root().rstrip("/")
+    recovery = (setting_get("archive_recovery.root", "/mnt/debrid/arrnexus-extracted") or "/mnt/debrid/arrnexus-extracted").strip().rstrip("/")
+    return list(dict.fromkeys(x for x in (provider, recovery) if x))
+
+
 def build_source_link_index(limit: int = 200000, force: bool = False) -> dict[str, list[str]]:
-    """Map DMM source folders to library symlinks, with a short reusable cache."""
+    """Map provider *and recovered* source packs to their library symlinks.
+
+    v10.4.4 only indexed the normal DMM/provider root, so valid symlinks whose
+    targets lived under ``/mnt/debrid/arrnexus-extracted`` left Inbox cards in
+    Waiting forever. v10.5 treats both logical namespaces identically.
+    """
     global _LINK_CACHE_AT, _LINK_CACHE
     now = time.monotonic()
     with _CACHE_LOCK:
         if _LINK_CACHE and not force and now - _LINK_CACHE_AT < _LINK_TTL:
             return copy.deepcopy(_LINK_CACHE)
     index: dict[str, list[str]] = {}
-    source_prefix = source_root().rstrip("/") + "/"
+    source_roots = _managed_source_roots()
+    prefixes = [(root, root + "/") for root in source_roots]
     seen = 0
     for _, logical_root in all_library_roots().items():
         try:
@@ -92,11 +108,18 @@ def build_source_link_index(limit: int = 200000, force: bool = False) -> dict[st
                     continue
                 seen += 1
                 target = os.readlink(p)
-                if not target.startswith(source_prefix):
+                matched_root = matched_prefix = ""
+                for source_base, prefix in prefixes:
+                    if target.startswith(prefix):
+                        matched_root, matched_prefix = source_base, prefix
+                        break
+                if not matched_prefix:
                     continue
-                rel = target[len(source_prefix):]
+                rel = target[len(matched_prefix):]
                 source_folder = rel.split("/", 1)[0]
-                source_path = f"{source_root().rstrip('/')}/{source_folder}"
+                if not source_folder:
+                    continue
+                source_path = f"{matched_root}/{source_folder}"
                 index.setdefault(source_path, []).append(str(logical_from_view(p)))
         except Exception:
             continue
