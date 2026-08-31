@@ -1,0 +1,41 @@
+{% extends 'base.html' %}
+{% block heading %}Manual Review · Job #{{ job.id }}{% endblock %}
+{% block content %}
+<div class="panel">
+  <div class="panelhead">
+    <div><h2>Manual review queue</h2><p>These items were not deleted or cancelled. Resolve each uncertainty, then return to the Inbox and import when ready.</p></div>
+    <a class="btn small" href="/jobs/{{ job.id }}">Back to job</a>
+  </div>
+  {% if request.query_params.get('notice') %}<div class="notice">{{ request.query_params.get('notice') }}</div>{% endif %}
+  {% if not items %}<div class="empty">This job has no items awaiting manual review.</div>{% endif %}
+  <div class="job-items review-queue">
+    {% for x in items %}
+    <div class="job-item review" id="review-item-{{ x.id }}">
+      <div>
+        <span class="tag state-review">Manual review</span>
+        <strong>{{ x.display_name }}</strong>
+        <small>{{ x.stage|replace('_',' ') }} · {{ x.message }}</small>
+      </div>
+      <div class="review-actions">
+        {% if x.stage == 'language_review' %}
+          <p class="muted">Language metadata could not prove English. You can inspect the source, or explicitly confirm English for this exact source fingerprint.</p>
+          <div class="card-actions">
+            <a class="btn small" href="/item?path={{ x.source_path|urlencode }}">Open source review</a>
+            <form method="post" action="/jobs/{{ job.id }}/items/{{ x.id }}/approve-language" onsubmit="return confirm('Confirm that this exact source is English? This records an exact-source Language Guard override; it does not delete or import media.')"><button class="btn small primary">Confirm English</button></form>
+          </div>
+        {% elif x.stage == 'language_review_resolved' %}
+          <p class="muted">English has been confirmed manually for this exact source fingerprint. It is ready to be imported again.</p>
+          <div class="card-actions"><a class="btn small primary" href="/inbox">Return to Inbox</a><a class="btn small" href="/item?path={{ x.source_path|urlencode }}">Open source</a></div>
+        {% elif x.stage == 'tv_recovery_required' %}
+          <p class="muted">This source needs TV Recovery or another preferred episode source. Open the source review to inspect the season plan.</p>
+          <div class="card-actions"><a class="btn small warning" href="/item?path={{ x.source_path|urlencode }}">Review TV source</a><a class="btn small" href="/inbox">Open Inbox</a></div>
+        {% else %}
+          <div class="card-actions"><a class="btn small warning" href="/item?path={{ x.source_path|urlencode }}">Review source</a></div>
+        {% endif %}
+        {% if x.result and x.result.seasons %}<div class="mini-list">{% for season in x.result.seasons %}<div><strong>Season {{ season.season }}</strong><span>{{ season.status|replace('_',' ') }} · {{ season.detail }}</span></div>{% endfor %}</div>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

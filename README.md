@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.5.0--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.5.1--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -61,6 +61,10 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
 
 ---
+
+## 🩹 Version 10.5.1 — Recovery I/O & Review UX Hotfix
+
+v10.5.1 hardens the local CRC staging path discovered during live Queen's Nose and Tracy Beaker recovery. Provider-backed RAR copies now retry the same byte range after EIO/ESTALE/timeouts, reopen the virtual source handle, progressively reduce read-block size, and can fall back to an exact Real-Debrid HTTPS download when the mounted provider path remains unreadable. It also fixes stale Language Guard re-check states when Language Checks are OFF, adds Review/Review all controls to Import Jobs, and makes bottom-right job notifications dismissible without cancelling the underlying job.
 
 ## 🛟 Version 10.5.0 — Recovery Control & Reliable Imports
 

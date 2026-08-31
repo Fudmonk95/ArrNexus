@@ -21,7 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .config import settings
 from .db import (
     init_db, recent_imports, latest_import_by_source, successful_imports_by_source, latest_success_for_source,
-    set_item_state, item_states, recent_activity, add_activity,
+    set_item_state, item_states, clear_language_block_states, recent_activity, add_activity,
     create_job, get_job, recent_jobs, update_job, update_job_item, add_job_item,
     job_cancel_requested, request_job_cancel, mark_remaining_job_items_cancelled, remove_job, clear_finished_jobs,
     list_rules, save_rule, delete_rule, mark_import_undone, cache_get, cache_set,
@@ -104,10 +104,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.5.0-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.5.1-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "10.5.0-beta"
+APP_VERSION = "10.5.1-beta"
 
 
 @app.middleware("http")
@@ -1287,6 +1287,12 @@ async def item_language_check(request: Request, source_path: str = Form(...)):
     require_auth(request)
     if not _managed_media_source(source_path):
         raise HTTPException(400, "Invalid source path")
+    if not language_checks_enabled():
+        current = (item_states().get(source_path) or {}).get("state", "")
+        if current in {"language_rejected", "language_rejected_removed", "language_issue", "language_review"}:
+            set_item_state(source_path, "waiting", "Language Checks OFF - stale language block bypassed")
+        _INBOX_SNAPSHOT.clear(); invalidate_scan_cache()
+        return RedirectResponse("/item?path=" + quote(source_path) + "&notice=" + quote("Language Checks are OFF - no language re-check is required"), status_code=303)
     item = inspect_item(source_path)
     result = await asyncio.to_thread(inspect_source_languages, source_path, item.fingerprint, True)
     status = str(result.get("status") or "unknown")
@@ -1317,7 +1323,10 @@ async def item_language_override(request: Request, source_path: str = Form(...),
         add_activity("language_override", item.title_guess, "Administrator confirmed English audio", source_path)
     elif action == "clear":
         set_language_override(source_path, item.fingerprint, english=False, actor=str(user.get("username") or "administrator"))
-        set_item_state(source_path, "language_review", "Manual English override cleared; re-check required")
+        if language_checks_enabled():
+            set_item_state(source_path, "language_review", "Manual English override cleared; re-check required")
+        else:
+            set_item_state(source_path, "waiting", "Manual English override cleared while Language Checks are OFF")
     else:
         raise HTTPException(400, "Invalid language override action")
     _INBOX_SNAPSHOT.clear(); invalidate_scan_cache()
@@ -1487,6 +1496,15 @@ async def run_language_scan_job(job_id: int, force: bool = False):
         iid = int(ji["id"])
         source_path = str(ji.get("source_path") or "")
         try:
+            if not language_checks_enabled():
+                current = (item_states().get(source_path) or {}).get("state", "")
+                if current in {"language_rejected", "language_rejected_removed", "language_issue", "language_review"}:
+                    set_item_state(source_path, "waiting", "Language Checks OFF - queued re-check bypassed")
+                completed += 1
+                update_job_item(iid, status="complete", stage="language_bypassed", message="Language Checks OFF - ffprobe re-check bypassed")
+                update_job(job_id, completed=completed, failed=failed, rejected=rejected, reviewed=reviewed, message=f"{completed} bypassed/verified, {reviewed} manual review, {rejected} rejected, {failed} failed")
+                _INBOX_SNAPSHOT.clear(); invalidate_scan_cache()
+                continue
             update_job_item(iid, status="running", stage="language_probe", message="Checking media streams with ffprobe")
             item = await asyncio.to_thread(inspect_item, source_path)
             result = await asyncio.to_thread(inspect_source_languages, source_path, item.fingerprint, force)
@@ -1701,6 +1719,43 @@ async def job_page(request: Request, job_id: int):
     if not job:
         raise HTTPException(404)
     return templates.TemplateResponse("job.html", {"request": request, "job": job, "items": items})
+
+
+@app.get("/jobs/{job_id}/review", response_class=HTMLResponse)
+async def job_review_page(request: Request, job_id: int):
+    require_auth(request)
+    job, items = get_job(job_id)
+    if not job:
+        raise HTTPException(404)
+    review_items = [x for x in items if str(x.get("status") or "") == "review"]
+    return templates.TemplateResponse("job_review.html", {"request": request, "job": job, "items": review_items})
+
+
+@app.post("/jobs/{job_id}/items/{item_id}/approve-language")
+async def job_review_approve_language(request: Request, job_id: int, item_id: int):
+    user = require_admin(request)
+    job, items = get_job(job_id)
+    if not job:
+        raise HTTPException(404)
+    target = next((x for x in items if int(x.get("id") or 0) == int(item_id)), None)
+    if not target:
+        raise HTTPException(404, "Job item not found")
+    if str(target.get("status") or "") != "review" or str(target.get("stage") or "") != "language_review":
+        raise HTTPException(409, "This job item is not awaiting Language Guard review")
+    source_path = str(target.get("source_path") or "")
+    if not _managed_media_source(source_path):
+        raise HTTPException(400, "Invalid source path")
+    item = await asyncio.to_thread(inspect_item, source_path)
+    set_language_override(source_path, item.fingerprint, english=True, actor=str(user.get("username") or "administrator"))
+    set_item_state(source_path, "waiting", "English audio confirmed manually from Import Jobs")
+    result = dict(target.get("result") or {})
+    result["manual_language_override"] = True
+    result["manual_language_override_actor"] = str(user.get("username") or "administrator")
+    update_job_item(item_id, stage="language_review_resolved", message="English confirmed manually - source is ready to import", result=result)
+    add_activity("language_override", item.title_guess, f"English confirmed from import job #{job_id}", source_path)
+    log_event("info", "language_guard", "job_review_override", f"Manual English approval recorded from job #{job_id}", {"job_id": job_id, "item_id": item_id, "source": source_path})
+    _INBOX_SNAPSHOT.clear(); invalidate_scan_cache(); invalidate_library_cache()
+    return RedirectResponse(f"/jobs/{job_id}/review?notice=" + quote("English confirmed. The source will bypass language uncertainty for this exact fingerprint."), status_code=303)
 
 
 @app.post("/jobs/{job_id}/cancel")
@@ -2248,12 +2303,20 @@ async def settings_language_checks(request: Request):
     form = await request.form()
     enabled = str(form.get("enabled") or "false").lower() in {"1", "true", "yes", "on"}
     set_language_checks_enabled(enabled)
-    _INBOX_SNAPSHOT.clear()
-    log_event("info", "language_guard", "master_toggle", f"Language Checks {'ON' if enabled else 'OFF'}")
+    cleared = 0
+    if not enabled:
+        # Keep cached scans/overrides, but remove stale language-only workflow
+        # states so cards cannot continue demanding a re-check while bypass is on.
+        cleared = clear_language_block_states()
+    _INBOX_SNAPSHOT.clear(); invalidate_scan_cache(); invalidate_library_cache()
+    log_event("info", "language_guard", "master_toggle", f"Language Checks {'ON' if enabled else 'OFF'}", {"cleared_language_blocks": cleared})
     return_to = str(form.get("return_to") or "/inbox")
     if not return_to.startswith("/") or return_to.startswith("//"):
         return_to = "/inbox"
-    message = "Language Checks ON" if enabled else "Language Checks OFF — imports will bypass Language Guard"
+    if enabled:
+        message = "Language Checks ON"
+    else:
+        message = f"Language Checks OFF - imports bypass Language Guard; cleared {cleared} stale language-only block(s)"
     sep = "&" if "?" in return_to else "?"
     return RedirectResponse(return_to + sep + "notice=" + quote(message), status_code=303)
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## 10.5.1-beta - Recovery I/O & Review UX Hotfix
+
+- Fix local CRC staging aborting immediately on a provider-backed `[Errno 5] Input/output error`.
+- Retry the exact failed byte range with file-handle reopen and progressively smaller read blocks.
+- Never skip/fill unreadable bytes: persistent provider I/O remains a hard failure.
+- Distinguish `provider_io_failure` from CRC damage reproduced on a complete local copy.
+- If mounted-file retries are exhausted and an exact Real-Debrid source mapping is available, bypass Decypharr/DUMB and stage the exact RAR over resumable Real-Debrid HTTPS; fuzzy/ambiguous matches are refused.
+- Extract locally recovered members from the exact staged archive that passed verification rather than falling back to the unreliable provider path.
+- Preserve season-aware source selection so valid recovered Queen's Nose Season 1 episodes supersede the broken combined Season 1 member.
+- Make Language Checks OFF actively neutralise stale language-only workflow states while retaining scan cache/history and exact-source overrides.
+- Bypass queued/item language re-checks when the master toggle is OFF.
+- Add Import Jobs **Review all**, per-item review controls and fingerprint-bound **Confirm English** actions for manual language review.
+- Add dismissible bottom-right job notifications; dismissing a card never cancels or removes the underlying job.
+
 ## 10.5.0-beta — Recovery Control & Reliable Imports
 
 - Added a persistent user-facing Language Checks ON/OFF master toggle. OFF bypasses import-time language probing, stale language blocks and language-triggered provider cleanup while retaining policy/cache state.

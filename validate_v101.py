@@ -141,7 +141,7 @@ def main() -> int:
     guide = (root / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8")
     audit = (root / "docs" / "DOCUMENTATION_AUDIT.md").read_text(encoding="utf-8")
 
-    require(any(f'APP_VERSION = \"{v}\"' in main_source for v in ('10.1.0-beta','10.2.0-beta','10.3.0-beta','10.4.0-beta','10.4.1-beta','10.4.2-beta','10.4.3-beta','10.4.4-beta','10.5.0-beta')), "v10.1+ version string missing")
+    require(any(f'APP_VERSION = \"{v}\"' in main_source for v in ('10.1.0-beta','10.2.0-beta','10.3.0-beta','10.4.0-beta','10.4.1-beta','10.4.2-beta','10.4.3-beta','10.4.4-beta','10.5.0-beta','10.5.1-beta')), "v10.1+ version string missing")
     for marker in ("LanguageRejectedSafe", "complete_with_rejections", "language_rejected_removed", "_INBOX_SNAPSHOT.clear()"):
         require(marker in main_source or marker in router_source, f"v10.1 Language Guard workflow missing {marker}")
     for marker in ("delete_source_torrent_exact", "exact_torrent_for_source", "Ambiguous", "DELETE"):
@@ -152,7 +152,7 @@ def main() -> int:
     require("language rejected" in job_html.lower(), "v10.1 job UI does not distinguish rejections")
     require("Eligibility comes before raw quality" in consolidation_html and "Provider cleanup is separate and optional" in consolidation_html, "v10.1 consolidation preview safety copy missing")
     require("consolidation-group" in css and "language-probe_failed" in css, "v10.1 consolidation/language styles missing")
-    require(("arrnexus-static-v10.1" in sw or "arrnexus-static-v10.2" in sw or "arrnexus-static-v10.3" in sw or "arrnexus-static-v10.4" in sw or "arrnexus-static-v10.4.1" in sw or "arrnexus-static-v10.5.0" in sw), "v10.1+ service-worker cache marker missing")
+    require((("arrnexus-static-v10.1" in sw or "arrnexus-static-v10.2" in sw or "arrnexus-static-v10.3" in sw or "arrnexus-static-v10.4" in sw or "arrnexus-static-v10.4.1" in sw or "arrnexus-static-v10.5.0" in sw)) or ("arrnexus-static-v10.5.1" in sw), "v10.1+ service-worker cache marker missing")
     require("Version 10.1" in readme and "Library Consolidation" in readme, "README missing v10.1 release detail")
     require("Library Consolidation" in guide and "exact Real-Debrid" in guide, "User Guide missing v10.1 cleanup guidance")
     require("/maintenance/consolidation" in audit, "Documentation audit missing v10.1 consolidation routes")

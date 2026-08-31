@@ -13,6 +13,9 @@ from pathlib import Path
 import hashlib
 import json
 import os
+import errno
+import asyncio
+import httpx
 import re
 import shutil
 import subprocess
@@ -659,7 +662,253 @@ def local_stage_state(logical_path: str) -> dict[str, Any]:
         "staged_archive": staged,
         "staged_available": bool(staged and view_path(staged).is_file()),
         "classification": str((cached or {}).get("classification") or "") if isinstance(cached, dict) else "",
+        "last_error": str((cached or {}).get("error") or "") if isinstance(cached, dict) else "",
+        "failed_offset": int((cached or {}).get("failed_offset") or 0) if isinstance(cached, dict) else 0,
     }
+
+
+class ProviderStageReadError(RuntimeError):
+    """A provider-backed archive could not be read reliably enough to stage.
+
+    This is deliberately distinct from a RAR CRC result.  It means ArrNexus
+    never obtained a complete local byte-for-byte copy, so it cannot claim the
+    archive was re-verified on local storage.
+    """
+
+    def __init__(self, source: Path, offset: int, size: int, attempts: int, last_error: BaseException):
+        self.source = Path(source)
+        self.offset = int(offset)
+        self.size = int(size)
+        self.attempts = int(attempts)
+        self.last_error = last_error
+        mib = self.offset / (1024 * 1024)
+        super().__init__(
+            f"Provider I/O read failed while staging {self.source.name} at byte {self.offset} "
+            f"({mib:.1f} MiB) after {self.attempts} retries: {last_error}"
+        )
+
+
+def _reopen_stage_fd(fd: int | None, source: Path) -> int:
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    return os.open(str(source), os.O_RDONLY)
+
+
+def _copy_provider_file_resilient(
+    source: Path,
+    destination: Path,
+    *,
+    expected_size: int,
+    copied_before: int,
+    total_size: int,
+    progress=None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> int:
+    """Copy a virtual/provider file with range retries and block fallback.
+
+    Decypharr/Real-Debrid backed files can occasionally return EIO/ESTALE or a
+    premature zero-length read for an otherwise readable range.  A normal
+    shutil/stream copy aborts immediately.  v10.5.1 retries the *same offset*,
+    reopens the provider file and progressively shrinks the range.  It never
+    fills missing bytes or ignores an unreadable range: persistent failure is
+    surfaced as ProviderStageReadError and the incomplete local copy is removed.
+    """
+    max_chunk = 8 * 1024 * 1024
+    min_chunk = 64 * 1024
+    retryable = {
+        errno.EIO,
+        errno.ESTALE,
+        errno.EAGAIN,
+        errno.EINTR,
+        errno.ETIMEDOUT,
+        errno.ECONNRESET,
+    }
+    offset = 0
+    chunk_size = max_chunk
+    healthy_reads = 0
+    fd: int | None = None
+    try:
+        fd = _reopen_stage_fd(None, source)
+        with destination.open("wb") as wf:
+            while offset < expected_size:
+                if cancel_check and cancel_check():
+                    raise CancelledOperation("Local archive staging cancelled")
+
+                wanted = min(chunk_size, expected_size - offset)
+                attempt = 0
+                last_error: BaseException | None = None
+                data: bytes | None = None
+                attempted_size = wanted
+                while attempt < 8:
+                    attempt += 1
+                    if cancel_check and cancel_check():
+                        raise CancelledOperation("Local archive staging cancelled")
+                    try:
+                        assert fd is not None
+                        data = os.pread(fd, attempted_size, offset)
+                        if not data:
+                            raise OSError(errno.EIO, "unexpected EOF from provider-backed archive")
+                        break
+                    except OSError as exc:
+                        last_error = exc
+                        if exc.errno not in retryable:
+                            raise
+                        # Re-open the virtual file so the next request is not
+                        # tied to a stale FUSE/cloud handle.  Reduce the range
+                        # after each failure to avoid repeatedly crossing a bad
+                        # virtual read boundary.
+                        try:
+                            fd = _reopen_stage_fd(fd, source)
+                        except OSError as reopen_exc:
+                            last_error = reopen_exc
+                        attempted_size = max(min_chunk, min(attempted_size // 4, expected_size - offset))
+                        if progress:
+                            try:
+                                progress(
+                                    copied_before + offset, total_size,
+                                    f"{source.name} - provider read retry {attempt}/8 at {offset / (1024 * 1024):.1f} MiB",
+                                    "retry",
+                                )
+                            except Exception:
+                                pass
+                        time.sleep(min(2.0, 0.20 * attempt))
+
+                if data is None:
+                    raise ProviderStageReadError(source, offset, attempted_size, attempt, last_error or OSError(errno.EIO, "provider read failed"))
+
+                wf.write(data)
+                offset += len(data)
+                absolute_done = copied_before + offset
+                if progress:
+                    try:
+                        progress(absolute_done, total_size, source.name, "copy")
+                    except Exception:
+                        pass
+
+                if attempt > 1:
+                    # Stay conservative after a provider hiccup.  Once a run
+                    # of healthy smaller reads succeeds we scale back up.
+                    chunk_size = max(min_chunk, min(attempted_size, max_chunk))
+                    healthy_reads = 0
+                else:
+                    healthy_reads += 1
+                    if healthy_reads >= 16 and chunk_size < max_chunk:
+                        chunk_size = min(max_chunk, chunk_size * 2)
+                        healthy_reads = 0
+
+            wf.flush()
+            os.fsync(wf.fileno())
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    if offset != expected_size:
+        raise RuntimeError(f"Local staging size mismatch for {source.name}: copied {offset}, expected {expected_size}")
+    return offset
+
+
+def _archive_source_pack_and_relative(logical_path: str) -> tuple[str, str]:
+    root = Path(source_root())
+    path = Path(logical_path)
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        raise RuntimeError("Archive is outside the configured DMM source root")
+    if len(rel.parts) >= 2:
+        return str(root / rel.parts[0]), str(Path(*rel.parts[1:]))
+    # Some mounts expose a single-file torrent directly under __all__.  Exact
+    # RD matching may still work when the torrent filename equals the RAR name.
+    return str(path), path.name
+
+
+def _rd_direct_download_descriptor(logical_path: str) -> dict[str, Any]:
+    from . import realdebrid as rd
+    if not rd.connected():
+        raise RuntimeError("Real-Debrid is not connected in ArrNexus")
+    pack, relative = _archive_source_pack_and_relative(logical_path)
+    return asyncio.run(rd.direct_download_for_source_file(pack, relative))
+
+
+def _copy_http_resumable(
+    url: str,
+    destination: Path,
+    *,
+    expected_size: int,
+    copied_before: int,
+    total_size: int,
+    display_name: str,
+    progress=None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> int:
+    """Download a direct provider URL with resumable range retries.
+
+    This path is only used after the mounted provider file repeatedly returns
+    EIO.  It never exposes the signed direct URL in logs/cache and validates the
+    exact byte count before local CRC verification is allowed.
+    """
+    if not str(url or "").startswith(("http://", "https://")):
+        raise RuntimeError("Real-Debrid did not return a usable HTTPS download URL")
+    offset = 0
+    retries = 0
+    destination.unlink(missing_ok=True)
+    with destination.open("wb") as wf:
+        while offset < expected_size:
+            if cancel_check and cancel_check():
+                raise CancelledOperation("Local archive staging cancelled")
+            headers = {"Range": f"bytes={offset}-"} if offset else {}
+            try:
+                timeout = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=30.0)
+                with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": "ArrNexus/10.5.1"}) as client:
+                    with client.stream("GET", url, headers=headers) as response:
+                        if response.status_code >= 400:
+                            raise RuntimeError(f"direct HTTPS staging returned HTTP {response.status_code}")
+                        if offset and response.status_code != 206:
+                            raise RuntimeError("direct HTTPS source did not honour resume Range request")
+                        made_progress = False
+                        for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                            if cancel_check and cancel_check():
+                                raise CancelledOperation("Local archive staging cancelled")
+                            if not chunk:
+                                continue
+                            remaining = expected_size - offset
+                            if len(chunk) > remaining:
+                                chunk = chunk[:remaining]
+                            wf.write(chunk)
+                            offset += len(chunk)
+                            made_progress = True
+                            retries = 0
+                            if progress:
+                                try:
+                                    progress(copied_before + offset, total_size, f"{display_name} - direct Real-Debrid HTTPS", "copy")
+                                except Exception:
+                                    pass
+                            if offset >= expected_size:
+                                break
+                        if offset < expected_size and not made_progress:
+                            raise RuntimeError("direct HTTPS source ended before the expected archive size")
+            except CancelledOperation:
+                raise
+            except (httpx.HTTPError, RuntimeError, OSError) as exc:
+                retries += 1
+                if retries > 6:
+                    raise RuntimeError(f"Direct Real-Debrid HTTPS staging failed at byte {offset} after 6 resume attempts: {exc}") from exc
+                if progress:
+                    try:
+                        progress(copied_before + offset, total_size, f"{display_name} - HTTPS resume {retries}/6 at {offset / (1024 * 1024):.1f} MiB", "retry")
+                    except Exception:
+                        pass
+                time.sleep(min(3.0, 0.5 * retries))
+        wf.flush()
+        os.fsync(wf.fileno())
+    if offset != expected_size:
+        raise RuntimeError(f"Direct HTTPS staging size mismatch for {display_name}: copied {offset}, expected {expected_size}")
+    return offset
 
 
 def stage_and_reverify(
@@ -695,31 +944,70 @@ def stage_and_reverify(
             dst = stage_root_actual / src.name
             tmp = dst.with_name(dst.name + ".partial")
             tmp.unlink(missing_ok=True)
-            with src.open("rb") as rf, tmp.open("wb") as wf:
-                while True:
-                    if cancel_check and cancel_check():
-                        raise CancelledOperation("Local archive staging cancelled")
-                    chunk = rf.read(8 * 1024 * 1024)
-                    if not chunk:
-                        break
-                    wf.write(chunk)
-                    copied += len(chunk)
-                    if progress:
-                        try:
-                            progress(copied, total, src.name, "copy")
-                        except Exception:
-                            pass
-                wf.flush()
-                os.fsync(wf.fileno())
-            if tmp.stat().st_size != src.stat().st_size:
+            expected_size = int(src.stat().st_size)
+            try:
+                copied_now = _copy_provider_file_resilient(
+                    src, tmp, expected_size=expected_size, copied_before=copied, total_size=total,
+                    progress=progress, cancel_check=cancel_check,
+                )
+            except ProviderStageReadError as provider_exc:
+                # The mounted Decypharr/DUMB path itself is unreliable.  When
+                # ArrNexus has an authenticated exact Real-Debrid mapping, bypass
+                # that virtual filesystem and stage the same torrent file via RD's
+                # direct HTTPS link.  Never use fuzzy matching.
+                try:
+                    descriptor = _rd_direct_download_descriptor(str(logical_from_view(src)))
+                    rd_size = int(descriptor.get("file_bytes") or 0)
+                    if rd_size and rd_size != expected_size:
+                        raise RuntimeError(f"Real-Debrid exact file size is {rd_size}, expected {expected_size}")
+                    copied_now = _copy_http_resumable(
+                        str(descriptor.get("download") or ""), tmp, expected_size=expected_size,
+                        copied_before=copied, total_size=total, display_name=src.name,
+                        progress=progress, cancel_check=cancel_check,
+                    )
+                    log_event("warning", "archive_recovery", "local_stage_rd_https_fallback",
+                              f"Bypassed provider filesystem EIO for {src.name} using exact Real-Debrid HTTPS staging",
+                              {"source": logical_path, "volume": src.name, "offset": provider_exc.offset})
+                except CancelledOperation:
+                    raise
+                except Exception as direct_exc:
+                    raise ProviderStageReadError(
+                        src, provider_exc.offset, expected_size, provider_exc.attempts,
+                        RuntimeError(f"{provider_exc.last_error}; exact Real-Debrid HTTPS fallback failed: {direct_exc}"),
+                    ) from direct_exc
+            copied += copied_now
+            if tmp.stat().st_size != expected_size:
                 tmp.unlink(missing_ok=True)
                 raise RuntimeError(f"Local staging size mismatch for {src.name}")
             tmp.replace(dst)
     except CancelledOperation:
         shutil.rmtree(stage_root_actual, ignore_errors=True)
         raise
-    except Exception:
+    except ProviderStageReadError as exc:
         shutil.rmtree(stage_root_actual, ignore_errors=True)
+        failure = {
+            "ok": False,
+            "source": logical_path,
+            "fingerprint": plan["fingerprint"],
+            "classification": "provider_io_failure",
+            "error": str(exc),
+            "failed_volume": exc.source.name,
+            "failed_offset": exc.offset,
+            "size": total,
+            "source_retained": True,
+        }
+        cache_set(_local_stage_key(plan["fingerprint"]), failure)
+        log_event("error", "archive_recovery", "local_stage_provider_io", str(exc), {
+            "source": logical_path, "volume": exc.source.name, "offset": exc.offset, "size": total,
+        })
+        raise
+    except Exception as exc:
+        shutil.rmtree(stage_root_actual, ignore_errors=True)
+        failure = {
+            "ok": False, "source": logical_path, "fingerprint": plan["fingerprint"],
+            "classification": "staging_failed", "error": str(exc), "size": total, "source_retained": True,
+        }
+        cache_set(_local_stage_key(plan["fingerprint"]), failure)
         raise
 
     staged_first = stage_root_actual / actual.name

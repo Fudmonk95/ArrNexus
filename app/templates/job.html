@@ -3,12 +3,25 @@
 {% block content %}
 <div class="panel job-live" data-job-id="{{ job.id }}">
   <div class="panelhead"><div><h2 id="jobTitle">{{ job.message }}</h2><p id="jobSummary">{{ job.completed }} completed · {{ job.reviewed or 0 }} manual review · {{ job.rejected or 0 }} language rejected · {{ job.failed }} failed · {{ job.total }} total</p></div><span id="jobState" class="tag state-{{ job.status }}">{{ job.status|replace('_',' ') }}</span></div>
+  {% if request.query_params.get('notice') %}<div class="notice">{{ request.query_params.get('notice') }}</div>{% endif %}
   <div class="job-progress"><i id="jobBar" style="width:{{ (((job.completed+job.failed+(job.rejected or 0)+(job.reviewed or 0))/(job.total or 1))*100)|round|int }}%"></i></div>
   {% if job.status in ['queued','running','cancelling'] %}<div class="formactions"><form method="post" action="/jobs/{{ job.id }}/cancel"><button class="btn danger" {{ 'disabled' if job.status=='cancelling' }}>{{ 'Cancellation requested…' if job.status=='cancelling' else 'Cancel job' }}</button></form><small>Cancellation keeps original provider media and already-completed valid episodes. Active tools are terminated cleanly, then killed only if required.</small></div>{% endif %}
+  {% if (job.reviewed or 0) > 0 %}<div class="notice warning"><strong>{{ job.reviewed }} item{{ '' if job.reviewed == 1 else 's' }} require manual review.</strong> Review actions are available without cancelling or deleting this job. <a class="btn small warning" href="/jobs/{{ job.id }}/review">Review all</a></div>{% endif %}
   <div id="jobItems" class="job-items">
-  {% for x in items %}<div class="job-item {{ x.status }}"><div><strong>{{ x.display_name }}</strong><small>{{ x.stage }} · route {{ x.destination_key or 'auto' }}</small></div><div><span class="tag state-{{ x.status }}">{{ x.status }}</span><small class="job-message">{{ x.message }}</small>{% if x.result and x.result.seasons %}<div class="mini-list">{% for season in x.result.seasons %}<div><strong>Season {{ season.season }}</strong><span>{{ season.status|replace('_',' ') }} · {{ season.detail }}</span></div>{% endfor %}</div>{% endif %}</div></div>{% endfor %}
+  {% for x in items %}
+    <div class="job-item {{ x.status }}" id="job-item-{{ x.id }}">
+      <div><strong>{{ x.display_name }}</strong><small>{{ x.stage|replace('_',' ') }} · route {{ x.destination_key or 'auto' }}</small></div>
+      <div>
+        <span class="tag state-{{ x.status }}">{{ 'manual review' if x.status == 'review' else x.status|replace('_',' ') }}</span>
+        <small class="job-message">{{ x.message }}</small>
+        {% if x.status == 'review' %}<div class="card-actions"><a class="btn small warning" href="/jobs/{{ job.id }}/review#review-item-{{ x.id }}">Review</a><a class="btn small ghost" href="/item?path={{ x.source_path|urlencode }}">Open source</a></div>{% endif %}
+        {% if x.result and x.result.seasons %}<div class="mini-list">{% for season in x.result.seasons %}<div><strong>Season {{ season.season }}</strong><span>{{ season.status|replace('_',' ') }} · {{ season.detail }}</span></div>{% endfor %}</div>{% endif %}
+      </div>
+    </div>
+  {% endfor %}
   </div>
   <div class="formactions">
+    {% if (job.reviewed or 0) > 0 %}<a class="btn warning" href="/jobs/{{ job.id }}/review">Review all manual items</a>{% endif %}
     {% if job.kind in ['archive_inspect','archive_verify','archive_extract','archive_stage'] and items %}<a class="btn primary" href="/maintenance/archives?inspect_path={{ items[0].source_path|urlencode }}" data-no-soft-nav>Back to Archived Media Recovery</a>
     {% elif job.kind=='tv_split' and items %}<a class="btn primary" href="/tv-recovery/analyse?path={{ items[0].source_path|urlencode }}">Back to TV Recovery</a>
     {% else %}<a class="btn" href="/inbox">Back to DMM Inbox</a>{% endif %}

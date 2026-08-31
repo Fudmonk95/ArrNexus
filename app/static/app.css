@@ -438,3 +438,6 @@ html[data-appearance] code{color:color-mix(in srgb,var(--accent-purple) 70%,var(
 .v104-identity-panel .lookup-card{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:8px 0}.v104-identity-panel .lookup-card>div{min-width:0}
 html[data-appearance="light"] .v104-import-dialog{background:#fff;color:#111113;border-color:#d8d8dc}
 @media(max-width:640px){.v104-import-dialog{padding:16px}.v104-identity-panel .lookup-card{align-items:flex-start;flex-direction:column}.v104-import-dialog .mini-list strong{text-align:left}}
+
+/* v10.5.1 hotfix: dismissible job notifications and in-job review actions. */
+.job-toast{position:relative;padding:0;overflow:hidden}.job-toast-body{display:block;padding:14px 42px 14px 14px;color:inherit;text-decoration:none}.job-toast-dismiss{position:absolute;right:8px;top:8px;width:28px;height:28px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--muted);font-size:20px;line-height:24px;cursor:pointer;z-index:2}.job-toast-dismiss:hover{color:var(--text);border-color:var(--blue)}.review-queue .job-item{align-items:flex-start}.review-actions{max-width:720px}.review-actions p{margin:0 0 10px}.notice.warning{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.btn.warning{border-color:rgba(255,189,89,.4);color:var(--amber)}

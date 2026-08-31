@@ -2,7 +2,7 @@
 
 This file is generated from `app/main.py` routes and the same `app/help_catalog.py` mapping used by the contextual Help button.
 
-- Application routes/actions audited: **163**
+- Application routes/actions audited: **165**
 - Help topics: **48**
 - Primary private pages receive a contextual Help link from the application shell.
 - Public/auth/bootstrap pages are documented in the Help Centre and user guide even when they do not use the private shell.
@@ -38,6 +38,8 @@ This file is generated from `app/main.py` routes and the same `app/help_catalog.
 | POST | `/import` | `single_import` | `dmm-inbox` |
 | GET | `/jobs` | `jobs_page` | `jobs` |
 | GET | `/jobs/{job_id}` | `job_page` | `jobs` |
+| GET | `/jobs/{job_id}/review` | `job_review_page` | `jobs` |
+| POST | `/jobs/{job_id}/items/{item_id}/approve-language` | `job_review_approve_language` | `jobs` |
 | POST | `/jobs/{job_id}/cancel` | `cancel_job` | `jobs` |
 | POST | `/jobs/{job_id}/remove` | `remove_finished_job` | `jobs` |
 | POST | `/jobs/clear-finished` | `clear_finished_job_history` | `jobs` |

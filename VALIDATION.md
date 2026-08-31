@@ -1,6 +1,6 @@
-# ArrNexus v10.5.0-beta Validation
+# ArrNexus v10.5.1-beta Validation
 
-`python3 validate.py` runs the deterministic v10.5 current-layer validator. Release certification also runs historical compatibility validators, compiles all Python, validates Jinja templates/JavaScript, migrates a legacy SQLite schema, exercises Language Checks ON/OFF, grouped TV source selection, recovered-link indexing, cancellation/job-history operations, CRC local staging, `.arrnexus-originals` exclusion and clean FastAPI route rendering.
+`python3 validate.py` runs the deterministic v10.5.1 current-layer validator. Release certification also runs historical compatibility validators, compiles all Python, validates Jinja templates/JavaScript, migrates a legacy SQLite schema, exercises Language Checks ON/OFF, grouped TV source selection, recovered-link indexing, cancellation/job-history operations, CRC local staging, provider `EIO` retry/direct-download fallback, Language Checks stale-state bypass, Import Job review controls, dismissible non-cancelling job notifications, `.arrnexus-originals` exclusion and clean FastAPI route rendering.
 
 Historical chain retained: v7 → v8 → v9 → v9.1 → v9.2 → v9.3 → v9.4 → v10 → v10.1 → v10.2 → v10.3 → v10.4 → v10.4.1 → v10.4.2 → v10.4.3 → v10.4.4 → v10.5.
 

@@ -12,8 +12,19 @@ class RealDebridError(RuntimeError):
     pass
 
 
+def _manual_api_token() -> str:
+    # Reuse an existing ArrNexus provider/AIOStreams Real-Debrid token when the
+    # operator has not completed the dedicated OAuth flow.  Real-Debrid accepts
+    # private API tokens as bearer credentials; the value is never logged.
+    for key in ("realdebrid.api_key", "realdebrid.token", "aiostreams.realdebrid.api_key"):
+        value = str(setting_get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def connected() -> bool:
-    return bool(setting_get("rd.refresh_token") or setting_get("rd.access_token"))
+    return bool(setting_get("rd.refresh_token") or setting_get("rd.access_token") or _manual_api_token())
 
 async def begin_oauth() -> dict:
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
@@ -87,6 +98,9 @@ async def _access_token() -> str:
     if token and (not expires or expires > time.time()):
         return token
     if not refresh:
+        manual = _manual_api_token()
+        if manual:
+            return manual
         raise RealDebridError("Real-Debrid is not connected")
     cid, secret = setting_get("rd.client_id"), setting_get("rd.client_secret")
     if not cid or not secret:
@@ -237,4 +251,69 @@ async def delete_source_torrent_exact(source_path: str, source_size_bytes: int =
         "torrent_id": torrent_id,
         "filename": str(torrent.get("filename") or torrent.get("name") or ""),
         "matched_by": matched.get("matched_by") or "exact match",
+    }
+
+
+async def unrestrict_link(link: str) -> dict:
+    """Return an authenticated Real-Debrid direct-download link."""
+    value = str(link or "").strip()
+    if not value:
+        raise RealDebridError("Real-Debrid link is empty")
+    row = await request("POST", "unrestrict/link", data={"link": value})
+    if not isinstance(row, dict) or not str(row.get("download") or "").strip():
+        raise RealDebridError("Real-Debrid did not return a direct download URL")
+    return row
+
+
+def _normalise_rd_file_path(value: str) -> str:
+    return "/".join(x for x in str(value or "").replace("\\", "/").strip("/").split("/") if x).casefold()
+
+
+async def direct_download_for_source_file(source_pack_path: str, relative_file: str) -> dict:
+    """Resolve one exact DMM source-pack file to an RD HTTPS download.
+
+    Safety is intentionally strict: the backing torrent must match the source
+    pack exactly, the requested torrent file must resolve uniquely, and the RD
+    selected-file/link arrays must line up one-to-one.  Ambiguity is a hard
+    failure rather than a fuzzy guess.
+    """
+    matched = await exact_torrent_for_source(source_pack_path, 0)
+    if not matched.get("ok"):
+        raise RealDebridError(str(matched.get("reason") or "Exact Real-Debrid torrent match failed"))
+    torrent = matched.get("torrent") or {}
+    tid = str(torrent.get("id") or "")
+    if not tid:
+        raise RealDebridError("Matched Real-Debrid torrent has no ID")
+    info = await torrent_info(tid)
+    files = [dict(x) for x in ((info or {}).get("files") or []) if int(x.get("selected") or 0) == 1]
+    links = [str(x) for x in ((info or {}).get("links") or []) if str(x).strip()]
+    if not files or len(files) != len(links):
+        raise RealDebridError("Real-Debrid selected file/link mapping is unavailable or ambiguous")
+
+    wanted = _normalise_rd_file_path(relative_file)
+    if not wanted:
+        raise RealDebridError("Archive relative path is empty")
+    matches: list[int] = []
+    for idx, row in enumerate(files):
+        candidate = _normalise_rd_file_path(row.get("path") or "")
+        if candidate == wanted or candidate.endswith("/" + wanted):
+            matches.append(idx)
+    if len(matches) != 1:
+        # Basename fallback is allowed only when unique across the selected
+        # torrent files; this covers mounts that hide one torrent-root folder.
+        base = wanted.rsplit("/", 1)[-1]
+        matches = [idx for idx, row in enumerate(files) if _normalise_rd_file_path(row.get("path") or "").rsplit("/", 1)[-1] == base]
+    if len(matches) != 1:
+        raise RealDebridError(f"Archive file '{relative_file}' did not resolve uniquely inside the exact Real-Debrid torrent")
+
+    idx = matches[0]
+    unrestricted = await unrestrict_link(links[idx])
+    return {
+        "torrent_id": tid,
+        "torrent_filename": str((info or {}).get("filename") or torrent.get("filename") or ""),
+        "file_path": str(files[idx].get("path") or relative_file),
+        "file_bytes": int(files[idx].get("bytes") or unrestricted.get("filesize") or 0),
+        "download": str(unrestricted.get("download") or ""),
+        "download_id": str(unrestricted.get("id") or ""),
+        "matched_by": str(matched.get("matched_by") or "exact source pack"),
     }

@@ -418,6 +418,26 @@ def item_states() -> dict[str, dict]:
     return {r["source_path"]: dict(r) for r in rows}
 
 
+def clear_language_block_states(note: str = "Language Checks OFF - language state no longer blocks import") -> int:
+    """Neutralise language-only workflow states while retaining Language Guard cache.
+
+    The master toggle is an import control, not a cache purge.  Old ffprobe
+    results and exact-source overrides stay available, but a stale
+    language_review/language_rejected row must not keep the Inbox in a re-check
+    state once checks are disabled.
+    """
+    with db() as conn:
+        cur = conn.execute(
+            """
+            UPDATE item_state
+               SET state='waiting', note=?, updated_at=?
+             WHERE state IN ('language_rejected','language_rejected_removed','language_issue','language_review')
+            """,
+            (str(note or "Language Checks OFF - language state no longer blocks import"), _utcnow()),
+        )
+        return int(cur.rowcount or 0)
+
+
 def add_activity(kind: str, title: str, detail: str = "", source_path: str = ""):
     with db() as conn:
         conn.execute(
