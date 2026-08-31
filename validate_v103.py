@@ -226,7 +226,7 @@ def main() -> int:
     require("arrnexus:appearance" in base, "early appearance preference application missing from document head")
     for marker in ('html[data-appearance="light"]', '--ink:#111113', '--surface-0:#fafafa', '.nx-sidebar', '.nx-topbar', 'Dashboard: remove the old navy surfaces'):
         require(marker in css, f"v10.3 appearance contract missing: {marker}")
-    require(("arrnexus-static-v10.3" in sw or "arrnexus-static-v10.4" in sw or "arrnexus-static-v10.4.1" in sw or "arrnexus-static-v10.5.0" in sw) or ("arrnexus-static-v10.5.1" in sw), "v10.3+ service-worker cache marker missing")
+    require(("arrnexus-static-v10.3" in sw or "arrnexus-static-v10.4" in sw or "arrnexus-static-v10.4.1" in sw or "arrnexus-static-v10.5.0" in sw) or ("arrnexus-static-v10.5.1" in sw) or ("arrnexus-static-v10.6.0" in sw), "v10.3+ service-worker cache marker missing")
 
     require("Version 10.3" in readme and "Archive Rescue" in readme and "Advanced TV Recovery" in readme, "README missing v10.3 workflows")
     for text in ("Archive Rescue", "Advanced TV Recovery", "Trakt Device OAuth", "Check all unchecked"):

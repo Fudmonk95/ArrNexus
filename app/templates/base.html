@@ -43,6 +43,8 @@
         <div class="nx-nav-links">
           <a class="{{ 'active' if request.url.path.startswith('/scraping') }}" href="/scraping" data-nav><span class="nx-nav-icon">↯</span><span>Acquisition</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/debrid') }}" href="/debrid" data-nav><span class="nx-nav-icon">◇</span><span>Debrid / DMM</span></a>
+          {% if request_is_admin(request) %}<a class="{{ 'active' if request.url.path.startswith('/sonarr-rescue') }}" href="/sonarr-rescue" data-nav><span class="nx-nav-icon">S</span><span>Sonarr Rescue</span></a>{% endif %}
+          {% if request_is_admin(request) %}<a class="{{ 'active' if request.url.path.startswith('/radarr-rescue') }}" href="/radarr-rescue" data-nav><span class="nx-nav-icon">R</span><span>Radarr Rescue</span></a>{% endif %}
           {% if request_is_admin(request) %}<a class="{{ 'active' if request.url.path.startswith('/providers') }}" href="/providers" data-nav><span class="nx-nav-icon">◎</span><span>Providers</span></a>{% endif %}
           <a class="{{ 'active' if request.url.path.startswith('/infinidysk') }}" href="/infinidysk" data-nav><span class="nx-nav-icon">☁</span><span>InfiniDysk</span></a>
           <a class="{{ 'active' if request.url.path.startswith('/decypharr') }}" href="/decypharr" data-nav><span class="nx-nav-icon">D</span><span>Decypharr</span></a>
@@ -110,7 +112,7 @@
         <h1>{% block heading %}Dashboard{% endblock %}</h1>
       </div>
       <div class="nx-top-actions">
-        <a class="nx-version-badge" href="/settings" data-nav data-update-check="{{ '1' if request_is_admin(request) else '0' }}" title="ArrNexus version and update channel"><strong>v{{ app_version() }}</strong><small>{{ release_channel()|upper }}</small><em data-version-update hidden>UPDATE</em></a>
+        <a class="nx-version-badge" href="/settings" data-update-open data-current-version="{{ app_version() }}" data-update-check="{{ '1' if request_is_admin(request) else '0' }}" title="ArrNexus version and updates"><strong>v{{ app_version() }}</strong><small>{{ release_channel()|upper }}</small><em data-version-update hidden>UPDATE</em></a>
         <button class="nx-top-button nx-appearance-toggle" type="button" data-appearance-toggle title="Switch light/dark appearance" aria-label="Switch light/dark appearance">☀</button>
         <a class="nx-top-button v93-home-button" href="/" title="Public ArrNexus home" data-no-soft-nav>⌂</a>
         <a class="nx-top-button v94-help-button" href="/help?topic={{ help_topic_for_path(request.url.path) }}" title="Help for this page" data-no-soft-nav>?</a>
@@ -139,12 +141,12 @@
   <button class="v10-update-backdrop" type="button" data-update-dismiss aria-label="Dismiss update"></button>
   <section class="v10-update-dialog" role="dialog" aria-modal="true" aria-labelledby="v10UpdateTitle">
     <span class="eyebrow">ARRNEXUS UPDATE</span>
-    <h2 id="v10UpdateTitle">A new ArrNexus release is ready.</h2>
-    <p id="v10UpdateMessage">ArrNexus will verify the release, back up the database, validate the new runtime and restart itself.</p>
-    <div class="v10-update-version"><span>Current <strong>v{{ app_version() }}</strong></span><i>→</i><span>Available <strong data-update-target>Checking…</strong></span></div>
+    <h2 id="v10UpdateTitle">Checking ArrNexus version…</h2>
+    <p id="v10UpdateMessage">Checking the configured release channel.</p>
+    <div class="v10-update-version"><span>Current <strong data-update-current>v{{ app_version() }}</strong></span><i>→</i><span>Available <strong data-update-target>Checking…</strong></span></div>
     <div class="v10-update-progress" data-update-progress hidden><i></i></div>
     <small class="v10-update-status" data-update-status></small>
-    <div class="v10-update-actions"><button class="btn" type="button" data-update-dismiss>Later</button><a class="btn" href="/settings">Update settings</a><button class="btn primary" type="button" data-install-update>Install update</button></div>
+    <div class="v10-update-actions"><button class="btn" type="button" data-update-dismiss>Close</button><a class="btn" href="/settings">Update settings</a><a class="btn" href="#" data-update-release hidden target="_blank" rel="noopener">Release notes</a><button class="btn" type="button" data-check-update>Check again</button><button class="btn primary" type="button" data-install-update hidden>Install update</button></div>
   </section>
 </div>
 {% endif %}

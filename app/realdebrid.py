@@ -269,13 +269,13 @@ def _normalise_rd_file_path(value: str) -> str:
     return "/".join(x for x in str(value or "").replace("\\", "/").strip("/").split("/") if x).casefold()
 
 
-async def direct_download_for_source_file(source_pack_path: str, relative_file: str) -> dict:
-    """Resolve one exact DMM source-pack file to an RD HTTPS download.
+async def direct_file_metadata_for_source_file(source_pack_path: str, relative_file: str) -> dict:
+    """Resolve one exact DMM/Decypharr source-pack file to RD metadata.
 
-    Safety is intentionally strict: the backing torrent must match the source
-    pack exactly, the requested torrent file must resolve uniquely, and the RD
-    selected-file/link arrays must line up one-to-one.  Ambiguity is a hard
-    failure rather than a fuzzy guess.
+    This does not unrestrict or expose a signed download URL.  It is used by
+    archive recovery to compare the provider-mounted file size with the
+    authoritative Real-Debrid torrent-file size before deciding whether the
+    virtual mount can be trusted.
     """
     matched = await exact_torrent_for_source(source_pack_path, 0)
     if not matched.get("ok"):
@@ -307,13 +307,31 @@ async def direct_download_for_source_file(source_pack_path: str, relative_file: 
         raise RealDebridError(f"Archive file '{relative_file}' did not resolve uniquely inside the exact Real-Debrid torrent")
 
     idx = matches[0]
-    unrestricted = await unrestrict_link(links[idx])
     return {
         "torrent_id": tid,
         "torrent_filename": str((info or {}).get("filename") or torrent.get("filename") or ""),
         "file_path": str(files[idx].get("path") or relative_file),
-        "file_bytes": int(files[idx].get("bytes") or unrestricted.get("filesize") or 0),
+        "file_bytes": int(files[idx].get("bytes") or 0),
+        "restricted_link": links[idx],
+        "matched_by": str(matched.get("matched_by") or "exact source pack"),
+    }
+
+
+async def direct_download_for_source_file(source_pack_path: str, relative_file: str) -> dict:
+    """Resolve one exact DMM source-pack file to an RD HTTPS download.
+
+    Safety is intentionally strict: the backing torrent must match the source
+    pack exactly and the requested file must resolve uniquely.  Ambiguity is a
+    hard failure rather than a fuzzy guess.
+    """
+    meta = await direct_file_metadata_for_source_file(source_pack_path, relative_file)
+    unrestricted = await unrestrict_link(str(meta.get("restricted_link") or ""))
+    return {
+        "torrent_id": meta["torrent_id"],
+        "torrent_filename": meta["torrent_filename"],
+        "file_path": meta["file_path"],
+        "file_bytes": int(meta.get("file_bytes") or unrestricted.get("filesize") or 0),
         "download": str(unrestricted.get("download") or ""),
         "download_id": str(unrestricted.get("id") or ""),
-        "matched_by": str(matched.get("matched_by") or "exact source pack"),
+        "matched_by": meta["matched_by"],
     }

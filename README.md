@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.5.1--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.6.0--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -61,6 +61,19 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
 
 ---
+
+## 🛟 Version 10.6.0 — Rescue Expansion & Direct Archive Integrity
+
+v10.6 expands ArrNexus' rescue role beyond the normal Arr/Prowlarr path and fixes the cloud-RAR failure mode proven during live Queen's Nose recovery. A RAR that fails CRC through Decypharr is no longer assumed corrupt: ArrNexus compares the mounted file with the exact Real-Debrid source metadata and, when possible, downloads the original directly to `/mnt/debrid/arrnexus-extracted/.arrnexus-staging`, verifies it locally and extracts only from that verified original.
+
+- **Archive Rescue for Sonarr + Radarr** — scan monitored TV gaps and monitored movies, search the Internet Archive indexer and review the exact torrent files before RD handoff.
+- **Sonarr Rescue / Radarr Rescue** — separate review-first pages search configured torrent sources through Prowlarr, annotate Real-Debrid cache availability and let an administrator explicitly hand a candidate to RD.
+- **Direct-original RAR verification** — provider CRC/EIO is treated as a mount integrity anomaly. Exact RD metadata is used to compare byte lengths and direct HTTPS is preferred when the mounted archive is suspect.
+- **Authoritative local verification** — once a direct original is staged, every media member is re-tested from that copy. A member is called damaged only if the direct original reproduces the failure.
+- **Safe extraction source** — media verified from the direct original is extracted from that exact staged archive, never from the untrusted mount.
+- **Updater UX repair** — the version badge opens the update modal, semantic version comparison prevents self-offers, stale update cache is cleared after restart and the modal closes automatically after a verified successful update.
+
+The logical recovery root remains `/mnt/debrid/arrnexus-extracted`; no production media or provider archive is deleted by these recovery checks.
 
 ## 🩹 Version 10.5.1 — Recovery I/O & Review UX Hotfix
 

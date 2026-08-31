@@ -648,16 +648,42 @@ def local_stage_state(logical_path: str) -> dict[str, Any]:
         raise RuntimeError("RAR source is not available")
     fp = _archive_fingerprint(logical_path, actual)
     volumes = _archive_volume_actual_paths(actual)
-    total = sum(int(p.stat().st_size) for p in volumes if p.exists())
-    storage = storage_state(total)
+    mounted_total = sum(int(p.stat().st_size) for p in volumes if p.exists())
+
+    # v10.6 compares the virtual mount's advertised length with the exact
+    # Real-Debrid torrent-file metadata before the user confirms a potentially
+    # large staging job.  No signed download URL is requested here.
+    direct_total = 0
+    direct_error = ""
+    try:
+        metas = [_rd_direct_metadata_descriptor(str(logical_from_view(p))) for p in volumes]
+        if len(metas) == len(volumes) and all(int(m.get("file_bytes") or 0) > 0 for m in metas):
+            direct_total = sum(int(m.get("file_bytes") or 0) for m in metas)
+    except Exception as exc:
+        direct_error = str(exc)
+
+    required = max(mounted_total, direct_total)
+    storage = storage_state(required)
     cached = cache_get(_local_stage_key(fp))
     staged = str((cached or {}).get("staged_archive") or "") if isinstance(cached, dict) else ""
+    cached_direct = int((cached or {}).get("direct_size") or 0) if isinstance(cached, dict) else 0
+    if not direct_total:
+        direct_total = cached_direct
+    size_difference = direct_total - mounted_total if direct_total else 0
+    provider_untrusted = bool(size_difference) or (bool((cached or {}).get("provider_mount_untrusted")) if isinstance(cached, dict) else False)
     return {
         "fingerprint": fp,
-        "size": total,
+        "size": mounted_total,
+        "mounted_size": mounted_total,
+        "direct_size": direct_total,
+        "size_difference": size_difference,
+        "direct_available": bool(direct_total),
+        "direct_error": direct_error,
+        "stage_source": str((cached or {}).get("stage_source") or "") if isinstance(cached, dict) else "",
+        "provider_mount_untrusted": provider_untrusted,
         "volume_count": len(volumes),
         "free": int(storage.get("free") or 0),
-        "required": total,
+        "required": required,
         "enough": bool(storage.get("enough")),
         "staged_archive": staged,
         "staged_available": bool(staged and view_path(staged).is_file()),
@@ -827,6 +853,14 @@ def _archive_source_pack_and_relative(logical_path: str) -> tuple[str, str]:
     return str(path), path.name
 
 
+def _rd_direct_metadata_descriptor(logical_path: str) -> dict[str, Any]:
+    from . import realdebrid as rd
+    if not rd.connected():
+        raise RuntimeError("Real-Debrid is not connected in ArrNexus")
+    pack, relative = _archive_source_pack_and_relative(logical_path)
+    return asyncio.run(rd.direct_file_metadata_for_source_file(pack, relative))
+
+
 def _rd_direct_download_descriptor(logical_path: str) -> dict[str, Any]:
     from . import realdebrid as rd
     if not rd.connected():
@@ -864,7 +898,7 @@ def _copy_http_resumable(
             headers = {"Range": f"bytes={offset}-"} if offset else {}
             try:
                 timeout = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=30.0)
-                with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": "ArrNexus/10.5.1"}) as client:
+                with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": "ArrNexus/10.6.0"}) as client:
                     with client.stream("GET", url, headers=headers) as response:
                         if response.status_code >= 400:
                             raise RuntimeError(f"direct HTTPS staging returned HTTP {response.status_code}")
@@ -918,18 +952,74 @@ def stage_and_reverify(
     progress=None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    """Copy a cloud/virtual RAR to recovery storage and re-test it locally.
+    """Stage a provider RAR onto normal recovery storage and re-test it.
 
-    A local pass upgrades only the affected member's verification eligibility;
-    the original provider source is retained and never modified or deleted.
+    v10.6 treats a provider-side CRC/EIO result as evidence that the virtual
+    Decypharr/DUMB representation may be unreliable, *not* proof that the RAR
+    itself is corrupt.  When the source can be resolved exactly to a
+    Real-Debrid torrent file, the original file is downloaded over HTTPS and
+    becomes the authoritative verification/extraction source.  The mounted
+    provider file is used only as a fallback when exact direct resolution is
+    unavailable.
+
+    No failed bytes are skipped or repaired.  Only a complete local copy that
+    passes independent member verification can upgrade a member to verified.
     """
     plan = inspect_archive(logical_path, force=True, cancel_check=cancel_check)
     if expected_fingerprint and plan.get("fingerprint") != expected_fingerprint:
         raise RuntimeError("RAR source changed after preview; inspect it again")
     actual = view_path(logical_path)
     volumes = _archive_volume_actual_paths(actual)
-    total = sum(int(p.stat().st_size) for p in volumes if p.exists())
-    space = storage_state(total)
+    if not volumes:
+        raise RuntimeError("RAR source volume set is unavailable")
+
+    provider_sizes = {src.name: int(src.stat().st_size) for src in volumes}
+    provider_total = sum(provider_sizes.values())
+    original = cache_get(_verification_key(plan["fingerprint"]))
+    provider_failed = bool(
+        isinstance(original, dict)
+        and (
+            int(original.get("failed_count") or 0) > 0
+            or any(str(x.get("status") or "") == "failed" for x in (original.get("members") or []))
+        )
+    )
+
+    # Resolve authoritative RD metadata before copying.  This does not expose
+    # or cache a signed URL.  If every volume resolves exactly, a provider CRC
+    # failure makes direct HTTPS the preferred staging source even when a
+    # sequential read of the mount would appear to succeed.
+    direct_meta: dict[str, dict[str, Any]] = {}
+    direct_resolution_error = ""
+    try:
+        for src in volumes:
+            direct_meta[src.name] = _rd_direct_metadata_descriptor(str(logical_from_view(src)))
+    except Exception as exc:
+        direct_meta = {}
+        direct_resolution_error = str(exc)
+
+    direct_sizes = {
+        name: int((meta or {}).get("file_bytes") or 0)
+        for name, meta in direct_meta.items()
+    }
+    direct_complete = bool(
+        len(direct_meta) == len(volumes)
+        and all(int(direct_sizes.get(src.name) or 0) > 0 for src in volumes)
+    )
+    direct_total = sum(direct_sizes.values()) if direct_complete else 0
+    size_mismatches = [
+        {
+            "volume": src.name,
+            "mounted_bytes": provider_sizes[src.name],
+            "direct_bytes": int(direct_sizes.get(src.name) or 0),
+            "difference": int(direct_sizes.get(src.name) or 0) - provider_sizes[src.name],
+        }
+        for src in volumes
+        if direct_complete and int(direct_sizes.get(src.name) or 0) != provider_sizes[src.name]
+    ]
+
+    prefer_direct = bool(direct_complete and (provider_failed or size_mismatches))
+    required_total = direct_total if prefer_direct else provider_total
+    space = storage_state(required_total)
     if not space.get("enough"):
         raise RuntimeError("Not enough free recovery storage to stage this archive locally")
 
@@ -937,6 +1027,9 @@ def stage_and_reverify(
     stage_root_actual = view_path(stage_root_logical)
     stage_root_actual.mkdir(parents=True, exist_ok=True)
     copied = 0
+    stage_source = "direct_realdebrid" if prefer_direct else "provider_mount"
+    volume_sources: dict[str, str] = {}
+
     try:
         for src in volumes:
             if cancel_check and cancel_check():
@@ -944,41 +1037,82 @@ def stage_and_reverify(
             dst = stage_root_actual / src.name
             tmp = dst.with_name(dst.name + ".partial")
             tmp.unlink(missing_ok=True)
-            expected_size = int(src.stat().st_size)
-            try:
-                copied_now = _copy_provider_file_resilient(
-                    src, tmp, expected_size=expected_size, copied_before=copied, total_size=total,
+            provider_expected = provider_sizes[src.name]
+
+            if prefer_direct:
+                descriptor = _rd_direct_download_descriptor(str(logical_from_view(src)))
+                expected_size = int(descriptor.get("file_bytes") or direct_sizes.get(src.name) or 0)
+                if expected_size <= 0:
+                    raise RuntimeError(f"Real-Debrid did not provide an authoritative byte size for {src.name}")
+                if int(direct_sizes.get(src.name) or 0) and expected_size != int(direct_sizes[src.name]):
+                    raise RuntimeError(f"Real-Debrid file size changed during staging for {src.name}")
+                copied_now = _copy_http_resumable(
+                    str(descriptor.get("download") or ""), tmp, expected_size=expected_size,
+                    copied_before=copied, total_size=required_total, display_name=src.name,
                     progress=progress, cancel_check=cancel_check,
                 )
-            except ProviderStageReadError as provider_exc:
-                # The mounted Decypharr/DUMB path itself is unreliable.  When
-                # ArrNexus has an authenticated exact Real-Debrid mapping, bypass
-                # that virtual filesystem and stage the same torrent file via RD's
-                # direct HTTPS link.  Never use fuzzy matching.
+                volume_sources[src.name] = "direct_realdebrid"
+                log_event(
+                    "warning", "archive_recovery", "direct_original_stage",
+                    f"Staged exact Real-Debrid original for {src.name} instead of trusting the provider mount",
+                    {
+                        "source": logical_path,
+                        "mounted_bytes": provider_expected,
+                        "direct_bytes": expected_size,
+                        "provider_failed_verification": provider_failed,
+                    },
+                )
+            else:
+                expected_size = provider_expected
                 try:
-                    descriptor = _rd_direct_download_descriptor(str(logical_from_view(src)))
-                    rd_size = int(descriptor.get("file_bytes") or 0)
-                    if rd_size and rd_size != expected_size:
-                        raise RuntimeError(f"Real-Debrid exact file size is {rd_size}, expected {expected_size}")
-                    copied_now = _copy_http_resumable(
-                        str(descriptor.get("download") or ""), tmp, expected_size=expected_size,
-                        copied_before=copied, total_size=total, display_name=src.name,
+                    copied_now = _copy_provider_file_resilient(
+                        src, tmp, expected_size=expected_size, copied_before=copied, total_size=required_total,
                         progress=progress, cancel_check=cancel_check,
                     )
-                    log_event("warning", "archive_recovery", "local_stage_rd_https_fallback",
-                              f"Bypassed provider filesystem EIO for {src.name} using exact Real-Debrid HTTPS staging",
-                              {"source": logical_path, "volume": src.name, "offset": provider_exc.offset})
-                except CancelledOperation:
-                    raise
-                except Exception as direct_exc:
-                    raise ProviderStageReadError(
-                        src, provider_exc.offset, expected_size, provider_exc.attempts,
-                        RuntimeError(f"{provider_exc.last_error}; exact Real-Debrid HTTPS fallback failed: {direct_exc}"),
-                    ) from direct_exc
+                    volume_sources[src.name] = "provider_mount"
+                except ProviderStageReadError as provider_exc:
+                    # If direct resolution was not available during preview, one
+                    # final exact lookup is allowed after a real provider EIO.
+                    try:
+                        descriptor = _rd_direct_download_descriptor(str(logical_from_view(src)))
+                        rd_size = int(descriptor.get("file_bytes") or 0)
+                        if rd_size <= 0:
+                            raise RuntimeError("Real-Debrid did not provide the original archive byte size")
+                        # Re-evaluate storage because the mounted file can expose
+                        # the wrong length (the real-world v10.6 failure mode).
+                        if rd_size > provider_expected:
+                            retry_space = storage_state((required_total - provider_expected) + rd_size)
+                            if not retry_space.get("enough"):
+                                raise RuntimeError("Not enough recovery storage for the larger direct Real-Debrid original")
+                        tmp.unlink(missing_ok=True)
+                        copied_now = _copy_http_resumable(
+                            str(descriptor.get("download") or ""), tmp, expected_size=rd_size,
+                            copied_before=copied,
+                            total_size=(required_total - provider_expected) + rd_size,
+                            display_name=src.name, progress=progress, cancel_check=cancel_check,
+                        )
+                        expected_size = rd_size
+                        volume_sources[src.name] = "direct_realdebrid"
+                        stage_source = "mixed" if any(v == "provider_mount" for v in volume_sources.values()) else "direct_realdebrid"
+                        direct_sizes[src.name] = rd_size
+                        direct_meta[src.name] = descriptor
+                        log_event(
+                            "warning", "archive_recovery", "local_stage_rd_https_fallback",
+                            f"Bypassed provider filesystem EIO for {src.name} using exact Real-Debrid HTTPS staging",
+                            {"source": logical_path, "volume": src.name, "offset": provider_exc.offset},
+                        )
+                    except CancelledOperation:
+                        raise
+                    except Exception as direct_exc:
+                        raise ProviderStageReadError(
+                            src, provider_exc.offset, provider_expected, provider_exc.attempts,
+                            RuntimeError(f"{provider_exc.last_error}; exact Real-Debrid HTTPS fallback failed: {direct_exc}"),
+                        ) from direct_exc
+
             copied += copied_now
             if tmp.stat().st_size != expected_size:
                 tmp.unlink(missing_ok=True)
-                raise RuntimeError(f"Local staging size mismatch for {src.name}")
+                raise RuntimeError(f"Local staging size mismatch for {src.name}: got {tmp.stat().st_size if tmp.exists() else 0}, expected {expected_size}")
             tmp.replace(dst)
     except CancelledOperation:
         shutil.rmtree(stage_root_actual, ignore_errors=True)
@@ -993,19 +1127,23 @@ def stage_and_reverify(
             "error": str(exc),
             "failed_volume": exc.source.name,
             "failed_offset": exc.offset,
-            "size": total,
+            "size": provider_total,
+            "mounted_size": provider_total,
+            "direct_size": direct_total,
             "source_retained": True,
         }
         cache_set(_local_stage_key(plan["fingerprint"]), failure)
         log_event("error", "archive_recovery", "local_stage_provider_io", str(exc), {
-            "source": logical_path, "volume": exc.source.name, "offset": exc.offset, "size": total,
+            "source": logical_path, "volume": exc.source.name, "offset": exc.offset, "size": provider_total,
         })
         raise
     except Exception as exc:
         shutil.rmtree(stage_root_actual, ignore_errors=True)
         failure = {
             "ok": False, "source": logical_path, "fingerprint": plan["fingerprint"],
-            "classification": "staging_failed", "error": str(exc), "size": total, "source_retained": True,
+            "classification": "staging_failed", "error": str(exc), "size": required_total,
+            "mounted_size": provider_total, "direct_size": direct_total,
+            "source_retained": True,
         }
         cache_set(_local_stage_key(plan["fingerprint"]), failure)
         raise
@@ -1019,13 +1157,22 @@ def stage_and_reverify(
     local = _verify_media_members_independently(
         kind, exe, staged_first, list(plan.get("media") or []), progress=None, cancel_check=cancel_check,
     )
-    original = cache_get(_verification_key(plan["fingerprint"]))
     original_members = {
         str(x.get("path") or ""): dict(x)
         for x in ((original or {}).get("members") or [])
     } if isinstance(original, dict) else {}
     local_members = {str(x.get("path") or ""): dict(x) for x in (local.get("members") or [])}
 
+    # A direct-original stage is authoritative for every member.  Once the
+    # mounted file is known/suspected to be non-byte-identical, earlier provider
+    # successes are not mixed back into the result.
+    authoritative_direct = bool(volumes) and all(volume_sources.get(src.name) == "direct_realdebrid" for src in volumes)
+    if authoritative_direct:
+        stage_source = "direct_realdebrid"
+    elif any(v == "direct_realdebrid" for v in volume_sources.values()):
+        stage_source = "mixed"
+    else:
+        stage_source = "provider_mount"
     merged: list[dict[str, Any]] = []
     recovered_locally: list[str] = []
     still_failed: list[str] = []
@@ -1033,7 +1180,15 @@ def stage_and_reverify(
         member = str(media_row.get("path") or "")
         old = original_members.get(member) or {**media_row, "status": "untested", "error": "Not previously verified"}
         retry = local_members.get(member) or {**media_row, "status": "untested", "error": "Local verification unavailable"}
-        if old.get("status") == "verified":
+        if authoritative_direct:
+            chosen = {**retry, "verification_source": "direct_realdebrid", "provider_status": old.get("status")}
+            if retry.get("status") == "verified":
+                chosen["error"] = ""
+                if old.get("status") != "verified":
+                    recovered_locally.append(member)
+            elif retry.get("status") == "failed":
+                still_failed.append(member)
+        elif old.get("status") == "verified":
             chosen = {**old, "verification_source": old.get("verification_source") or "provider"}
         elif retry.get("status") == "verified":
             chosen = {**retry, "status": "verified", "error": "", "verification_source": "local_staging", "provider_status": old.get("status")}
@@ -1043,6 +1198,14 @@ def stage_and_reverify(
             if retry.get("status") == "failed" or old.get("status") == "failed":
                 still_failed.append(member)
         merged.append(chosen)
+
+    mounted_size = provider_total
+    staged_size = sum(int((stage_root_actual / src.name).stat().st_size) for src in volumes)
+    effective_direct_size = sum(int(direct_sizes.get(src.name) or 0) for src in volumes) if authoritative_direct else 0
+    if authoritative_direct:
+        classification = "provider_mount_untrusted_direct_verified" if not still_failed else "confirmed_direct_archive_damage"
+    else:
+        classification = "virtual_source_read_path" if recovered_locally else "genuine_crc_or_archive_damage"
 
     merged_result = {
         "logical_path": logical_path,
@@ -1056,32 +1219,49 @@ def stage_and_reverify(
         "untested_count": sum(1 for x in merged if x.get("status") == "untested"),
         "issues": list(local.get("issues") or []),
         "exit_code": int(local.get("exit_code") or 0),
-        "verification_mode": "provider_plus_local_staging",
+        "verification_mode": "direct_realdebrid_local" if authoritative_direct else "provider_plus_local_staging",
         "local_staging": True,
+        "stage_source": stage_source,
+        "provider_mount_untrusted": authoritative_direct,
         "recovered_locally": recovered_locally,
         "still_failed": still_failed,
     }
     cache_set(_verification_key(plan["fingerprint"]), merged_result)
     staged_logical = stage_root_logical / actual.name
-    classification = "virtual_source_read_path" if recovered_locally else "genuine_crc_or_archive_damage"
     result = {
         "ok": True,
         "source": logical_path,
         "fingerprint": plan["fingerprint"],
         "staged_archive": str(staged_logical),
         "staged_root": str(stage_root_logical),
-        "size": total,
+        "size": staged_size,
+        "mounted_size": mounted_size,
+        "direct_size": effective_direct_size,
+        "size_difference": (effective_direct_size - mounted_size) if effective_direct_size else 0,
+        "size_mismatches": size_mismatches,
         "volume_count": len(volumes),
         "classification": classification,
+        "stage_source": stage_source,
+        "provider_mount_untrusted": authoritative_direct,
+        "direct_resolution_error": direct_resolution_error,
         "recovered_locally": recovered_locally,
         "still_failed": still_failed,
         "verification": merged_result,
         "source_retained": True,
     }
     cache_set(_local_stage_key(plan["fingerprint"]), result)
-    log_event("info" if recovered_locally else "warning", "archive_recovery", "local_stage_reverify", f"Local staging re-test completed for {Path(logical_path).name}", {
-        "classification": classification, "recovered_locally": len(recovered_locally), "still_failed": len(still_failed), "size": total,
-    })
+    log_event(
+        "info" if not still_failed else "warning", "archive_recovery", "local_stage_reverify",
+        f"Local staging re-test completed for {Path(logical_path).name}",
+        {
+            "classification": classification,
+            "stage_source": stage_source,
+            "mounted_size": mounted_size,
+            "direct_size": effective_direct_size,
+            "recovered_locally": len(recovered_locally),
+            "still_failed": len(still_failed),
+        },
+    )
     return result
 
 def _target_logical(logical_path: str, fingerprint: str, identity: dict[str, Any] | None) -> Path:
@@ -1198,7 +1378,7 @@ def extract_archive(logical_path: str, *, expected_fingerprint: str = "", select
 
     actual_archive = view_path(logical_path)
     local_stage = cache_get(_local_stage_key(plan["fingerprint"]))
-    if any(str(verified_rows[x].get("verification_source") or "") == "local_staging" for x in requested):
+    if any(str(verified_rows[x].get("verification_source") or "") in {"local_staging", "direct_realdebrid"} for x in requested):
         staged_logical = str((local_stage or {}).get("staged_archive") or "") if isinstance(local_stage, dict) else ""
         staged_actual = view_path(staged_logical) if staged_logical else None
         if not staged_actual or not staged_actual.is_file():

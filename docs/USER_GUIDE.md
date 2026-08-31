@@ -1273,7 +1273,7 @@ Archived Media Recovery scans the DMM __all__ tree for RAR/multipart RAR sets th
 
 ## Archive Rescue & Internet Archive
 
-Archive Rescue finds monitored Sonarr gaps, searches the configured Prowlarr Internet Archive indexer, inspects the real .torrent manifest and can hand selected files to Real-Debrid.
+Archive Rescue finds monitored Sonarr and Radarr gaps, searches the configured Prowlarr Internet Archive indexer, inspects the real .torrent manifest and can hand selected files to Real-Debrid.
 
 ### Before you start
 
@@ -1286,13 +1286,14 @@ Archive Rescue finds monitored Sonarr gaps, searches the configured Prowlarr Int
 
 ### How to use it
 
-- Open Archive Rescue and scan Sonarr missing shows, or search Internet Archive manually.
-- Review a result before sending it to RD; choose only the torrent files you actually want.
-- After RD receives the source it can flow through Decypharr/DMM, Language Guard and normal TV recovery/import.
+- Open Archive Rescue and scan either Sonarr missing shows or Radarr missing movies.
+- Use Search Debrid on a missing card to jump into the dedicated Sonarr/Radarr rescue flow, or Search Internet Archive to inspect Archive candidates.
+- Review an Archive result before sending it to RD; choose only the torrent files you actually want.
+- After RD receives the source it can flow through Decypharr/DMM and the normal import/recovery path.
 
 ### What working looks like
 
-- Missing Sonarr shows produce reviewable Internet Archive candidates and selected torrent files are accepted by RD without downloading unrelated files.
+- Missing Sonarr shows and Radarr movies produce reviewable Internet Archive candidates, and selected torrent files are accepted by RD without downloading unrelated files.
 
 ### If it does not work
 
@@ -1306,7 +1307,89 @@ Archive Rescue finds monitored Sonarr gaps, searches the configured Prowlarr Int
 
 ### Related guides
 
-`self-healing`, `dmm-inbox`, `tv-recovery`, `acquisition`
+`sonarr-rescue`, `radarr-rescue`, `self-healing`, `dmm-inbox`, `tv-recovery`, `acquisition`
+
+# Acquisition
+
+## Sonarr Rescue & Real-Debrid fallback
+
+Sonarr Rescue scans monitored series with missing episodes, searches configured torrent indexers directly through Prowlarr, checks Real-Debrid instant availability and lets an administrator explicitly hand a reviewed candidate to RD.
+
+### Before you start
+
+- A working Sonarr and Prowlarr connection.
+- A connected Real-Debrid account for direct hand-off.
+
+### Setup
+
+1. No extra indexer is required beyond the torrent sources already configured in Prowlarr.
+
+### How to use it
+
+- Scan Sonarr.
+- Choose Search Debrid candidates for a missing series.
+- Prefer exact/high-confidence and RD-cached results.
+- Send only the reviewed release you actually want to Real-Debrid.
+
+### What working looks like
+
+- A stuck Sonarr item can be rescued without making ArrNexus auto-grab every search result; Decypharr/DMM exposes the chosen RD source when ready.
+
+### If it does not work
+
+- Real-Debrid is a cache/provider API, not a title-search catalogue; Prowlarr supplies discovery and ArrNexus checks RD cache state.
+- If no candidates appear, verify the torrent indexers/categories in Prowlarr.
+
+### Safety / privacy
+
+- No candidate is sent automatically.
+- Policy-rejected releases cannot be handed to RD from Rescue.
+- Active Arr downloads are visibly flagged to reduce duplicate acquisitions.
+
+### Related guides
+
+`radarr-rescue`, `archive-rescue`, `debrid-dmm`, `acquisition`
+
+## Radarr Rescue & Real-Debrid fallback
+
+Radarr Rescue scans monitored movies with no imported file, searches configured torrent indexers directly through Prowlarr, checks Real-Debrid instant availability and lets an administrator explicitly hand a reviewed candidate to RD.
+
+### Before you start
+
+- A working Radarr and Prowlarr connection.
+- A connected Real-Debrid account for direct hand-off.
+
+### Setup
+
+1. No extra indexer is required beyond the torrent sources already configured in Prowlarr.
+
+### How to use it
+
+- Scan Radarr.
+- Choose Search Debrid candidates for a missing movie.
+- Review title/year confidence, ArrNexus policy and RD-cache state.
+- Send only the chosen torrent to Real-Debrid.
+
+### What working looks like
+
+- A long-wanted Radarr movie can be handed into the existing RD/Decypharr/DMM pipeline without relying on Radarr to accept the release first.
+
+### If it does not work
+
+- If results are broad, include the movie year in the source metadata and inspect the confidence badge.
+- If no candidates appear, verify Prowlarr movie categories and torrent indexers.
+
+### Safety / privacy
+
+- No candidate is sent automatically.
+- Policy-rejected releases cannot be handed to RD from Rescue.
+- Active Arr downloads are visibly flagged to reduce duplicate acquisitions.
+
+### Related guides
+
+`sonarr-rescue`, `archive-rescue`, `debrid-dmm`, `acquisition`
+
+# Library & automation
 
 ## Advanced TV Recovery & combined-season splitting
 

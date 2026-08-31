@@ -2,8 +2,8 @@
 
 This file is generated from `app/main.py` routes and the same `app/help_catalog.py` mapping used by the contextual Help button.
 
-- Application routes/actions audited: **165**
-- Help topics: **48**
+- Application routes/actions audited: **168**
+- Help topics: **50**
 - Primary private pages receive a contextual Help link from the application shell.
 - Public/auth/bootstrap pages are documented in the Help Centre and user guide even when they do not use the private shell.
 
@@ -157,6 +157,9 @@ This file is generated from `app/main.py` routes and the same `app/help_catalog.
 | GET | `/archive-rescue` | `archive_rescue_page` | `archive-rescue` |
 | GET | `/archive-rescue/release/{token}` | `archive_rescue_release` | `archive-rescue` |
 | POST | `/archive-rescue/send-rd` | `archive_rescue_send_rd` | `archive-rescue` |
+| GET | `/sonarr-rescue` | `sonarr_rescue_page` | `sonarr-rescue` |
+| GET | `/radarr-rescue` | `radarr_rescue_page` | `radarr-rescue` |
+| POST | `/arr-rescue/send-rd` | `arr_rescue_send_rd` | `getting-started` |
 | GET | `/lists` | `lists_page` | `lists` |
 | POST | `/lists/providers` | `lists_provider_save` | `lists` |
 | POST | `/lists/trakt/device/start` | `lists_trakt_device_start` | `lists` |

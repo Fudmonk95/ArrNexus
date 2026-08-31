@@ -1,0 +1,116 @@
+{% extends 'base.html' %}
+{% block title %}{{ service_name }} Rescue · ArrNexus{% endblock %}
+{% block heading %}{{ service_name }} Rescue{% endblock %}
+{% block content %}
+{% if notice %}<div class="alert success">{{ notice }}</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<section class="panel">
+  <div class="eyebrow">ACQUISITION RESCUE</div>
+  <h2>Find alternatives for monitored {{ media_label }} that normal automation has not filled.</h2>
+  <p>ArrNexus searches your configured torrent indexers directly through Prowlarr, checks Real-Debrid instant availability, and shows the candidates for review. Real-Debrid is the cache/handoff provider; it is not treated as a title-search engine.</p>
+  <div class="tags">
+    <span class="tag {{ 'green' if rd_connected else 'red' }}">Real-Debrid {{ 'connected' if rd_connected else 'not connected' }}</span>
+    <span class="tag blue">Review first</span>
+    <span class="tag">No automatic grabs</span>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panelhead">
+    <div>
+      <h2>Missing {{ media_heading }}</h2>
+      <p>Scan every discovered {{ service_name }} instance, including specialist libraries. Items already downloading are clearly marked so a rescue source is not added accidentally.</p>
+    </div>
+    <div class="inline-actions">
+      <a class="btn primary" href="/{{ service }}-rescue?scan=1" data-no-soft-nav>Scan {{ service_name }}</a>
+    </div>
+  </div>
+
+  {% if missing %}
+  <div class="v103-rescue-grid">
+    {% for row in missing %}
+    <article class="v103-rescue-card">
+      <div>
+        <span class="eyebrow">{{ service_name|upper }} · {{ row.destination_key or row.instance }}</span>
+        <h3>{{ row.title }}{% if row.year %} ({{ row.year }}){% endif %}</h3>
+        {% if row.error %}
+          <div class="alert error">{{ row.error }}</div>
+        {% else %}
+          {% if service == 'sonarr' %}
+            <p><strong>{{ row.missing }}</strong> missing episode{{ '' if row.missing == 1 else 's' }} · {{ row.have }}/{{ row.total }} available</p>
+            {% if row.seasons %}<div class="tags">{% for ss in row.seasons %}<span class="tag">S{{ '%02d'|format(ss.season) }} · {{ ss.missing }} missing</span>{% endfor %}</div>{% endif %}
+          {% else %}
+            <p>Monitored movie has no imported file{% if row.status %} · {{ row.status }}{% endif %}</p>
+          {% endif %}
+          {% if row.actively_downloading %}<div class="alert info"><strong>Active download detected.</strong> Review alternatives carefully before sending another source to Real-Debrid.</div>{% endif %}
+        {% endif %}
+      </div>
+      {% if not row.error %}
+      <div class="v103-rescue-actions">
+        {% if row.actively_downloading %}<span class="tag blue">Downloading</span>{% else %}<span class="tag">Missing</span>{% endif %}
+        <a class="btn small primary" href="/{{ service }}-rescue?scan=1&instance={{ row.instance|urlencode }}&arr_id={{ row.arr_id }}" data-no-soft-nav>Search Debrid candidates</a>
+      </div>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% elif scanned %}
+    <div class="empty">No monitored missing {{ media_label }} were found.</div>
+  {% else %}
+    <div class="empty">Run a {{ service_name }} scan to find monitored missing {{ media_label }}.</div>
+  {% endif %}
+</section>
+
+{% if rescue %}
+<section class="panel">
+  <div class="panelhead">
+    <div>
+      <span class="eyebrow">DEBRID CANDIDATES</span>
+      <h2>{{ rescue.title }}{% if rescue.year %} ({{ rescue.year }}){% endif %}</h2>
+      <p>Query: <strong>{{ rescue.query }}</strong> · {{ rescue.counts.total }} torrent candidate{{ '' if rescue.counts.total == 1 else 's' }} · {{ rescue.counts.cached }} confirmed cached on Real-Debrid.</p>
+    </div>
+    <form method="get" action="/{{ service }}-rescue" class="inline-actions">
+      <input type="hidden" name="scan" value="1">
+      <input type="hidden" name="instance" value="{{ rescue.instance }}">
+      <input type="hidden" name="arr_id" value="{{ rescue.arr_id }}">
+      <label class="tag"><input type="checkbox" name="cached_only" value="1" {{ 'checked' if rescue.cached_only }}> Cached only</label>
+      <button class="btn">Refresh candidates</button>
+    </form>
+  </div>
+
+  {% if rescue.results %}
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Release</th><th>Debrid</th><th>Identity</th><th>Policy</th><th>Size</th><th></th></tr></thead>
+      <tbody>
+      {% for row in rescue.results %}
+        {% set policy = row.arrnexus_policy or {} %}
+        <tr>
+          <td>
+            <strong>{{ row.title }}</strong>
+            <small class="block muted">{{ row.indexer or row.indexerName or 'Torrent indexer' }}{% if row.arrnexus_pack %} · {{ row.arrnexus_pack.label }}{% endif %}</small>
+          </td>
+          <td><span class="tag {{ 'green' if row.realDebridCached else 'mutedtag' }}">{{ 'RD cached' if row.realDebridCached else 'Cache not confirmed' }}</span></td>
+          <td><span class="tag {{ 'green' if row.arrnexus_identity_label == 'high' else 'blue' if row.arrnexus_identity_label == 'review' else 'red' }}">{{ row.arrnexus_identity_confidence }}% {{ row.arrnexus_identity_label }}</span></td>
+          <td><span class="tag {{ 'red' if policy.decision == 'rejected' else 'green' }}">{{ policy.decision or 'allowed' }} · {{ policy.score or 0 }}</span></td>
+          <td>{{ row.size|human_size }}</td>
+          <td>
+            <form method="post" action="/arr-rescue/send-rd">
+              <input type="hidden" name="token" value="{{ row.token }}">
+              <input type="hidden" name="return_to" value="/{{ service }}-rescue?scan=1&instance={{ rescue.instance|urlencode }}&arr_id={{ rescue.arr_id }}">
+              <button class="btn small primary" type="submit" {{ 'disabled' if not rd_connected or policy.decision == 'rejected' }}>Send to Real-Debrid</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <div class="empty">No torrent candidates matched this search{% if rescue.cached_only %} with confirmed Real-Debrid cache{% endif %}.</div>
+  {% endif %}
+  <div class="alert info" style="margin-top:16px"><strong>Safety:</strong> ArrNexus never auto-grabs from this page. Low-confidence and policy-rejected results remain visible for diagnosis but rejected releases cannot be sent to Real-Debrid.</div>
+</section>
+{% endif %}
+{% endblock %}

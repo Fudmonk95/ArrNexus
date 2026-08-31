@@ -91,6 +91,7 @@ from . import lists as media_lists
 from . import aiometadata as aiometadata_integration
 from . import provider_cleanup as provider_cleanup_tools
 from . import archive_rescue
+from . import rescue as arr_rescue
 from . import tv_recovery
 from . import archive_media
 from . import media_identity
@@ -104,10 +105,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.5.1-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.6.0-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "10.5.1-beta"
+APP_VERSION = "10.6.0-beta"
 
 
 @app.middleware("http")
@@ -2493,18 +2494,21 @@ async def settings_update_repo(request: Request, update_repo: str = Form(""), up
 @app.get("/api/update-check")
 async def api_update_check(request: Request):
     require_admin(request)
-    return await _check_update()
+    payload = await _check_update()
+    # v10.6: never let a browser/proxy replay an update decision from the
+    # previous running version after a successful self-update.
+    return JSONResponse(payload, headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
 
 
 @app.get("/api/update-status")
 async def api_update_status(request: Request):
     require_admin(request)
     state = update_status()
-    return {
+    return JSONResponse({
         "current": APP_VERSION,
         "self_update_capable": SELF_UPDATE_CAPABLE,
         **state,
-    }
+    }, headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
 
 
 @app.post("/api/update-install")
@@ -4210,7 +4214,7 @@ async def run_archive_stage_job(job_id: int):
     ji = items[0]; iid = int(ji["id"]); source_path = str(ji.get("source_path") or "")
     cfg = cache_get(f"archive_recovery:stage_job:{job_id}") or {}
     cancel_check = lambda: job_cancel_requested(job_id)
-    update_job(job_id, status="running", message="Copying archive to local recovery storage for CRC re-test")
+    update_job(job_id, status="running", message="Verifying original archive on local recovery storage")
     try:
         def _progress(done, total, name, stage):
             pct = int((done / total) * 100) if total else 0
@@ -4219,7 +4223,15 @@ async def run_archive_stage_job(job_id: int):
         classification = str(result.get("classification") or "")
         recovered = len(result.get("recovered_locally") or [])
         still = len(result.get("still_failed") or [])
-        msg = (f"Local staging passed {recovered} previously failed member(s) — provider read-path issue" if recovered else f"Local staging confirmed damage; {still} member(s) still fail")
+        if classification == "provider_mount_untrusted_direct_verified":
+            delta = int(result.get("size_difference") or 0)
+            msg = f"Direct Real-Debrid original verified locally; provider mount marked untrusted{f' ({delta:+d} byte size difference)' if delta else ''}"
+        elif classification == "confirmed_direct_archive_damage":
+            msg = f"Direct Real-Debrid original re-tested locally; {still} member(s) still fail - archive damage confirmed"
+        elif recovered:
+            msg = f"Complete local staging passed {recovered} previously failed member(s) - provider read-path issue"
+        else:
+            msg = f"Complete local staging reproduced {still} failed member(s)"
         update_job_item(iid, status="complete", stage=classification or "complete", message=msg, result={"classification": classification, "recovered_locally": result.get("recovered_locally") or [], "still_failed": result.get("still_failed") or []})
         update_job(job_id, status="complete", completed=1, message=msg)
     except CancelledOperation as exc:
@@ -4364,7 +4376,7 @@ async def archived_media_stage_retry(request: Request):
     verification = (row or {}).get("verification") or {}
     if int(verification.get("failed_count") or 0) < 1:
         raise HTTPException(409, "Local staging retry is only offered when provider verification has failed media members")
-    jid = create_job("archive_stage", [{"source_path": source_path, "display_name": Path(source_path).name, "destination_key": "local CRC re-test"}])
+    jid = create_job("archive_stage", [{"source_path": source_path, "display_name": Path(source_path).name, "destination_key": "direct/local archive verification"}])
     cache_set(f"archive_recovery:stage_job:{jid}", {"fingerprint": str(state.get("fingerprint") or "")})
     _launch(run_archive_stage_job(jid))
     return RedirectResponse(f"/jobs/{jid}", status_code=303)
@@ -4396,23 +4408,33 @@ async def archived_media_extract(request: Request):
 # ===== ARRNEXUS V10.3 ARCHIVE RESCUE ========================================
 
 @app.get("/archive-rescue", response_class=HTMLResponse)
-async def archive_rescue_page(request: Request, scan: int = 0, search_archive: int = 0, q: str = "", notice: str = "", error: str = ""):
+async def archive_rescue_page(request: Request, scan: str = "", search_archive: str = "", q: str = "", notice: str = "", error: str = ""):
     require_admin(request)
-    missing = []
+    missing_sonarr = []
+    missing_radarr = []
     results = []
     indexers = []
+    scan_value = str(scan or "").lower()
+    search_value = str(search_archive or "").lower()
     try:
         indexers = await archive_rescue.internet_archive_indexers()
-        if search_archive:
-            missing = await archive_rescue.search_missing_archive(30)
-        elif scan:
-            missing = await archive_rescue.scan_missing_sonarr()
+        # Backward compatibility: old /archive-rescue?scan=1 and
+        # ?search_archive=1 continue to mean Sonarr.
+        if search_value in {"1", "sonarr"}:
+            missing_sonarr = await archive_rescue.search_missing_archive(30, "sonarr")
+        elif scan_value in {"1", "sonarr"}:
+            missing_sonarr = await archive_rescue.scan_missing_sonarr()
+        if search_value == "radarr":
+            missing_radarr = await archive_rescue.search_missing_archive(30, "radarr")
+        elif scan_value == "radarr":
+            missing_radarr = await archive_rescue.scan_missing_radarr()
         if q.strip():
             results = await archive_rescue.search_archive(q.strip(), 80)
     except Exception as exc:
         error = error or str(exc)
     return templates.TemplateResponse("archive_rescue.html", {
-        "request": request, "missing": missing, "results": results, "query": q,
+        "request": request, "missing_sonarr": missing_sonarr, "missing_radarr": missing_radarr,
+        "results": results, "query": q, "scan": scan_value, "search_archive": search_value,
         "indexers": indexers, "notice": notice, "error": error, "rd_connected": rd.connected(),
     })
 
@@ -4441,6 +4463,52 @@ async def archive_rescue_send_rd(request: Request):
         return RedirectResponse("/archive-rescue?notice=" + quote(msg), status_code=303)
     except Exception as exc:
         return RedirectResponse("/archive-rescue?error=" + quote(str(exc)), status_code=303)
+
+
+# ===== ARRNEXUS V10.6 ARR RESCUE ============================================
+
+async def _arr_rescue_page(request: Request, service: str, scan: int = 0, instance: str = "", arr_id: int = 0, cached_only: int = 0, notice: str = "", error: str = ""):
+    require_admin(request)
+    missing = []
+    rescue = None
+    try:
+        if scan or arr_id:
+            missing = await arr_rescue.scan_missing(service)
+        if arr_id and instance:
+            rescue = await arr_rescue.search_debrid_candidates(service, instance, int(arr_id), cached_only=bool(cached_only), limit=100)
+    except Exception as exc:
+        error = error or str(exc)
+    return templates.TemplateResponse("arr_rescue.html", {
+        "request": request, "service": service, "service_name": "Sonarr" if service == "sonarr" else "Radarr",
+        "media_label": "TV episodes" if service == "sonarr" else "movies",
+        "media_heading": "Sonarr media" if service == "sonarr" else "Radarr movies",
+        "missing": missing, "scanned": bool(scan or arr_id), "rescue": rescue,
+        "notice": notice, "error": error, "rd_connected": rd.connected(),
+    })
+
+
+@app.get("/sonarr-rescue", response_class=HTMLResponse)
+async def sonarr_rescue_page(request: Request, scan: int = 0, instance: str = "", arr_id: int = 0, cached_only: int = 0, notice: str = "", error: str = ""):
+    return await _arr_rescue_page(request, "sonarr", scan, instance, arr_id, cached_only, notice, error)
+
+
+@app.get("/radarr-rescue", response_class=HTMLResponse)
+async def radarr_rescue_page(request: Request, scan: int = 0, instance: str = "", arr_id: int = 0, cached_only: int = 0, notice: str = "", error: str = ""):
+    return await _arr_rescue_page(request, "radarr", scan, instance, arr_id, cached_only, notice, error)
+
+
+@app.post("/arr-rescue/send-rd")
+async def arr_rescue_send_rd(request: Request, token: str = Form(...), return_to: str = Form("/sonarr-rescue?scan=1")):
+    require_admin(request)
+    safe_return = return_to if return_to.startswith("/sonarr-rescue") or return_to.startswith("/radarr-rescue") else "/sonarr-rescue?scan=1"
+    try:
+        result = await arr_rescue.send_candidate_to_realdebrid(token)
+        message = f"Sent {result.get('title') or 'rescue candidate'} to Real-Debrid. Decypharr/DMM will expose it when ready."
+        joiner = "&" if "?" in safe_return else "?"
+        return RedirectResponse(safe_return + joiner + "notice=" + quote(message), status_code=303)
+    except Exception as exc:
+        joiner = "&" if "?" in safe_return else "?"
+        return RedirectResponse(safe_return + joiner + "error=" + quote(str(exc)), status_code=303)
 
 
 # ===== ARRNEXUS V10.2 LISTS / AIOMETADATA / PROVIDER CLEANUP ================

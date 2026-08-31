@@ -1,5 +1,20 @@
 # Changelog
 
+## 10.6.0-beta - Rescue Expansion, Direct Archive Integrity & Updater UX
+
+- Expand **Archive Rescue** to scan and search both monitored Sonarr gaps and monitored Radarr movies through the configured Prowlarr Internet Archive indexer.
+- Add dedicated **Sonarr Rescue** and **Radarr Rescue** pages for monitored media that normal Arr/Prowlarr automation has not filled. Rescue discovery uses configured Prowlarr torrent sources, checks Real-Debrid instant availability and remains explicit/review-first.
+- Add reviewed torrent handoff directly to Real-Debrid without pretending Real-Debrid is a general title-search catalogue. Policy-rejected candidates cannot be handed off.
+- Fix cloud-RAR recovery after field testing proved a Decypharr-mounted RAR can expose a different byte length/hash from the valid Real-Debrid original. Provider-side CRC/EIO is now an **integrity anomaly**, not immediate proof of archive damage.
+- Before staging, compare the mounted archive length with the exact Real-Debrid torrent-file metadata where available. A size mismatch marks the provider mount untrusted.
+- When provider verification has failed and an exact RD mapping exists, prefer a direct authenticated Real-Debrid HTTPS download to recovery storage instead of copying the mounted Decypharr representation again.
+- Treat the directly downloaded original as authoritative for **all** archive members; only failures reproduced against that complete local original are classified as confirmed archive damage.
+- Extract members verified from the direct original only from that staged local archive. Provider archives remain retained and untouched.
+- Keep the v10.5.1 resilient mounted-copy path as a fallback when an exact direct Real-Debrid mapping is unavailable.
+- Change the top version badge into an update modal instead of routing directly to Settings.
+- Fix update-version comparison and browser/proxy caching so the currently running version is never offered as its own update.
+- After a successful self-update, re-check the running version, clear stale update state, close the modal and reload automatically.
+
 ## 10.5.1-beta - Recovery I/O & Review UX Hotfix
 
 - Fix local CRC staging aborting immediately on a provider-backed `[Errno 5] Input/output error`.

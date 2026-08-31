@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-"""Internet Archive rescue workflow for hard-to-find Sonarr media.
+"""Internet Archive rescue workflow for hard-to-find Sonarr and Radarr media.
 
 Prowlarr remains the search adapter. ArrNexus adds the orchestration Prowlarr
-intentionally does not provide: scan missing Sonarr series, isolate Internet
-Archive results, inspect the returned .torrent, and hand selected files to
-Real-Debrid.
+intentionally does not provide: scan monitored missing TV/movie items, isolate
+Internet Archive results, inspect the returned .torrent, and hand selected
+files to Real-Debrid.
 """
 
 import asyncio
@@ -18,6 +18,7 @@ from .db import cache_get, cache_set, log_event, add_activity
 from .instances import discover_instances
 from .router_service import client_for_instance
 from . import realdebrid as rd
+from . import rescue as arr_rescue
 
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".m2ts", ".webm"}
 
@@ -38,56 +39,11 @@ async def internet_archive_indexers() -> list[dict[str, Any]]:
 
 
 async def scan_missing_sonarr() -> list[dict[str, Any]]:
-    instances = [i for i in discover_instances() if i.service == "sonarr" and i.api_key]
-    async def one(inst):
-        client = client_for_instance(inst)
-        try:
-            series = await client.series()
-        except Exception as exc:
-            return [{"instance": inst.instance, "destination_key": inst.destination_key or "default", "error": str(exc)}]
-        out = []
-        for item in series or []:
-            if item.get("monitored") is False:
-                continue
-            stats = item.get("statistics") or {}
-            total = int(stats.get("episodeCount") or 0)
-            have = int(stats.get("episodeFileCount") or 0)
-            missing = max(0, total - have)
-            if not missing:
-                continue
-            seasons = []
-            for season in item.get("seasons") or []:
-                try:
-                    no = int(season.get("seasonNumber") or 0)
-                except Exception:
-                    continue
-                if no <= 0 or season.get("monitored") is False:
-                    continue
-                ss = season.get("statistics") or {}
-                stotal = int(ss.get("episodeCount") or 0)
-                shave = int(ss.get("episodeFileCount") or 0)
-                smissing = max(0, stotal - shave)
-                if smissing:
-                    seasons.append({"season": no, "missing": smissing, "have": shave, "total": stotal})
-            out.append({
-                "instance": inst.instance,
-                "destination_key": inst.destination_key or "default",
-                "series_id": int(item.get("id") or 0),
-                "title": str(item.get("title") or "Untitled"),
-                "year": item.get("year"),
-                "tvdb_id": item.get("tvdbId"),
-                "missing": missing, "have": have, "total": total,
-                "seasons": seasons,
-            })
-        return out
-    pages = await asyncio.gather(*(one(i) for i in instances), return_exceptions=True)
-    rows: list[dict[str, Any]] = []
-    for page in pages:
-        if isinstance(page, Exception):
-            continue
-        rows.extend(page)
-    rows.sort(key=lambda x: (-int(x.get("missing") or 0), str(x.get("title") or "").lower()))
-    return rows
+    return await arr_rescue.scan_missing_sonarr()
+
+
+async def scan_missing_radarr() -> list[dict[str, Any]]:
+    return await arr_rescue.scan_missing_radarr()
 
 
 def _is_archive_result(row: dict[str, Any], ids: set[int], names: set[str]) -> bool:
@@ -132,18 +88,26 @@ async def search_archive(query: str, limit: int = 60) -> list[dict[str, Any]]:
     return out
 
 
-async def search_missing_archive(limit: int = 20) -> list[dict[str, Any]]:
-    missing = (await scan_missing_sonarr())[:max(1, min(50, int(limit)))]
+async def search_missing_archive(limit: int = 20, service: str = "sonarr") -> list[dict[str, Any]]:
+    service = str(service or "sonarr").lower()
+    if service not in {"sonarr", "radarr"}:
+        raise ValueError("Archive Rescue supports Sonarr or Radarr")
+    missing = (await arr_rescue.scan_missing(service))[:max(1, min(50, int(limit)))]
     sem = asyncio.Semaphore(4)
+
     async def one(row):
         if row.get("error"):
             return row
         async with sem:
             try:
-                results = await search_archive(str(row.get("title") or ""), 40)
+                query = str(row.get("title") or "")
+                if service == "radarr" and row.get("year"):
+                    query = f"{query} {row['year']}"
+                results = await search_archive(query, 40)
                 return {**row, "archive_results": results[:5], "archive_count": len(results)}
             except Exception as exc:
                 return {**row, "archive_results": [], "archive_count": 0, "archive_error": str(exc)}
+
     return list(await asyncio.gather(*(one(row) for row in missing)))
 
 

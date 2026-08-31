@@ -1,7 +1,23 @@
-# ArrNexus v10.5.1-beta Validation
+# ArrNexus v10.6.0-beta Validation
 
-`python3 validate.py` runs the deterministic v10.5.1 current-layer validator. Release certification also runs historical compatibility validators, compiles all Python, validates Jinja templates/JavaScript, migrates a legacy SQLite schema, exercises Language Checks ON/OFF, grouped TV source selection, recovered-link indexing, cancellation/job-history operations, CRC local staging, provider `EIO` retry/direct-download fallback, Language Checks stale-state bypass, Import Job review controls, dismissible non-cancelling job notifications, `.arrnexus-originals` exclusion and clean FastAPI route rendering.
+`python3 validate.py` runs the deterministic v10.6 current-layer validator. Release certification also runs the retained historical compatibility chain.
 
-Historical chain retained: v7 → v8 → v9 → v9.1 → v9.2 → v9.3 → v9.4 → v10 → v10.1 → v10.2 → v10.3 → v10.4 → v10.4.1 → v10.4.2 → v10.4.3 → v10.4.4 → v10.5.
+v10.6 validation covers:
 
-A real temporary Uvicorn process is also used for `/api/health`, `/`, `/setup`, Settings and Import Jobs. DMM Inbox itself depends on the DUMB/Radarr mount namespace (`pid: host` + `/proc` visibility); the isolated validator renders and exercises the Inbox route with a clean mocked inventory so certification does not weaken or fake that production namespace requirement.
+- Python compilation and Jinja template compilation;
+- clean SQLite startup/migration through the retained validators;
+- exact Real-Debrid source-file metadata resolution without exposing signed URLs during preview;
+- provider-mount vs direct-original byte-size mismatch handling;
+- direct Real-Debrid staging being preferred after provider CRC failure even when a sequential mount read could succeed;
+- the direct original becoming authoritative for all archive-member verification;
+- retained v10.5.1 EIO retry/direct-download fallback and safe staged extraction;
+- Sonarr missing-media scanning and active-download detection;
+- Radarr monitored-missing scanning and active-download detection;
+- Archive Rescue UI coverage for both Sonarr and Radarr;
+- dedicated Sonarr Rescue and Radarr Rescue routes;
+- version-badge update modal, server-side newer-than comparison, no-cache update APIs and post-update browser cleanup;
+- authenticated route smoke checks for `/sonarr-rescue`, `/radarr-rescue`, `/archive-rescue` and `/api/health`.
+
+Historical validators are retained from v7 through v10.5.1 so recovery, Language Guard, job control, recovered-media indexing, TV source selection and older acquisition behaviour remain covered.
+
+No validator contacts production Arr instances, Real-Debrid, Prowlarr or production databases. External integrations are mocked or exercised only through isolated temporary data.
