@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.6.2--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.6.3--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -61,6 +61,12 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
 
 ---
+
+## 🩹 Version 10.6.3 — Generated Archive Link Recovery Hotfix
+
+v10.6.3 fixes the final Real-Debrid/Decypharr RAR shape exposed by the live Queen's Nose recovery. The backing Real-Debrid torrent is not a torrent containing `season-4_202405.rar`: it contains the individual MP4/metadata payload files and exposes exactly one generated download link for the complete archive/container. Decypharr's mounted `.rar` advertises the payload-byte sum, while the directly downloaded generated RAR has additional archive framing bytes and verifies correctly.
+
+ArrNexus now recognises that exact, non-ambiguous topology. When the torrent identity exactly matches the requested archive and RD exposes one link, ArrNexus unrestricts the sole link, validates the returned archive filename, uses the unrestricted physical filesize as authoritative, downloads that generated archive directly to recovery storage, and verifies/extracts only from the local copy. It does not search the torrent payload rows for a `.rar` that is not supposed to exist. Multiple links, mismatched generated filenames and ambiguous torrent candidates remain hard failures.
 
 ## 🩹 Version 10.6.2 — Real-Debrid Single-File Resolver Hotfix
 

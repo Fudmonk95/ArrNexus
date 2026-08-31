@@ -172,7 +172,7 @@ def main() -> int:
     arr_rescue_tpl = (root / "app/templates/arr_rescue.html").read_text(encoding="utf-8")
     app_js = (root / "app/static/app.js").read_text(encoding="utf-8")
     updater_source = (root / "app/updater.py").read_text(encoding="utf-8")
-    require(any(v in main_source for v in ('APP_VERSION = \"10.6.0-beta\"', 'APP_VERSION = \"10.6.1-beta\"', 'APP_VERSION = \"10.6.2-beta\"')), "v10.6 application marker missing")
+    require(any(v in main_source for v in ('APP_VERSION = \"10.6.0-beta\"', 'APP_VERSION = \"10.6.1-beta\"', 'APP_VERSION = \"10.6.2-beta\"', 'APP_VERSION = \"10.6.3-beta\"')), "v10.6 application marker missing")
     require("provider_mount_untrusted_direct_verified" in archive_source and "Verify original directly" in archive_tpl, "direct-original archive recovery UI/logic missing")
     require("direct_file_metadata_for_source_file" in archive_source or "_rd_direct_metadata_descriptor" in archive_source, "RD authoritative-size comparison missing")
     require("Missing Radarr media" in archive_rescue_tpl and "Missing Sonarr media" in archive_rescue_tpl, "Archive Rescue does not cover both Arr services")
@@ -180,7 +180,7 @@ def main() -> int:
     require("data-update-open" in base_tpl and "compareVersions" in app_js and "completedUpdate" in app_js, "version badge/update modal fix missing")
     require("Cache-Control" in main_source and "no-store" in main_source, "update API no-cache protection missing")
     require("version_key(latest) > version_key(current_version)" in updater_source, "server updater can still offer the running version")
-    require(any(x in (root / "app/static/sw.js").read_text(encoding="utf-8") for x in ("arrnexus-static-v10.6.0", "arrnexus-static-v10.6.1", "arrnexus-static-v10.6.2")), "v10.6 service-worker cache marker missing")
+    require(any(x in (root / "app/static/sw.js").read_text(encoding="utf-8") for x in ("arrnexus-static-v10.6.0", "arrnexus-static-v10.6.1", "arrnexus-static-v10.6.2", "arrnexus-static-v10.6.3")), "v10.6 service-worker cache marker missing")
 
     # Compile every Jinja template so new rescue/integrity markup cannot ship
     # with a syntax error.
@@ -208,7 +208,7 @@ def main() -> int:
             require(client.get("/radarr-rescue").status_code == 200, "Radarr Rescue route failed")
             require(client.get("/archive-rescue").status_code == 200, "Archive Rescue route failed")
             health = client.get("/api/health")
-            require(health.status_code == 200 and health.json().get("version") in {"10.6.0-beta", "10.6.1-beta", "10.6.2-beta"}, "v10.6 health/version failed")
+            require(health.status_code == 200 and health.json().get("version") in {"10.6.0-beta", "10.6.1-beta", "10.6.2-beta", "10.6.3-beta"}, "v10.6 health/version failed")
     finally:
         ar.internet_archive_indexers = old_indexers
 

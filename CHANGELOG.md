@@ -1,5 +1,16 @@
 # Changelog
 
+## 10.6.3-beta - Generated Real-Debrid Archive Link Hotfix
+
+- Fix the live Decypharr/Real-Debrid topology where an exact multi-file torrent exposes one generated archive download link instead of containing the virtual `.rar` in its file rows.
+- Stop searching selected torrent payload files for `season-4_202405.rar` when the actual RD rows are `Season 1.mp4`, `Season 2.mp4`, metadata and padding files.
+- For an exact torrent identity with exactly one RD link, classify that link as a generated archive candidate rather than an individual selected file.
+- Unrestrict the sole link and require the returned filename to exactly match the requested archive/stem before accepting it.
+- Use the unrestricted physical archive filesize as authoritative; never use the selected-payload byte sum as the RAR size.
+- Preserve the proven Queen's Nose distinction: mounted/virtual payload size `3,544,186,880` bytes versus physical generated RAR size `3,544,189,222` bytes.
+- Keep multi-link/multi-torrent ambiguity as a hard stop and retain v10.6.1/v10.6.2's rule that provider CRC failures can never fall back to Decypharr-mounted bytes when Real-Debrid is connected.
+- Revalidate the generated archive identity and filesize immediately before download so a changed RD link cannot silently replace the approved source.
+
 ## 10.6.2-beta - Real-Debrid Single-File Resolver Hotfix
 
 - fixes exact Real-Debrid direct-original resolution when a single-file torrent rewrites or strips the internal archive filename;

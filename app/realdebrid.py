@@ -391,6 +391,24 @@ def _match_selected_file(info: dict, relative_file: str, *, exact_torrent_identi
         if exact_torrent_identity and len(all_files) == 1:
             return all_files[0], links[0], "exact single-file torrent identity"
 
+    # Exact torrent identity + one RD link can also represent a generated
+    # archive/container for a *multi-file* torrent. This is the live
+    # Internet-Archive/Decypharr case: RD lists the payload files (Season 1,
+    # Season 2, metadata, padding...) but exposes one downloadable archive
+    # link. The requested .rar is therefore not supposed to appear in the
+    # torrent file rows. Do not map that link to any individual payload file;
+    # return a synthetic generated-archive row and validate the unrestricted
+    # link's filename/physical byte count later.
+    if exact_torrent_identity and len(links) == 1 and len(all_files) > 1:
+        return {
+            "id": 0,
+            "path": "/" + str(relative_file or "").lstrip("/"),
+            "bytes": 0,
+            "selected": 1,
+            "generated_archive": True,
+            "payload_bytes": int(info.get("bytes") or 0),
+        }, links[0], "exact torrent identity + sole generated RD archive link"
+
     # Last safe single-file form: exact archive torrent + one generated link,
     # but RD omitted file rows. This is still unambiguous because the torrent
     # identity itself is exact and there is only one downloadable link.
@@ -501,24 +519,64 @@ async def _exact_rd_torrent_file(source_pack_path: str, relative_file: str) -> d
 
 
 async def direct_file_metadata_for_source_file(source_pack_path: str, relative_file: str) -> dict:
-    """Resolve one exact DMM/Decypharr source-pack file to RD metadata.
+    """Resolve one exact DMM/Decypharr archive to authoritative RD metadata.
 
-    The resolver accepts only exact source-pack/archive-name equivalents and an
-    exact selected-file match.  This covers Decypharr's common stem-directory
-    representation without introducing fuzzy title matching.
+    Two safe Real-Debrid forms are supported:
+
+    * a real archive file that exists in the torrent's selected file rows;
+    * an exact torrent with one generated RD download link, where the torrent
+      file rows are the *contents* of the generated archive.
+
+    The second form is important for Internet Archive style torrents exposed by
+    Decypharr as a virtual ``.rar``.  The mounted file's ``stat`` size can be
+    the sum of payload bytes rather than the physical generated RAR size.  For
+    that form we unrestrict the sole link only to validate its returned
+    filename and physical filesize; the signed download URL is deliberately not
+    returned from this metadata function.
     """
+    from pathlib import Path
+
     resolved = await _exact_rd_torrent_file(source_pack_path, relative_file)
     torrent = resolved.get("torrent") or {}
     info = resolved.get("info") or {}
     file_row = resolved.get("file") or {}
     tid = str(torrent.get("id") or "")
+    restricted_link = str(resolved.get("restricted_link") or "")
+    file_bytes = int(file_row.get("bytes") or 0)
+    file_path = str(file_row.get("path") or relative_file)
+    generated_archive = bool(file_row.get("generated_archive"))
+    direct_filename = ""
+
+    if generated_archive:
+        unrestricted = await unrestrict_link(restricted_link)
+        direct_filename = str((unrestricted or {}).get("filename") or "").strip()
+        direct_size = int((unrestricted or {}).get("filesize") or 0)
+        wanted_name = Path(str(relative_file or "").replace("\\", "/")).name
+        if not direct_filename:
+            raise RealDebridError(
+                f"Exact torrent '{info.get('filename') or torrent.get('filename') or ''}' returned one generated link but Real-Debrid did not identify its filename"
+            )
+        if not (_rd_exact_name_variants(direct_filename) & _rd_exact_name_variants(wanted_name)):
+            raise RealDebridError(
+                f"Exact torrent returned one generated link named '{direct_filename}', which does not exactly match requested archive '{wanted_name}'"
+            )
+        if direct_size <= 0:
+            raise RealDebridError(
+                f"Real-Debrid did not report the physical byte size of generated archive '{direct_filename}'"
+            )
+        file_bytes = direct_size
+        file_path = "/" + direct_filename.lstrip("/")
+
     return {
         "torrent_id": tid,
         "torrent_filename": str(info.get("filename") or torrent.get("filename") or torrent.get("name") or ""),
-        "file_path": str(file_row.get("path") or relative_file),
-        "file_bytes": int(file_row.get("bytes") or 0),
-        "restricted_link": str(resolved.get("restricted_link") or ""),
+        "file_path": file_path,
+        "file_bytes": file_bytes,
+        "restricted_link": restricted_link,
         "matched_by": "exact source/archive name + " + str(resolved.get("file_match") or "exact selected file"),
+        "generated_archive": generated_archive,
+        "payload_bytes": int(file_row.get("payload_bytes") or 0),
+        "direct_filename": direct_filename,
     }
 
 
@@ -529,8 +587,23 @@ async def direct_download_for_source_file(source_pack_path: str, relative_file: 
     pack exactly and the requested file must resolve uniquely.  Ambiguity is a
     hard failure rather than a fuzzy guess.
     """
+    from pathlib import Path
+
     meta = await direct_file_metadata_for_source_file(source_pack_path, relative_file)
     unrestricted = await unrestrict_link(str(meta.get("restricted_link") or ""))
+    if bool(meta.get("generated_archive")):
+        latest_name = str((unrestricted or {}).get("filename") or "").strip()
+        wanted_name = Path(str(relative_file or "").replace("\\", "/")).name
+        if not latest_name or not (_rd_exact_name_variants(latest_name) & _rd_exact_name_variants(wanted_name)):
+            raise RealDebridError(
+                f"Generated Real-Debrid archive changed identity before download: '{latest_name or '<missing>'}' does not match '{wanted_name}'"
+            )
+        latest_size = int((unrestricted or {}).get("filesize") or 0)
+        expected_size = int(meta.get("file_bytes") or 0)
+        if latest_size <= 0 or (expected_size and latest_size != expected_size):
+            raise RealDebridError(
+                f"Generated Real-Debrid archive changed size before download: expected {expected_size}, got {latest_size}"
+            )
     return {
         "torrent_id": meta["torrent_id"],
         "torrent_filename": meta["torrent_filename"],
@@ -539,4 +612,7 @@ async def direct_download_for_source_file(source_pack_path: str, relative_file: 
         "download": str(unrestricted.get("download") or ""),
         "download_id": str(unrestricted.get("id") or ""),
         "matched_by": meta["matched_by"],
+        "generated_archive": bool(meta.get("generated_archive")),
+        "payload_bytes": int(meta.get("payload_bytes") or 0),
+        "direct_filename": str((unrestricted or {}).get("filename") or meta.get("direct_filename") or ""),
     }

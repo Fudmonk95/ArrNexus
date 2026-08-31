@@ -1,17 +1,18 @@
-# ArrNexus v10.6.2-beta Validation
+# ArrNexus v10.6.3-beta Validation
 
-`python3 validate.py` runs the deterministic v10.6.2 current-layer validator. Release certification also runs retained v10.6.1/v10.6/v10.5.1 recovery validators and package hygiene checks.
+`python3 validate.py` runs the deterministic v10.6.3 current-layer validator. Release certification also runs the retained v10.6.2/v10.6.1/v10.6/v10.5.1/v10.5/v10.4.x validators plus package-hygiene and clean-start checks.
 
-v10.6.2 validation covers:
+v10.6.3 validation covers:
 
-- exact Real-Debrid archive torrent + exact selected file;
-- Decypharr extensionless archive folder -> `.rar` RD torrent identity;
-- selected-file basename `.rar` stripping;
-- missing/normalised Real-Debrid selection flags;
-- exact single-file torrent with a rewritten internal RD file path;
-- exact single-file torrent where RD omits file rows but exposes one link and byte count;
-- ambiguous multi-file selections remain rejected;
-- direct-source resolution failure never falls back to provider-mounted archive bytes after CRC anomalies;
-- authoritative direct-original size/verification flow from v10.6.1;
-- Sonarr/Radarr Rescue and updater behavior retained;
-- template compilation and temporary HTTP route/version checks.
+- the exact live Queen's Nose Real-Debrid topology: extensionless torrent identity, many selected payload files, one generated RD archive link;
+- authoritative physical generated-RAR size `3,544,189,222` bytes rather than the `3,544,186,880` selected-payload/mounted size;
+- generated archive filename validation after `/unrestrict/link`;
+- signed direct URL is never exposed by metadata-only resolution;
+- generated archive identity/size is checked again immediately before download;
+- wrong generated archive filename is rejected;
+- multiple RD links remain ambiguous and rejected;
+- provider CRC anomalies still cannot fall back to Decypharr-mounted bytes when Real-Debrid is connected;
+- retained v10.6.2 single-file resolver variants;
+- retained v10.6.1 authoritative-source safety;
+- retained v10.5.1 extraction/EIO, Language Guard review and dismissible job controls;
+- Python compilation and clean FastAPI `/api/health`, `/`, `/setup` route checks.
