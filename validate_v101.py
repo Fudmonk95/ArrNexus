@@ -141,7 +141,7 @@ def main() -> int:
     guide = (root / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8")
     audit = (root / "docs" / "DOCUMENTATION_AUDIT.md").read_text(encoding="utf-8")
 
-    require(any(f'APP_VERSION = \"{v}\"' in main_source for v in ('10.1.0-beta','10.2.0-beta','10.3.0-beta','10.4.0-beta','10.4.1-beta','10.4.2-beta')), "v10.1+ version string missing")
+    require(any(f'APP_VERSION = \"{v}\"' in main_source for v in ('10.1.0-beta','10.2.0-beta','10.3.0-beta','10.4.0-beta','10.4.1-beta','10.4.2-beta','10.4.3-beta')), "v10.1+ version string missing")
     for marker in ("LanguageRejectedSafe", "complete_with_rejections", "language_rejected_removed", "_INBOX_SNAPSHOT.clear()"):
         require(marker in main_source or marker in router_source, f"v10.1 Language Guard workflow missing {marker}")
     for marker in ("delete_source_torrent_exact", "exact_torrent_for_source", "Ambiguous", "DELETE"):

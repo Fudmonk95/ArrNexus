@@ -11,23 +11,30 @@ from typing import Any
 
 from .db import cache_get, cache_set, setting_get, setting_set, log_event, add_activity
 from .namespace import view_path, is_within_logical
-from .paths import source_root
+from .paths import source_root, dumb_root
+from . import archive_media
 from .scanner import inspect_item, video_files, season_hints
 from .router_service import existing_match_any, _client_for_instance, primary_client
 
 
 def staging_root() -> Path:
-    raw = (setting_get("tv_recovery.staging_root", "/data/split-cache") or "/data/split-cache").strip()
+    # v10.4.3 unifies all recovered bytes under the DUMB-visible recovery
+    # namespace.  The legacy /data/split-cache default is intentionally migrated
+    # at runtime so existing installs do not strand split episodes inside the
+    # ArrNexus application-data volume.
+    raw = (setting_get("tv_recovery.staging_root", "") or "").strip()
+    if not raw or raw == "/data/split-cache":
+        raw = archive_media.extraction_root()
     path = Path(raw)
-    if not path.is_absolute():
-        raise RuntimeError("TV Recovery staging root must be an absolute path")
+    if not path.is_absolute() or not is_within_logical(path, dumb_root()):
+        raise RuntimeError("TV Recovery output root must be an absolute DUMB-visible path")
     return path
 
 
 def save_staging_root(value: str) -> None:
     path = Path(str(value or "").strip())
-    if not path.is_absolute():
-        raise ValueError("Staging root must be an absolute path")
+    if not path.is_absolute() or not is_within_logical(path, dumb_root()):
+        raise ValueError(f"TV Recovery output root must live under {dumb_root()}")
     setting_set("tv_recovery.staging_root", str(path))
 
 
@@ -103,8 +110,8 @@ def _boundaries(duration: float, expected: int, chapters: list[dict]) -> tuple[s
 
 
 async def analyse_source(source_path: str) -> dict[str, Any]:
-    if not is_within_logical(source_path, source_root()):
-        raise RuntimeError("TV Recovery only analyses DMM source paths")
+    if not (is_within_logical(source_path, source_root()) or is_within_logical(source_path, archive_media.extraction_root()) or is_within_logical(source_path, staging_root())):
+        raise RuntimeError("TV Recovery only analyses DMM provider sources or ArrNexus recovered-media sources")
     item = inspect_item(source_path)
     if item.media_type != "tv":
         raise RuntimeError("This source is not currently recognised as TV")
@@ -174,7 +181,16 @@ def split_plan(digest: str, file_path: str, allow_estimated: bool = False) -> di
     season = int(row.get("season") or 0)
     series = ((plan.get("sonarr") or {}).get("series") or {})
     show = _safe_name(str(series.get("title") or (plan.get("item") or {}).get("title_guess") or "TV Recovery"))
-    outdir = staging_root() / show / f"Season {season:02d}"
+
+    # Keep split episodes in the same permanent DUMB-visible recovery tree as
+    # RAR-extracted media.  If the combined season was itself recovered from a
+    # RAR, keep the generated Season XX directory beside that recovered source;
+    # otherwise place it beneath the configured recovered-media root.
+    if is_within_logical(source, archive_media.extraction_root()):
+        outdir_logical = source.parent / f"Season {season:02d}"
+    else:
+        outdir_logical = staging_root() / show / f"Season {season:02d}"
+    outdir = view_path(outdir_logical)
     outdir.mkdir(parents=True, exist_ok=True)
     outputs = []
     for b in row.get("boundaries") or []:
@@ -182,7 +198,9 @@ def split_plan(digest: str, file_path: str, allow_estimated: bool = False) -> di
         if ep <= 0 or end <= start:
             continue
         suffix = source.suffix.lower() or ".mkv"
-        output = outdir / f"{show} - S{season:02d}E{ep:02d}{suffix}"
+        output_name = f"{show} - S{season:02d}E{ep:02d}{suffix}"
+        output_logical = outdir_logical / output_name
+        output = outdir / output_name
         tmp = output.with_name(output.stem + ".partial" + output.suffix)
         cmd = ["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.3f}", "-i", str(actual), "-t", f"{end-start:.3f}", "-map", "0", "-c", "copy", "-avoid_negative_ts", "make_zero", str(tmp)]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=max(120, int((end-start)*1.5)), check=False)
@@ -191,9 +209,9 @@ def split_plan(digest: str, file_path: str, allow_estimated: bool = False) -> di
             raise RuntimeError(f"FFmpeg split failed for S{season:02d}E{ep:02d}: {' '.join((proc.stderr or '').split())[:500]}")
         duration = _verify_file(tmp)
         tmp.replace(output)
-        outputs.append({"episode": ep, "path": str(output), "duration": duration, "expected_duration": end-start})
+        outputs.append({"episode": ep, "path": str(output_logical), "duration": duration, "expected_duration": end-start})
     if not outputs:
         raise RuntimeError("No split outputs were generated")
-    log_event("info", "tv_recovery", "season_split", f"Generated {len(outputs)} episode file(s) for {show} S{season:02d}", {"source": str(source), "mode": mode, "staging": str(outdir)})
-    add_activity("tv_recovery", show, f"Split combined Season {season} into {len(outputs)} staged episode files", str(source))
-    return {"ok": True, "show": show, "season": season, "mode": mode, "outputs": outputs, "staging": str(outdir), "source_retained": True}
+    log_event("info", "tv_recovery", "season_split", f"Generated {len(outputs)} episode file(s) for {show} S{season:02d}", {"source": str(source), "mode": mode, "staging": str(outdir_logical)})
+    add_activity("tv_recovery", show, f"Split combined Season {season} into {len(outputs)} recovered episode files", str(source))
+    return {"ok": True, "show": show, "season": season, "mode": mode, "outputs": outputs, "staging": str(outdir_logical), "source_retained": True}

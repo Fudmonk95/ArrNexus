@@ -1,5 +1,17 @@
 # Changelog
 
+## 10.4.3-beta — Recovery Pipeline & Language Inbox Hotfix
+
+- Changed RAR verification from one bulk archive test to **one independent extractor test per video member**, so a damaged season/member cannot prevent other media from being verified.
+- Added per-member archive verification progress to background jobs.
+- Moved Advanced TV Recovery split outputs from the legacy `/data/split-cache` default into the DUMB-visible recovered-media source root.
+- Combined-season files recovered from RAR now place generated episode folders beside the recovered source under `/mnt/debrid/arrnexus-extracted` (or the configured DUMB-visible recovery root).
+- Allowed Advanced TV Recovery to analyse ArrNexus recovered-media sources as well as normal DMM provider sources.
+- Rebuilt the DMM **Language** view from unresolved source copies before title grouping so current-policy passes disappear immediately after re-check.
+- Changed source-level Language Guard aggregation so any unknown/unlabelled/probe-failed member takes precedence over explicit failures elsewhere in the same source; mixed evidence is Manual Review and never destructive-safe.
+- Bumped the Language Guard cache namespace again to force affected sources through the corrected source-level evaluator.
+- Retained stable archive catalogue signatures, selective media-only extraction, external-ID idempotent Arr imports and all v10.4.2 safety boundaries.
+
 ## 10.4.2-beta — Stable Archive Identity Hotfix
 
 - Fixed false **RAR source changed after preview** failures on Decypharr/DUMB virtual mounts.

@@ -1222,7 +1222,7 @@ Language Guard uses ffprobe against actual stream metadata before a source is li
 
 ## Archived Media Recovery & RAR sources
 
-Archived Media Recovery scans the DMM __all__ tree for RAR/multipart RAR sets that the normal video scanner cannot see. v10.4.2 verifies video members individually, tolerates harmless Decypharr virtual PID/mtime changes, and can recover good media from a partially damaged archive without unpacking unrelated files.
+Archived Media Recovery scans the DMM __all__ tree for RAR/multipart RAR sets that the normal video scanner cannot see. v10.4.3 verifies every video member in its own extractor pass, tolerates harmless Decypharr virtual PID/mtime changes, and can recover good media from a partially damaged archive without unpacking unrelated files.
 
 ### Before you start
 

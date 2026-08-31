@@ -478,8 +478,77 @@ def _parse_7z_test_output(stdout: str, stderr: str, media: list[dict[str, Any]],
     }
 
 
-def verify_archive_media(logical_path: str, *, expected_fingerprint: str = "") -> dict[str, Any]:
-    """Test video members only and cache per-file recovery eligibility."""
+def _verify_media_members_independently(kind: str, exe: str, actual: Path, media: list[dict[str, Any]], progress=None) -> dict[str, Any]:
+    """Verify each video member in its own extractor invocation.
+
+    Damaged RARs can terminate a multi-member ``7z t`` pass after one bad tail
+    member, leaving later/earlier good media untested.  Independent member tests
+    isolate that failure: a CRC-broken Season 1 cannot prevent Seasons 2-7 from
+    proving themselves recoverable.
+    """
+    members: list[dict[str, Any]] = []
+    issues: list[str] = []
+    exit_codes: list[int] = []
+    total = len(media)
+
+    for index, row in enumerate(media, start=1):
+        member = str(row.get("path") or "")
+        status_row = {**row, "status": "untested", "error": "Not independently verified", "test_exit_code": None}
+        try:
+            if kind == "7z":
+                cmd = [exe, "t", "-bb1", "-spd", str(actual), member]
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60 * 60 * 2, check=False)
+                parsed = _parse_7z_test_output(proc.stdout or "", proc.stderr or "", [row], proc.returncode)
+                parsed_row = (parsed.get("members") or [status_row])[0]
+                status_row = {**parsed_row, "test_exit_code": int(proc.returncode)}
+                issues.extend(parsed.get("issues") or [])
+                exit_codes.append(int(proc.returncode))
+            else:
+                cmd = [exe, "t", "-c-", str(actual), member]
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60 * 60 * 2, check=False)
+                ok = proc.returncode == 0
+                status_row = {
+                    **row,
+                    "status": "verified" if ok else "untested",
+                    "error": "" if ok else "unrar did not return a clean verification result for this member",
+                    "test_exit_code": int(proc.returncode),
+                }
+                issues.extend(_archive_issue_lines(proc.stdout or "", proc.stderr or ""))
+                exit_codes.append(int(proc.returncode))
+        except subprocess.TimeoutExpired:
+            status_row = {**row, "status": "untested", "error": "Verification timed out for this media member", "test_exit_code": None}
+            issues.append(f"Verification timed out: {member}")
+        except Exception as exc:
+            status_row = {**row, "status": "untested", "error": str(exc)[:500], "test_exit_code": None}
+            issues.append(f"Verification failed for {member}: {str(exc)[:180]}")
+
+        members.append(status_row)
+        if progress:
+            try:
+                progress(index, total, member, str(status_row.get("status") or "untested"))
+            except Exception:
+                pass
+
+    unique_issues: list[str] = []
+    seen: set[str] = set()
+    for issue in issues:
+        if issue and issue not in seen:
+            seen.add(issue)
+            unique_issues.append(issue)
+
+    return {
+        "members": members,
+        "verified_count": sum(1 for x in members if x.get("status") == "verified"),
+        "failed_count": sum(1 for x in members if x.get("status") == "failed"),
+        "untested_count": sum(1 for x in members if x.get("status") == "untested"),
+        "issues": unique_issues[:80],
+        "exit_code": max(exit_codes, default=0),
+        "verification_mode": "per_member",
+    }
+
+
+def verify_archive_media(logical_path: str, *, expected_fingerprint: str = "", progress=None) -> dict[str, Any]:
+    """Test every video member independently and cache recovery eligibility."""
     plan = inspect_archive(logical_path, force=True)
     if expected_fingerprint and plan.get("fingerprint") != expected_fingerprint:
         raise RuntimeError("RAR source size/path changed after preview; inspect it again")
@@ -494,28 +563,7 @@ def verify_archive_media(logical_path: str, *, expected_fingerprint: str = "") -
     actual = view_path(logical_path)
     kind, exe = _extractor()
     started = time.monotonic()
-    if kind == "7z":
-        # Supplying exact member paths after the archive means XML, SQLite,
-        # artwork, padding and nested archives are never read as recovery items.
-        cmd = [exe, "t", "-bb1", "-spd", str(actual)] + [str(x.get("path") or "") for x in media]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60 * 60 * 6, check=False)
-        parsed = _parse_7z_test_output(proc.stdout or "", proc.stderr or "", media, proc.returncode)
-    else:
-        # unrar output is less structured.  Only a completely clean run can
-        # verify all requested media; otherwise fail closed to untested.
-        cmd = [exe, "t", "-c-", str(actual)] + [str(x.get("path") or "") for x in media]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60 * 60 * 6, check=False)
-        members = []
-        for row in media:
-            members.append({**row, "status": "verified" if proc.returncode == 0 else "untested", "error": "" if proc.returncode == 0 else "unrar did not return a clean verification result"})
-        parsed = {
-            "members": members,
-            "verified_count": sum(1 for x in members if x["status"] == "verified"),
-            "failed_count": 0,
-            "untested_count": sum(1 for x in members if x["status"] == "untested"),
-            "issues": _archive_issue_lines(proc.stdout or "", proc.stderr or ""),
-            "exit_code": int(proc.returncode),
-        }
+    parsed = _verify_media_members_independently(kind, exe, actual, media, progress=progress)
 
     # Decypharr can legitimately change virtual mtime/PID while the same source
     # is mounted. Re-list after the potentially long verification and compare
@@ -534,7 +582,7 @@ def verify_archive_media(logical_path: str, *, expected_fingerprint: str = "") -
     }
     cache_set(_verification_key(plan["fingerprint"]), result)
     log_event("info", "archive_recovery", "verified", f"Verified media in {Path(logical_path).name}", {
-        "verified": result["verified_count"], "failed": result["failed_count"], "untested": result["untested_count"], "exit_code": result["exit_code"],
+        "verified": result["verified_count"], "failed": result["failed_count"], "untested": result["untested_count"], "exit_code": result["exit_code"], "mode": "per_member",
     })
     return result
 

@@ -255,7 +255,7 @@ def _policy_fingerprint(policy: LanguagePolicy) -> str:
 def _cache_key(source_path: str, fingerprint: str, policy: LanguagePolicy) -> str:
     ident = hashlib.sha256(source_path.encode("utf-8", errors="replace")).hexdigest()[:24]
     fp = (fingerprint or "nofingerprint")[:32]
-    return f"language:v1042:{ident}:{fp}:{_policy_fingerprint(policy)}"
+    return f"language:v1043:{ident}:{fp}:{_policy_fingerprint(policy)}"
 
 
 def _override_key(source_path: str, fingerprint: str) -> str:
@@ -351,18 +351,17 @@ def inspect_source_languages(source_path: str, fingerprint: str = "", force: boo
     if truncated:
         missing.append(f"{len(files)-len(selected)} unverified file(s) above scan limit")
 
-    if failed:
-        status = "fail"
-    elif unknown or truncated:
-        # Strict unknown handling may still block import, but uncertainty is
-        # never represented as a confirmed language rejection.
+    # Any uncertainty anywhere in a multi-file source takes precedence over a
+    # nominal explicit failure elsewhere.  This prevents a season pack with a
+    # mixture of undefined/unlabelled tracks and suspicious language tags from
+    # being promoted to a destructive-safe rejection.  Only a fully inspected
+    # source with no unknown/probe-failed members can become ``fail``.
+    if unknown or truncated or errors:
         status = "unknown"
+    elif failed:
+        status = "fail"
     else:
         status = "pass"
-    # A probe execution failure is never promoted to a destructive policy
-    # decision.  It remains manual review even when unknown metadata is strict.
-    if errors:
-        status = "unknown"
     compliant = status == "pass" or (status == "unknown" and not policy.unknown_is_failure)
     destructive_safe = bool(status == "fail" and not errors and not truncated and failed and all(bool(r.get("destructive_safe")) for r in failed))
     if status == "pass":

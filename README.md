@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.4.2--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.4.3--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -61,6 +61,28 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
 
 ---
+
+## 🛠️ Version 10.4.3 — Recovery Pipeline & Language Inbox Hotfix
+
+v10.4.3 finishes the field fixes uncovered while recovering *The Queen's Nose* and re-checking older DMM Language Guard results.
+
+### Independent RAR member verification
+
+- Every recognised video member is tested in its own 7-Zip/unrar invocation. A CRC-broken `Season 1.mp4` can no longer terminate the test before recoverable Seasons 2-7 are independently verified.
+- Verification jobs report live per-member progress and retain verified/failed/unverified state for selective recovery.
+- Only verified video files remain eligible for extraction; metadata, artwork, torrent padding and nested archives stay excluded.
+
+### One recovered-media storage model
+
+- Advanced TV Recovery no longer defaults to `/data/split-cache`.
+- Split episode outputs are written to the DUMB-visible recovered-media source root (default `/mnt/debrid/arrnexus-extracted`).
+- If a combined-season file came from RAR recovery, generated `Season XX` episode folders are created beside that recovered source. Sonarr/Radarr libraries continue to receive symlinks rather than duplicate media bytes.
+
+### Language Guard/InBox correctness
+
+- The Language view is now built from unresolved source copies before duplicate-title grouping. A source that passes its current-policy re-check disappears from Language immediately.
+- A source containing any unknown/unlabelled/probe-failed media is **Manual Review**, even if another member has an explicit non-English tag. Uncertainty can no longer be promoted to a confirmed/destructive rejection.
+- The Language Guard cache namespace is bumped again so affected Bernard's Watch-style results are forced through the corrected source-level evaluator.
 
 ## 🛠️ Version 10.4.2 — Stable Archive Identity Hotfix
 

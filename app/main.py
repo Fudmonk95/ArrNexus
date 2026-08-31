@@ -101,10 +101,10 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.4.2-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.4.3-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "10.4.2-beta"
+APP_VERSION = "10.4.3-beta"
 
 
 @app.middleware("http")
@@ -1090,8 +1090,18 @@ async def _build_inbox_snapshot() -> dict:
     # Once ArrNexus has an exact provider deletion success, never put that item
     # back into Waiting while the mount catches up.
     raw_rows = [r for r in raw_rows if r.get("state") != "language_rejected_removed"]
-    rows = dedupe_rows(raw_rows)
-    return {"rows": rows, "built_at": time.time()}
+    rows = dedupe_rows([dict(r) for r in raw_rows])
+    return {"rows": rows, "raw_rows": raw_rows, "built_at": time.time()}
+
+
+def _language_attention_row(row: dict) -> bool:
+    """Return True only for a source copy that still needs language action.
+
+    A current-policy pass must leave the Language view immediately even when a
+    duplicate title has other unresolved provider copies. Grouping for the
+    Language tab therefore happens *after* resolved copies are removed.
+    """
+    return str(row.get("language_badge_key") or "unchecked") in {"fail", "probe_failed", "unknown", "recheck_required"}
 
 
 @app.get("/inbox", response_class=HTMLResponse)
@@ -1099,11 +1109,21 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
     require_auth(request)
     snapshot, snapshot_age, refreshing = await _INBOX_SNAPSHOT.get(_build_inbox_snapshot, force=bool(refresh))
     enriched = list(snapshot.get("rows") or [])
+    raw_filtered = list(snapshot.get("raw_rows") or [])
     if media_type in {"movie", "tv"}:
         enriched = [x for x in enriched if x["item"].media_type == media_type]
+        raw_filtered = [x for x in raw_filtered if x["item"].media_type == media_type]
     if q:
         nq = normalize_title(q)
-        enriched = [x for x in enriched if nq in normalize_title(x.get("display_title") or "") or nq in normalize_title(x["item"].name) or nq in normalize_title(x["item"].title_guess)]
+        def _matches_q(x):
+            return nq in normalize_title(x.get("display_title") or "") or nq in normalize_title(x["item"].name) or nq in normalize_title(x["item"].title_guess)
+        enriched = [x for x in enriched if _matches_q(x)]
+        raw_filtered = [x for x in raw_filtered if _matches_q(x)]
+
+    # Build the Language tab from unresolved *source copies* first, then group.
+    # This prevents a source that has just passed from lingering in Language
+    # merely because it shares a title with another RD copy.
+    language_enriched = dedupe_rows([dict(x) for x in raw_filtered if _language_attention_row(x)])
     counts = {
         "all": len(enriched),
         "waiting": sum(1 for x in enriched if x["state"] == "waiting"),
@@ -1111,7 +1131,7 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
         "ignored": sum(1 for x in enriched if x["state"] == "ignored"),
         "duplicate": sum(1 for x in enriched if x.get("duplicate_count", 1) > 1),
         "upgrade": sum(1 for x in enriched if x.get("upgrade")),
-        "language": sum(1 for x in enriched if x.get("language_badge_key") in {"fail", "probe_failed", "unknown", "recheck_required"} or x.get("state") in {"language_issue", "language_rejected"}),
+        "language": len(language_enriched),
     }
     if status != "all":
         if status == "upgrade":
@@ -1121,7 +1141,7 @@ async def inbox(request: Request, q: str = "", status: str = "all", media_type: 
         elif status == "imported":
             enriched = [x for x in enriched if x["state"] in {"imported", "linked"}]
         elif status == "language":
-            enriched = [x for x in enriched if x.get("language_badge_key") in {"fail", "probe_failed", "unknown", "recheck_required"} or x.get("state") in {"language_issue", "language_rejected"}]
+            enriched = language_enriched
         else:
             enriched = [x for x in enriched if x["state"] == status]
     try:
@@ -3887,7 +3907,9 @@ async def run_archive_verify_job(job_id: int):
             row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
             if not row:
                 raise RuntimeError("RAR source is no longer present in the DMM source tree")
-            result = await asyncio.to_thread(archive_media.verify_archive_media, source_path, expected_fingerprint=str(row.get("fingerprint") or ""))
+            def _progress(done: int, total: int, member: str, member_status: str):
+                update_job_item(iid, status="running", stage="archive_verify", message=f"Verified {done}/{total}: {Path(member).name} · {member_status}")
+            result = await asyncio.to_thread(archive_media.verify_archive_media, source_path, expected_fingerprint=str(row.get("fingerprint") or ""), progress=_progress)
             completed += 1
             update_job_item(
                 iid, status="complete", stage="complete",
