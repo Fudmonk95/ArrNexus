@@ -293,30 +293,120 @@ def _rd_exact_name_variants(value: str) -> set[str]:
     return out
 
 
-def _match_selected_file(info: dict, relative_file: str) -> tuple[dict, str] | None:
-    files = [dict(x) for x in ((info or {}).get("files") or []) if int(x.get("selected") or 0) == 1]
-    links = [str(x) for x in ((info or {}).get("links") or []) if str(x).strip()]
-    if not files or len(files) != len(links):
-        return None
+def _rd_all_files(info: dict) -> list[dict]:
+    return [dict(x) for x in ((info or {}).get("files") or []) if isinstance(x, dict)]
 
+
+def _selected_rd_files(info: dict) -> list[dict]:
+    """Return Real-Debrid files that participate in the generated link list.
+
+    Real-Debrid normally marks selected files with ``selected=1``. Some
+    single-file responses omit/normalise that marker while still returning one
+    file and one link. In that unambiguous case the sole file is authoritative.
+    """
+    all_files = _rd_all_files(info)
+    selected: list[dict] = []
+    for row in all_files:
+        try:
+            is_selected = int(row.get("selected") or 0) == 1
+        except Exception:
+            is_selected = str(row.get("selected") or "").strip().casefold() in {"true", "yes", "selected"}
+        if is_selected:
+            selected.append(row)
+    links = [str(x) for x in ((info or {}).get("links") or []) if str(x).strip()]
+    if selected:
+        return selected
+    if len(all_files) == 1 and len(links) == 1:
+        return all_files
+    return []
+
+
+def _file_name_match_indices(files: list[dict], relative_file: str) -> tuple[list[int], str]:
+    """Return unique-match candidates using exact path then archive-name variants."""
     wanted = _normalise_rd_file_path(relative_file)
     if not wanted:
-        return None
-    matches: list[int] = []
+        return [], ""
+
+    exact: list[int] = []
     for idx, row in enumerate(files):
         candidate = _normalise_rd_file_path(row.get("path") or "")
         if candidate == wanted or candidate.endswith("/" + wanted):
-            matches.append(idx)
-    if len(matches) != 1:
-        base = wanted.rsplit("/", 1)[-1]
-        matches = [
-            idx for idx, row in enumerate(files)
-            if _normalise_rd_file_path(row.get("path") or "").rsplit("/", 1)[-1] == base
-        ]
-    if len(matches) != 1:
+            exact.append(idx)
+    if len(exact) == 1:
+        return exact, "exact selected-file path"
+
+    wanted_base = wanted.rsplit("/", 1)[-1]
+    wanted_variants = _rd_exact_name_variants(wanted_base)
+    variants: list[int] = []
+    for idx, row in enumerate(files):
+        candidate_base = _normalise_rd_file_path(row.get("path") or "").rsplit("/", 1)[-1]
+        if _rd_exact_name_variants(candidate_base) & wanted_variants:
+            variants.append(idx)
+    if len(variants) == 1:
+        return variants, "exact selected-file archive-name equivalent"
+    return [], ""
+
+
+def _match_selected_file(info: dict, relative_file: str, *, exact_torrent_identity: bool = False) -> tuple[dict, str, str] | None:
+    """Resolve the requested archive to exactly one Real-Debrid link.
+
+    This stays deliberately conservative while handling real single-file RD
+    representations that Decypharr can expose differently:
+
+    * ``archive`` and ``archive.rar`` are treated as exact archive-name
+      equivalents;
+    * if selection flags are absent but there is only one generated link, a
+      unique exact file-name match across the RD file list is accepted;
+    * if the torrent itself exactly identifies the requested archive and RD
+      exposes exactly one file/link, that sole file is authoritative even when
+      RD rewrites the internal file path;
+    * if an exact single-file torrent returns one link but omits ``files``
+      metadata entirely, the torrent byte count is used as authoritative
+      metadata for that sole archive.
+
+    A multi-file ambiguity is always rejected.
+    """
+    info = info or {}
+    links = [str(x) for x in (info.get("links") or []) if str(x).strip()]
+    if not links:
         return None
-    idx = matches[0]
-    return files[idx], links[idx]
+
+    selected = _selected_rd_files(info)
+    if selected and len(selected) == len(links):
+        matches, reason = _file_name_match_indices(selected, relative_file)
+        if len(matches) == 1:
+            idx = matches[0]
+            return selected[idx], links[idx], reason
+        if exact_torrent_identity and len(selected) == 1 and len(links) == 1:
+            return selected[0], links[0], "exact single-file torrent identity"
+
+    # Some RD responses have one link but omit usable selection markers. If
+    # the requested archive uniquely identifies one file in the full list, the
+    # sole link can only represent that selected file.
+    all_files = _rd_all_files(info)
+    if len(links) == 1 and all_files:
+        matches, reason = _file_name_match_indices(all_files, relative_file)
+        if len(matches) == 1:
+            return all_files[matches[0]], links[0], reason + " (single RD link)"
+        if exact_torrent_identity and len(all_files) == 1:
+            return all_files[0], links[0], "exact single-file torrent identity"
+
+    # Last safe single-file form: exact archive torrent + one generated link,
+    # but RD omitted file rows. This is still unambiguous because the torrent
+    # identity itself is exact and there is only one downloadable link.
+    if exact_torrent_identity and len(links) == 1 and not all_files:
+        try:
+            byte_count = int(info.get("bytes") or info.get("original_bytes") or 0)
+        except Exception:
+            byte_count = 0
+        return {
+            "id": 0,
+            "path": "/" + str(relative_file or "").lstrip("/"),
+            "bytes": byte_count,
+            "selected": 1,
+        }, links[0], "exact single-file torrent identity (RD file metadata omitted)"
+
+    return None
 
 
 async def _exact_rd_torrent_file(source_pack_path: str, relative_file: str) -> dict:
@@ -368,16 +458,28 @@ async def _exact_rd_torrent_file(source_pack_path: str, relative_file: str) -> d
             continue
         try:
             info = await torrent_info(tid)
-            match = _match_selected_file(info or {}, relative_file)
+            info_name = str((info or {}).get("filename") or torrent.get("filename") or torrent.get("name") or "")
+            info_variants = _rd_exact_name_variants(info_name)
+            exact_torrent_identity = bool(info_variants & file_variants)
+            match = _match_selected_file(
+                info or {}, relative_file, exact_torrent_identity=exact_torrent_identity
+            )
             if match is None:
+                selected_rows = _selected_rd_files(info or {})
+                selected_paths = [str(x.get("path") or "") for x in selected_rows]
+                links = [str(x) for x in ((info or {}).get("links") or []) if str(x).strip()]
+                lookup_errors.append(
+                    f"torrent {tid} '{info_name}': selected={selected_paths or ['<none>']} links={len(links)}"
+                )
                 continue
-            file_row, restricted_link = match
+            file_row, restricted_link, file_match = match
             resolved.append({
                 "score": score,
                 "torrent": torrent,
                 "info": info or {},
                 "file": file_row,
                 "restricted_link": restricted_link,
+                "file_match": file_match,
             })
         except Exception as exc:
             lookup_errors.append(str(exc))
@@ -416,7 +518,7 @@ async def direct_file_metadata_for_source_file(source_pack_path: str, relative_f
         "file_path": str(file_row.get("path") or relative_file),
         "file_bytes": int(file_row.get("bytes") or 0),
         "restricted_link": str(resolved.get("restricted_link") or ""),
-        "matched_by": "exact source/archive name + exact selected file",
+        "matched_by": "exact source/archive name + " + str(resolved.get("file_match") or "exact selected file"),
     }
 
 

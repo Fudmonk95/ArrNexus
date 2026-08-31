@@ -1,26 +1,17 @@
-# ArrNexus v10.6.1-beta Validation
+# ArrNexus v10.6.2-beta Validation
 
-`python3 validate.py` runs the deterministic v10.6.1 current-layer validator. Release certification also runs the retained historical compatibility chain.
+`python3 validate.py` runs the deterministic v10.6.2 current-layer validator. Release certification also runs retained v10.6.1/v10.6/v10.5.1 recovery validators and package hygiene checks.
 
-v10.6.1 validation covers:
+v10.6.2 validation covers:
 
-- Python compilation and Jinja template compilation;
-- exact direct-source resolution when the Decypharr source-pack directory is an extensionless form of the RD archive filename;
-- hard-stop behaviour when provider CRC exists but the authoritative RD original cannot be resolved;
-- proof that provider bytes are not copied in that unresolved-direct state;
-- clean SQLite startup/migration through the retained validators;
-- exact Real-Debrid source-file metadata resolution without exposing signed URLs during preview;
-- provider-mount vs direct-original byte-size mismatch handling;
-- direct Real-Debrid staging being preferred after provider CRC failure even when a sequential mount read could succeed;
-- the direct original becoming authoritative for all archive-member verification;
-- retained v10.5.1 EIO retry/direct-download fallback and safe staged extraction;
-- Sonarr missing-media scanning and active-download detection;
-- Radarr monitored-missing scanning and active-download detection;
-- Archive Rescue UI coverage for both Sonarr and Radarr;
-- dedicated Sonarr Rescue and Radarr Rescue routes;
-- version-badge update modal, server-side newer-than comparison, no-cache update APIs and post-update browser cleanup;
-- authenticated route smoke checks for `/sonarr-rescue`, `/radarr-rescue`, `/archive-rescue` and `/api/health`.
-
-Historical validators are retained from v7 through v10.5.1 so recovery, Language Guard, job control, recovered-media indexing, TV source selection and older acquisition behaviour remain covered.
-
-No validator contacts production Arr instances, Real-Debrid, Prowlarr or production databases. External integrations are mocked or exercised only through isolated temporary data.
+- exact Real-Debrid archive torrent + exact selected file;
+- Decypharr extensionless archive folder -> `.rar` RD torrent identity;
+- selected-file basename `.rar` stripping;
+- missing/normalised Real-Debrid selection flags;
+- exact single-file torrent with a rewritten internal RD file path;
+- exact single-file torrent where RD omits file rows but exposes one link and byte count;
+- ambiguous multi-file selections remain rejected;
+- direct-source resolution failure never falls back to provider-mounted archive bytes after CRC anomalies;
+- authoritative direct-original size/verification flow from v10.6.1;
+- Sonarr/Radarr Rescue and updater behavior retained;
+- template compilation and temporary HTTP route/version checks.

@@ -1,5 +1,16 @@
 # Changelog
 
+## 10.6.2-beta - Real-Debrid Single-File Resolver Hotfix
+
+- fixes exact Real-Debrid direct-original resolution when a single-file torrent rewrites or strips the internal archive filename;
+- accepts `archive` and `archive.rar` as conservative exact equivalents for the selected RD file;
+- safely handles single-file RD responses with missing/normalised `selected` flags;
+- accepts an exact archive torrent with exactly one generated link/file even when RD rewrites the internal path;
+- supports the safe one-link exact-torrent case when RD omits file rows by using torrent byte metadata;
+- still refuses ambiguous multi-file or multiple-torrent matches;
+- direct-source failure diagnostics now expose the candidate torrent and returned selected file paths/link count;
+- retains v10.6.1's rule that a provider CRC result can never fall back to mounted Decypharr bytes when Real-Debrid is connected.
+
 ## 10.6.1-beta - Authoritative RAR Direct-Source Hotfix
 
 - Fix v10.6.0 silently falling back to the Decypharr-mounted RAR when direct Real-Debrid resolution failed after provider CRC errors.

@@ -898,7 +898,7 @@ def _copy_http_resumable(
             headers = {"Range": f"bytes={offset}-"} if offset else {}
             try:
                 timeout = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=30.0)
-                with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": "ArrNexus/10.6.1"}) as client:
+                with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": "ArrNexus/10.6.2"}) as client:
                     with client.stream("GET", url, headers=headers) as response:
                         if response.status_code >= 400:
                             raise RuntimeError(f"direct HTTPS staging returned HTTP {response.status_code}")

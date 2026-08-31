@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.6.1--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.6.2--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -61,6 +61,12 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
 
 ---
+
+## 🩹 Version 10.6.2 — Real-Debrid Single-File Resolver Hotfix
+
+v10.6.2 closes the remaining direct-original resolution gap exposed by the live Queen's Nose RAR. v10.6.1 correctly refused to trust Decypharr after provider CRC anomalies, but Real-Debrid can represent the exact same single-file torrent with a rewritten internal path, a stripped `.rar` suffix, omitted selection flags, or a sole link/file pair whose path does not mirror the Decypharr filename.
+
+The resolver now accepts only conservative, unambiguous single-file equivalents: exact archive basename/stem variants, a unique exact file match when RD omits selection flags, or an exact archive torrent with exactly one downloadable file/link. Multi-file ambiguity is still refused. Resolver failures now include the candidate torrent and returned RD file paths so future metadata differences are visible instead of hidden.
 
 ## 🩹 Version 10.6.1 — Authoritative RAR Direct-Source Hotfix
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-"""ArrNexus v10.6.1-beta authoritative direct-source archive validator."""
+"""ArrNexus v10.6.2-beta Real-Debrid single-file resolver validator."""
 
 import asyncio
 import os
@@ -17,10 +17,10 @@ def require(ok: bool, message: str) -> None:
 
 def main() -> int:
     root = Path(__file__).resolve().parent
-    td = Path(tempfile.mkdtemp(prefix="arrnexus-v1061-validate-"))
+    td = Path(tempfile.mkdtemp(prefix="arrnexus-v1062-validate-"))
     os.environ["DB_PATH"] = str(td / "router.db")
     os.environ["DB_DIR"] = str(td)
-    os.environ["SESSION_SECRET"] = "v1061-validator"
+    os.environ["SESSION_SECRET"] = "v1062-validator"
     os.environ["ARRNEXUS_SELF_UPDATE"] = "0"
 
     from app import db
@@ -75,6 +75,127 @@ def main() -> int:
         require(stem_meta["file_bytes"] == 3544189222, "authoritative Queen's Nose byte size was not retained")
     finally:
         rd.torrents, rd.torrent_info = old_torrents, old_info
+
+    # ------------------------------------------------------------------
+    # v10.6.2 live-field regression: RD can strip `.rar` from the selected
+    # file path even though the exact torrent/archive identity retains it.
+    # ------------------------------------------------------------------
+    old_torrents, old_info = rd.torrents, rd.torrent_info
+    async def stripped_torrents(limit: int = 250):
+        return [{"id": "queen-stripped", "filename": "season-4_202405.rar"}]
+    async def stripped_info(tid: str):
+        return {
+            "filename": "season-4_202405.rar",
+            "files": [{"id": 1, "path": "/season-4_202405", "bytes": 3544189222, "selected": 1}],
+            "links": ["https://host.invalid/queen-stripped"],
+        }
+    rd.torrents, rd.torrent_info = stripped_torrents, stripped_info
+    try:
+        stripped = asyncio.run(rd.direct_file_metadata_for_source_file(
+            "/mnt/debrid/decypharr/__all__/season-4_202405", "season-4_202405.rar"
+        ))
+        require(stripped["torrent_id"] == "queen-stripped", "stripped selected-file .rar equivalent was not resolved")
+        require(stripped["file_bytes"] == 3544189222, "stripped selected-file authoritative byte size was lost")
+    finally:
+        rd.torrents, rd.torrent_info = old_torrents, old_info
+
+    # ------------------------------------------------------------------
+    # Exact single-file torrent identity is enough when RD rewrites the sole
+    # internal file path. There is one torrent, one file, one link: no guess.
+    # ------------------------------------------------------------------
+    old_torrents, old_info = rd.torrents, rd.torrent_info
+    async def rewritten_torrents(limit: int = 250):
+        return [{"id": "queen-rewritten", "filename": "season-4_202405.rar"}]
+    async def rewritten_info(tid: str):
+        return {
+            "filename": "season-4_202405.rar",
+            "files": [{"id": 9, "path": "/rd-object-0009", "bytes": 3544189222, "selected": 1}],
+            "links": ["https://host.invalid/queen-rewritten"],
+        }
+    rd.torrents, rd.torrent_info = rewritten_torrents, rewritten_info
+    try:
+        rewritten = asyncio.run(rd.direct_file_metadata_for_source_file(
+            "/mnt/debrid/decypharr/realdebrid/season-4_202405", "season-4_202405.rar"
+        ))
+        require(rewritten["torrent_id"] == "queen-rewritten", "exact single-file torrent with rewritten path was not resolved")
+        require("single-file torrent identity" in rewritten["matched_by"], "single-file identity match was not recorded")
+    finally:
+        rd.torrents, rd.torrent_info = old_torrents, old_info
+
+    # ------------------------------------------------------------------
+    # Selection flags may be absent/normalised. One exact file + one link is
+    # still unambiguous and must resolve without trusting provider bytes.
+    # ------------------------------------------------------------------
+    old_torrents, old_info = rd.torrents, rd.torrent_info
+    async def noflag_torrents(limit: int = 250):
+        return [{"id": "queen-noflag", "filename": "season-4_202405.rar"}]
+    async def noflag_info(tid: str):
+        return {
+            "filename": "season-4_202405.rar",
+            "files": [{"id": 3, "path": "/season-4_202405.rar", "bytes": 3544189222}],
+            "links": ["https://host.invalid/queen-noflag"],
+        }
+    rd.torrents, rd.torrent_info = noflag_torrents, noflag_info
+    try:
+        noflag = asyncio.run(rd.direct_file_metadata_for_source_file(
+            "/mnt/debrid/decypharr/__all__/season-4_202405", "season-4_202405.rar"
+        ))
+        require(noflag["torrent_id"] == "queen-noflag", "single-file RD response without selected flag was not resolved")
+    finally:
+        rd.torrents, rd.torrent_info = old_torrents, old_info
+
+    # ------------------------------------------------------------------
+    # RD may expose one direct link but omit file rows for an exact single-file
+    # torrent. Use torrent bytes; still reject anything with multiple links.
+    # ------------------------------------------------------------------
+    old_torrents, old_info = rd.torrents, rd.torrent_info
+    async def omitted_torrents(limit: int = 250):
+        return [{"id": "queen-omitted", "filename": "season-4_202405.rar"}]
+    async def omitted_info(tid: str):
+        return {
+            "filename": "season-4_202405.rar",
+            "bytes": 3544189222,
+            "files": [],
+            "links": ["https://host.invalid/queen-omitted"],
+        }
+    rd.torrents, rd.torrent_info = omitted_torrents, omitted_info
+    try:
+        omitted = asyncio.run(rd.direct_file_metadata_for_source_file(
+            "/mnt/debrid/decypharr/__all__/season-4_202405", "season-4_202405.rar"
+        ))
+        require(omitted["file_bytes"] == 3544189222, "single-link exact torrent did not retain torrent byte metadata")
+    finally:
+        rd.torrents, rd.torrent_info = old_torrents, old_info
+
+    # ------------------------------------------------------------------
+    # Multi-file ambiguity remains forbidden even when the torrent name is an
+    # exact archive identity. Never guess among multiple selected links.
+    # ------------------------------------------------------------------
+    old_torrents, old_info = rd.torrents, rd.torrent_info
+    async def ambiguous_torrents(limit: int = 250):
+        return [{"id": "queen-amb", "filename": "season-4_202405.rar"}]
+    async def ambiguous_info(tid: str):
+        return {
+            "filename": "season-4_202405.rar",
+            "files": [
+                {"id": 1, "path": "/part-a.bin", "bytes": 10, "selected": 1},
+                {"id": 2, "path": "/part-b.bin", "bytes": 20, "selected": 1},
+            ],
+            "links": ["https://host.invalid/a", "https://host.invalid/b"],
+        }
+    rd.torrents, rd.torrent_info = ambiguous_torrents, ambiguous_info
+    ambiguity = ""
+    try:
+        try:
+            asyncio.run(rd.direct_file_metadata_for_source_file(
+                "/mnt/debrid/decypharr/__all__/season-4_202405", "season-4_202405.rar"
+            ))
+        except Exception as exc:
+            ambiguity = str(exc)
+    finally:
+        rd.torrents, rd.torrent_info = old_torrents, old_info
+    require("did not contain a unique selected file" in ambiguity, "ambiguous multi-file RD candidate was not rejected")
+    require("part-a.bin" in ambiguity or "selected" in ambiguity, "RD resolver failure did not expose candidate file diagnostics")
 
     # ------------------------------------------------------------------
     # Real-world regression model: provider mount advertises a different
@@ -246,7 +367,7 @@ def main() -> int:
     arr_rescue_tpl = (root / "app/templates/arr_rescue.html").read_text(encoding="utf-8")
     app_js = (root / "app/static/app.js").read_text(encoding="utf-8")
     updater_source = (root / "app/updater.py").read_text(encoding="utf-8")
-    require(any(v in main_source for v in ('APP_VERSION = \"10.6.1-beta\"', 'APP_VERSION = \"10.6.2-beta\"')), "v10.6 application marker missing")
+    require('APP_VERSION = "10.6.2-beta"' in main_source, "v10.6 application marker missing")
     require("provider_mount_untrusted_direct_verified" in archive_source and "Verify original directly" in archive_tpl, "direct-original archive recovery UI/logic missing")
     require("direct_file_metadata_for_source_file" in archive_source or "_rd_direct_metadata_descriptor" in archive_source, "RD authoritative-size comparison missing")
     require("Missing Radarr media" in archive_rescue_tpl and "Missing Sonarr media" in archive_rescue_tpl, "Archive Rescue does not cover both Arr services")
@@ -254,7 +375,7 @@ def main() -> int:
     require("data-update-open" in base_tpl and "compareVersions" in app_js and "completedUpdate" in app_js, "version badge/update modal fix missing")
     require("Cache-Control" in main_source and "no-store" in main_source, "update API no-cache protection missing")
     require("version_key(latest) > version_key(current_version)" in updater_source, "server updater can still offer the running version")
-    require(any(x in (root / "app/static/sw.js").read_text(encoding="utf-8") for x in ("arrnexus-static-v10.6.1", "arrnexus-static-v10.6.2")), "v10.6 service-worker cache marker missing")
+    require("arrnexus-static-v10.6.2" in (root / "app/static/sw.js").read_text(encoding="utf-8"), "v10.6 service-worker cache marker missing")
 
     # Compile every Jinja template so new rescue/integrity markup cannot ship
     # with a syntax error.
@@ -282,11 +403,11 @@ def main() -> int:
             require(client.get("/radarr-rescue").status_code == 200, "Radarr Rescue route failed")
             require(client.get("/archive-rescue").status_code == 200, "Archive Rescue route failed")
             health = client.get("/api/health")
-            require(health.status_code == 200 and health.json().get("version") in {"10.6.1-beta", "10.6.2-beta"}, "v10.6 health/version failed")
+            require(health.status_code == 200 and health.json().get("version") == "10.6.2-beta", "v10.6 health/version failed")
     finally:
         ar.internet_archive_indexers = old_indexers
 
-    print("PASS: ArrNexus v10.6.1 requires authoritative Real-Debrid originals after provider CRC, resolves safe extension-equivalent archive names, and retains v10.6 rescue/updater behaviour")
+    print("PASS: ArrNexus v10.6.2 resolves safe Real-Debrid single-file archive variants, forbids provider fallback after CRC, and retains v10.6 rescue/updater behaviour")
     return 0
 
 

@@ -98,7 +98,7 @@ def main() -> int:
         main_app.templates.env.get_template(template.name)
     with TestClient(main_app.app) as client:
         health = client.get("/api/health")
-        require(health.status_code == 200 and health.json().get("version") in {"10.4.4-beta", "10.5.0-beta", "10.5.1-beta", "10.6.0-beta", "10.6.1-beta"}, "v10.4.4 health/version")
+        require(health.status_code == 200 and health.json().get("version") in {"10.4.4-beta", "10.5.0-beta", "10.5.1-beta", "10.6.0-beta", "10.6.1-beta", "10.6.2-beta"}, "v10.4.4 health/version")
         setup = client.post("/setup", data={"username": "v1044validator", "email": "v1044@example.invalid", "display_name": "V10.4.4 Validator", "password": "validation-password-123", "confirm": "validation-password-123"}, follow_redirects=False)
         require(setup.status_code == 303, "v10.4.4 administrator setup")
         landing = client.get("/", follow_redirects=False)
@@ -118,7 +118,7 @@ def main() -> int:
     readme = (root / "README.md").read_text(encoding="utf-8")
     changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
 
-    require(any(v in main_source for v in ('APP_VERSION = \"10.4.4-beta\"', 'APP_VERSION = \"10.5.0-beta\"', 'APP_VERSION = \"10.5.1-beta\"', 'APP_VERSION = \"10.6.0-beta\"', 'APP_VERSION = \"10.6.1-beta\"')), "v10.4.4+ application marker missing")
+    require(any(v in main_source for v in ('APP_VERSION = \"10.4.4-beta\"', 'APP_VERSION = \"10.5.0-beta\"', 'APP_VERSION = \"10.5.1-beta\"', 'APP_VERSION = \"10.6.0-beta\"', 'APP_VERSION = \"10.6.1-beta\"', 'APP_VERSION = \"10.6.2-beta\"')), "v10.4.4+ application marker missing")
     require("run_archive_inspect_job" in main_source and '@app.post("/maintenance/archives/inspect")' in main_source, "background archive inspection route missing")
     require("cached_inspection" in archive_source and "timeout=1800" in archive_source, "large-archive cached inspection markers missing")
     require("scan_media_root" in scanner_source and "archive_media.extraction_root()" in main_source, "recovered media is not merged into Inbox inventory")
@@ -128,7 +128,7 @@ def main() -> int:
     require("runtime_multi_episode" in tv_source and "episode_count_source" in tv_source, "runtime joined-episode detection missing")
     require("TV Recovery review required before Sonarr import" in router_source, "TV runtime recovery pre-import gate missing")
     require("/maintenance/archives/inspect" in archive_template and "Open inspection" in archive_template, "archive UI still uses synchronous inspect")
-    require(((("arrnexus-static-v10.4.4" in sw) or ("arrnexus-static-v10.5.0" in sw)) or ("arrnexus-static-v10.5.0" in sw)) or ("arrnexus-static-v10.5.1" in sw) or ("arrnexus-static-v10.6.0" in sw) or ("arrnexus-static-v10.6.1" in sw), "v10.4.4+ service worker marker missing")
+    require(((("arrnexus-static-v10.4.4" in sw) or ("arrnexus-static-v10.5.0" in sw)) or ("arrnexus-static-v10.5.0" in sw)) or ("arrnexus-static-v10.5.1" in sw) or ("arrnexus-static-v10.6.0" in sw) or ("arrnexus-static-v10.6.1" in sw) or ("arrnexus-static-v10.6.2" in sw), "v10.4.4+ service worker marker missing")
     require("Version 10.4.4" in readme and "Unified Recovery & TV Intelligence" in readme, "README missing v10.4.4")
     require("10.4.4-beta — Unified Recovery & TV Intelligence" in changelog, "CHANGELOG missing v10.4.4")
     require((root / "docs" / "RELEASE_NOTES_v10.4.4.md").exists(), "v10.4.4 release notes missing")
