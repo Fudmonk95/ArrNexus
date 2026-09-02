@@ -51,6 +51,7 @@ def main() -> int:
     require(copied == len(payload), "resilient stage copy byte count mismatch")
     require(dest.read_bytes() == payload, "resilient stage copy was not byte-identical")
     require(calls["offsets"][:3] == [0, 0, 0], "failed provider range was not retried at the same offset")
+    print("[v10.5.1] resilient provider copy passed", flush=True)
 
     # Persistent EIO must never be skipped/padded or misclassified as local CRC.
     bad = td / "always-bad.partial"
@@ -67,6 +68,7 @@ def main() -> int:
             require("after 8 retries" in str(exc), "persistent EIO did not report retry exhaustion")
     finally:
         archive_media.os.pread = real_pread
+    print("[v10.5.1] persistent EIO safety passed", flush=True)
 
     # Exact Real-Debrid file mapping must select one exact archive and never
     # guess when the torrent contains several files.
@@ -94,6 +96,7 @@ def main() -> int:
         rd.torrents, rd.torrent_info, rd.unrestrict_link = old_torrents, old_info, old_unrestrict
     require(resolved["download"] == "https://download.invalid/exact-rar", "exact RD HTTPS fallback did not resolve")
     require(resolved["file_bytes"] == 12345, "exact RD HTTPS fallback size metadata missing")
+    print("[v10.5.1] exact RD fallback passed", flush=True)
 
     # Queen's Nose regression: valid recovered S01 episode files must supersede
     # a combined S01 source instead of making the group depend on the bad file.
@@ -122,6 +125,7 @@ def main() -> int:
     require(described["preferred_by_season"].get(1) == good, "six recovered S01 episodes were not preferred")
     bad_row = next(x for x in described["sources"] if x["path"] == bad_combined)
     require(1 in bad_row["superseded_seasons"], "combined S01 source was not marked superseded")
+    print("[v10.5.1] TV source preference passed", flush=True)
 
     # Language Checks OFF must neutralise stale workflow blocks without deleting
     # cached Language Guard evidence. This covers the Bernard's Watch regression
@@ -137,6 +141,7 @@ def main() -> int:
     require(cleared >= 1, "Language Checks OFF did not clear stale language-only workflow state")
     require(db.item_states()[language_source]["state"] == "waiting", "language review state still blocks Inbox while checks are OFF")
     require(db.cache_get(language_cache_key) is not None, "Language Checks OFF incorrectly deleted retained Language Guard cache")
+    print("[v10.5.1] language-state migration passed", flush=True)
 
     # The new job review queue must be a real authenticated route, not just a
     # template fragment. Use a synthetic review job; no production media is read.
@@ -146,11 +151,15 @@ def main() -> int:
     db.update_job(review_job, status="complete_with_reviews", reviewed=1, message="Finished: 1 review")
     from fastapi.testclient import TestClient
     from app import main as main_app
+    print("[v10.5.1] starting authenticated route smoke", flush=True)
     with TestClient(main_app.app) as client:
+        print("[v10.5.1] application startup passed", flush=True)
         setup = client.post("/setup", data={"username": "v1051validator", "email": "v1051@example.invalid", "display_name": "V10.5.1 Validator", "password": "validation-password-123", "confirm": "validation-password-123"}, follow_redirects=False)
         require(setup.status_code == 303, "v10.5.1 review-route administrator setup failed")
         review_page = client.get(f"/jobs/{review_job}/review")
         require(review_page.status_code == 200 and "Confirm English" in review_page.text, "Import Job manual review route failed")
+        print("[v10.5.1] review route passed", flush=True)
+    print("[v10.5.1] application shutdown passed", flush=True)
 
     main_source = (root / "app/main.py").read_text(encoding="utf-8")
     archive_source = (root / "app/archive_media.py").read_text(encoding="utf-8")
@@ -174,3 +183,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

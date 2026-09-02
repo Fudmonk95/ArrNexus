@@ -173,7 +173,7 @@ def main() -> int:
     # Full prior-release regression suite first.
     run_v7(root)
 
-    with tempfile.TemporaryDirectory(prefix="arrnexus-v8-validate-") as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix="arrnexus-v8-validate-") as tmp:
         os.environ["DB_PATH"] = str(Path(tmp) / "router.db")
         os.environ["DB_DIR"] = tmp
         os.environ["SESSION_SECRET"] = "validation-only-v8-session-secret"
@@ -277,7 +277,8 @@ def main() -> int:
             require(backup.get("name"), "Pre-write AIOStreams backup was not created")
             backup_path = Path(tmp) / "aiostreams-backups" / backup["name"]
             require(backup_path.is_file(), "Pre-write backup file missing")
-            require((backup_path.stat().st_mode & 0o777) == 0o600, "AIOStreams backup file permissions are not 0600")
+            if os.name != "nt":
+                require((backup_path.stat().st_mode & 0o777) == 0o600, "AIOStreams backup file permissions are not 0600")
             require(state.config.get("unrelated", {}).get("nested", {}).get("operatorOwned") == "preserve-me", "Successful PUT lost unrelated configuration")
             svc = {x.get("id"): x for x in state.config.get("services", []) if isinstance(x, dict)}
             require(svc["nzbdav"]["credentials"].get("apiKey") == "existing-nzbdav-secret", "Successful PUT overwrote existing NzbDAV credentials")
@@ -359,3 +360,5 @@ if __name__ == "__main__":
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(int(code or 0))
+
+

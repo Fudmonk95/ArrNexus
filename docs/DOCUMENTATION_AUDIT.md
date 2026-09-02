@@ -2,7 +2,7 @@
 
 This file is generated from `app/main.py` routes and the same `app/help_catalog.py` mapping used by the contextual Help button.
 
-- Application routes/actions audited: **168**
+- Application routes/actions audited: **185**
 - Help topics: **50**
 - Primary private pages receive a contextual Help link from the application shell.
 - Public/auth/bootstrap pages are documented in the Help Centre and user guide even when they do not use the private shell.
@@ -45,6 +45,19 @@ This file is generated from `app/main.py` routes and the same `app/help_catalog.
 | POST | `/jobs/clear-finished` | `clear_finished_job_history` | `jobs` |
 | GET | `/api/jobs/{job_id}` | `job_api` | `jobs` |
 | GET | `/api/jobs-active` | `active_jobs_api` | `jobs` |
+| GET | `/media-automation` | `media_automation_page` | `getting-started` |
+| GET | `/media-automation/collections` | `media_automation_collections` | `getting-started` |
+| GET | `/media-automation/collections/new` | `media_automation_new` | `getting-started` |
+| GET | `/media-automation/collections/{automation_id}` | `media_automation_edit` | `getting-started` |
+| POST | `/media-automation/collections/save` | `media_automation_save` | `getting-started` |
+| POST | `/media-automation/collections/{automation_id}/delete` | `media_automation_delete` | `getting-started` |
+| GET | `/media-automation/collections/{automation_id}/preview` | `media_automation_preview` | `getting-started` |
+| POST | `/media-automation/collections/{automation_id}/sync` | `media_automation_sync` | `getting-started` |
+| GET | `/media-automation/presets` | `media_automation_presets` | `getting-started` |
+| POST | `/media-automation/presets/{slug}` | `media_automation_add_preset` | `getting-started` |
+| POST | `/media-automation/import-kometa` | `media_automation_import_kometa` | `getting-started` |
+| GET | `/media-automation/servers` | `media_automation_servers` | `getting-started` |
+| POST | `/media-automation/servers/save` | `media_automation_servers_save` | `getting-started` |
 | GET | `/logs` | `logs_page` | `logs` |
 | GET | `/api/logs/external` | `api_external_logs` | `logs` |
 | POST | `/undo/{import_id}` | `undo_import` | `dmm-inbox` |
@@ -146,6 +159,10 @@ This file is generated from `app/main.py` routes and the same `app/help_catalog.
 | GET | `/tv-recovery/analyse` | `tv_recovery_analyse` | `tv-recovery` |
 | POST | `/tv-recovery/staging` | `tv_recovery_staging` | `tv-recovery` |
 | POST | `/tv-recovery/split` | `tv_recovery_split` | `tv-recovery` |
+| POST | `/maintenance/archives/recover-import` | `archived_media_recover_import` | `archived-media` |
+| POST | `/jobs/{job_id}/continue` | `continue_recover_import_job` | `jobs` |
+| POST | `/jobs/{job_id}/retry` | `retry_recover_import_job` | `jobs` |
+| POST | `/jobs/{job_id}/skip-unsafe-tv` | `skip_unsafe_tv_and_continue` | `jobs` |
 | GET | `/maintenance/archives` | `archived_media_page` | `archived-media` |
 | POST | `/maintenance/archives/settings` | `archived_media_settings` | `archived-media` |
 | POST | `/maintenance/archives/ignore` | `archived_media_ignore` | `archived-media` |

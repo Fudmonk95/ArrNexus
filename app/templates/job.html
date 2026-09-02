@@ -1,10 +1,26 @@
 {% extends 'base.html' %}
-{% block heading %}{{ 'Recovery Job' if job.kind in ['archive_inspect','archive_verify','archive_extract','archive_stage','tv_split'] else 'Import Job' }} #{{ job.id }}{% endblock %}
+{% block heading %}{{ 'Recovery & Import' if job.kind=='recover_import' else 'Media Automation' if job.kind=='media_automation' else 'Recovery Job' if job.kind in ['archive_inspect','archive_verify','archive_extract','archive_stage','tv_split'] else 'Import Job' }} #{{ job.id }}{% endblock %}
 {% block content %}
 <div class="panel job-live" data-job-id="{{ job.id }}">
   <div class="panelhead"><div><h2 id="jobTitle">{{ job.message }}</h2><p id="jobSummary">{{ job.completed }} completed · {{ job.reviewed or 0 }} manual review · {{ job.rejected or 0 }} language rejected · {{ job.failed }} failed · {{ job.total }} total</p></div><span id="jobState" class="tag state-{{ job.status }}">{{ job.status|replace('_',' ') }}</span></div>
   {% if request.query_params.get('notice') %}<div class="notice">{{ request.query_params.get('notice') }}</div>{% endif %}
-  <div class="job-progress"><i id="jobBar" style="width:{{ (((job.completed+job.failed+(job.rejected or 0)+(job.reviewed or 0))/(job.total or 1))*100)|round|int }}%"></i></div>
+  <div class="job-progress"><i id="jobBar" style="width:{{ job.progress if job.progress else (((job.completed+job.failed+(job.rejected or 0)+(job.reviewed or 0))/(job.total or 1))*100)|round|int }}%"></i></div>
+  <div class="recovery-current">
+    <span class="activity-spinner {{ 'stopped' if job.status not in ['queued','running','cancelling'] else '' }}" aria-hidden="true"></span>
+    <div><div class="eyebrow">LIVE JOB · <strong id="recoveryPercent">{{ job.progress or 0 }}%</strong></div><h3 id="recoveryOperation">{{ job.current_operation or job.message }}</h3><p id="recoveryDetail">{{ job.current_detail or job.message }}</p><small>Started <span id="recoveryStarted" data-started="{{ job.started_at or job.created_at }}">{{ job.started_at or job.created_at }}</span></small></div>
+  </div>
+  <div class="recovery-layout {{ 'terminal-only' if job.kind!='recover_import' }}">
+    {% if job.kind=='recover_import' %}
+    <div class="recovery-stage-list" id="recoveryStages">
+      {% for stage in pipeline_stages %}<div class="recovery-stage {{ stage.state }}"><span>{{ '✓' if stage.state=='complete' else '●' if stage.state=='active' else 'Ⅱ' if stage.state=='paused' else '!' if stage.state=='failed' else '○' }}</span><div><strong>{{ stage.label }}</strong><small>{{ stage.state }}</small></div></div>{% endfor %}
+    </div>
+    {% endif %}
+    <section class="recovery-log-panel"><div class="panelhead"><div><h3>Live Job Terminal</h3><p>Detailed output stays with this job; Unified Logs receives summaries only.</p></div></div><div class="recovery-log" id="recoveryLog">{% for row in recovery_logs %}<div data-log-id="{{ row.id }}" class="log-{{ row.level }}"><time>{{ row.created_at }}</time><span>{{ row.stage|replace('_',' ') }}</span><p>{{ row.message }}</p></div>{% else %}<div class="empty">Waiting for job output…</div>{% endfor %}</div></section>
+  </div>
+  {% if job.kind=='recover_import' %}
+  {% if job.status.startswith('paused_') %}<div class="alert warning"><strong>Job paused — review required.</strong> {{ job.current_detail }}<div class="formactions"><form method="post" action="/jobs/{{ job.id }}/continue"><button class="btn primary">Continue Job</button></form>{% if job.status=='paused_tv_boundary_review' %}<form method="post" action="/jobs/{{ job.id }}/skip-unsafe-tv"><button class="btn warning">Skip unsafe combined files & continue</button></form>{% endif %}</div></div>{% endif %}
+  {% if job.status in ['failed','error','complete_with_errors'] %}<div class="alert error"><strong>Stage failed.</strong> Completed stages are preserved. Fix the cause and retry from <code>{{ job.resume_stage }}</code>.<div class="formactions"><form method="post" action="/jobs/{{ job.id }}/retry"><button class="btn primary">Retry Stage</button></form></div></div>{% endif %}
+  {% endif %}
   {% if job.status in ['queued','running','cancelling'] %}<div class="formactions"><form method="post" action="/jobs/{{ job.id }}/cancel"><button class="btn danger" {{ 'disabled' if job.status=='cancelling' }}>{{ 'Cancellation requested…' if job.status=='cancelling' else 'Cancel job' }}</button></form><small>Cancellation keeps original provider media and already-completed valid episodes. Active tools are terminated cleanly, then killed only if required.</small></div>{% endif %}
   {% if (job.reviewed or 0) > 0 %}<div class="notice warning"><strong>{{ job.reviewed }} item{{ '' if job.reviewed == 1 else 's' }} require manual review.</strong> Review actions are available without cancelling or deleting this job. <a class="btn small warning" href="/jobs/{{ job.id }}/review">Review all</a></div>{% endif %}
   <div id="jobItems" class="job-items">
@@ -22,8 +38,9 @@
   </div>
   <div class="formactions">
     {% if (job.reviewed or 0) > 0 %}<a class="btn warning" href="/jobs/{{ job.id }}/review">Review all manual items</a>{% endif %}
-    {% if job.kind in ['archive_inspect','archive_verify','archive_extract','archive_stage'] and items %}<a class="btn primary" href="/maintenance/archives?inspect_path={{ items[0].source_path|urlencode }}" data-no-soft-nav>Back to Archived Media Recovery</a>
+    {% if job.kind in ['archive_inspect','archive_verify','archive_extract','archive_stage','recover_import'] and items %}<a class="btn primary" href="/maintenance/archives?inspect_path={{ items[0].source_path|urlencode }}" data-no-soft-nav>Back to Archived Media Recovery</a>
     {% elif job.kind=='tv_split' and items %}<a class="btn primary" href="/tv-recovery/analyse?path={{ items[0].source_path|urlencode }}">Back to TV Recovery</a>
+    {% elif job.kind=='media_automation' %}<a class="btn primary" href="/media-automation">Back to Media Automation</a>
     {% else %}<a class="btn" href="/inbox">Back to DMM Inbox</a>{% endif %}
     {% if job.status not in ['queued','running','cancelling'] %}<form method="post" action="/jobs/{{ job.id }}/remove" onsubmit="return confirm('Remove this job history only? No media will be changed.')"><button class="btn ghost">Remove job</button></form>{% endif %}
   </div>

@@ -15,6 +15,17 @@ import signal
 import subprocess
 import sys
 import tempfile
+
+def _stop_process(proc, force=False):
+    try:
+        if hasattr(os, "killpg"):
+            os.killpg(proc.pid, signal.SIGKILL if force else signal.SIGTERM)
+        elif force:
+            proc.kill()
+        else:
+            proc.terminate()
+    except (ProcessLookupError, OSError):
+        pass
 import time
 
 
@@ -26,7 +37,7 @@ def require(ok: bool, message: str) -> None:
 def _run_layer(root: Path, script: str, label: str, extra: dict[str, str], timeout: int = 90) -> None:
     print(f"[retained] starting {label}", flush=True)
     env = os.environ.copy(); env.update(extra); env["PYTHONUNBUFFERED"] = "1"
-    with tempfile.TemporaryDirectory(prefix=f"arrnexus-v1041-{label.replace('.','')}-") as td:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix=f"arrnexus-v1041-{label.replace('.','')}-") as td:
         outp, errp = Path(td)/"out.log", Path(td)/"err.log"
         with outp.open("wb") as out, errp.open("wb") as err:
             proc = subprocess.Popen([sys.executable, str(root/script)], cwd=root, env=env, stdout=out, stderr=err, start_new_session=True)
@@ -42,19 +53,16 @@ def _run_layer(root: Path, script: str, label: str, extra: dict[str, str], timeo
                     if pass_seen_at is None:
                         pass_seen_at = time.monotonic()
                     elif time.monotonic() - pass_seen_at >= 2.0:
-                        try: os.killpg(proc.pid, signal.SIGTERM)
-                        except ProcessLookupError: pass
+                        _stop_process(proc)
                         try: proc.wait(timeout=3)
                         except subprocess.TimeoutExpired:
-                            try: os.killpg(proc.pid, signal.SIGKILL)
-                            except ProcessLookupError: pass
+                            _stop_process(proc, True)
                             proc.wait(timeout=5)
                         rc = 0
                         break
                 time.sleep(0.2)
             if rc is None:
-                try: os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError: pass
+                _stop_process(proc, True)
                 proc.wait(timeout=10)
                 rc = -9
         stdout = outp.read_text(encoding="utf-8", errors="replace")
@@ -141,7 +149,7 @@ def main() -> int:
         main_app.templates.env.get_template(template.name)
     with TestClient(main_app.app) as client:
         health = client.get("/api/health")
-        require(health.status_code == 200 and health.json().get("version") in {"10.4.1-beta", "10.4.2-beta", "10.4.3-beta", "10.4.4-beta", "10.5.0-beta", "10.5.1-beta", "10.6.0-beta", "10.6.1-beta"}, "v10.4.1 health/version")
+        require(health.status_code == 200 and health.json().get("version") in {"10.4.1-beta", "10.4.2-beta", "10.4.3-beta", "10.4.4-beta", "10.5.0-beta", "10.5.1-beta", "10.6.0-beta", "10.6.1-beta", "10.7.0-beta", "10.8.0-beta", "10.8.1-beta"}, "v10.4.1 health/version")
         setup = client.post("/setup", data={"username":"v1041validator","email":"v1041@example.invalid","display_name":"V10.4.1 Validator","password":"validation-password-123","confirm":"validation-password-123"}, follow_redirects=False)
         require(setup.status_code == 303, "v10.4.1 administrator setup")
         page = client.get("/maintenance/archives", follow_redirects=False)
@@ -176,3 +184,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

@@ -68,7 +68,7 @@ def main() -> int:
         slug = topic_for_path(path)
         require(slug in TOPICS_BY_SLUG and slug != "getting-started", f"Primary page {path} has no contextual Help mapping")
 
-    with tempfile.TemporaryDirectory(prefix="arrnexus-v94-validate-") as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix="arrnexus-v94-validate-") as tmp:
         os.environ["DB_PATH"] = str(Path(tmp) / "router.db")
         os.environ["DB_DIR"] = tmp
         os.environ["SESSION_SECRET"] = "validation-only-v94-session-secret"
@@ -174,3 +174,5 @@ if __name__ == "__main__":
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(int(code or 0))
+
+

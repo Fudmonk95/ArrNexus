@@ -11,6 +11,17 @@ import subprocess
 import sys
 import tempfile
 
+def _stop_process(proc, force=False):
+    try:
+        if hasattr(os, "killpg"):
+            os.killpg(proc.pid, signal.SIGKILL if force else signal.SIGTERM)
+        elif force:
+            proc.kill()
+        else:
+            proc.terminate()
+    except (ProcessLookupError, OSError):
+        pass
+
 
 def require(ok: bool, message: str) -> None:
     if not ok:
@@ -39,11 +50,14 @@ def run_retained(root: Path) -> None:
         # shutdown. Force unbuffered output so the certification runner can
         # distinguish that shutdown quirk from a validator that never passed.
         env["PYTHONUNBUFFERED"] = "1"
-        with tempfile.TemporaryDirectory(prefix=f"arrnexus-v104-{label.replace('.','')}-") as td:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix=f"arrnexus-v104-{label.replace('.','')}-") as td:
             outp, errp = Path(td)/"out.log", Path(td)/"err.log"
             with outp.open("wb") as out, errp.open("wb") as err:
                 proc = subprocess.Popen([sys.executable, str(root/script)], cwd=root, env=env, stdout=out, stderr=err, start_new_session=True)
-                deadline = __import__("time").monotonic() + 75
+                # Windows CI and desktop antivirus can make the oldest full
+                # TestClient layer take just over a minute. Keep the validator
+                # bounded without misclassifying a completed legacy suite.
+                deadline = __import__("time").monotonic() + 120
                 pass_seen_at = None
                 rc = None
                 while __import__("time").monotonic() < deadline:
@@ -61,24 +75,20 @@ def run_retained(root: Path) -> None:
                             # PASS is emitted only after the validator's final
                             # assertion. Reap the stuck interpreter/process
                             # group; this does not skip any test.
-                            try: os.killpg(proc.pid, signal.SIGTERM)
-                            except ProcessLookupError: pass
+                            _stop_process(proc)
                             try: proc.wait(timeout=3)
                             except subprocess.TimeoutExpired:
-                                try: os.killpg(proc.pid, signal.SIGKILL)
-                                except ProcessLookupError: pass
+                                _stop_process(proc, True)
                                 proc.wait(timeout=5)
                             rc = 0
                             break
                     __import__("time").sleep(0.2)
                 if rc is None:
-                    try: os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError: pass
+                    _stop_process(proc, True)
                     proc.wait(timeout=10)
                     rc = -9
                 finally_rc = rc
-                try: os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError: pass
+                _stop_process(proc)
             stdout = outp.read_text(encoding="utf-8", errors="replace")
             stderr = errp.read_text(encoding="utf-8", errors="replace")
             if stdout: print(stdout.rstrip())
@@ -151,7 +161,7 @@ def main() -> int:
             main_app.templates.env.get_template(template.name)
         with TestClient(main_app.app) as client:
             health = client.get("/api/health")
-            require(health.status_code == 200 and health.json().get("version") in {"10.4.0-beta", "10.4.1-beta", "10.4.2-beta", "10.4.3-beta", "10.4.4-beta", "10.5.0-beta", "10.5.1-beta", "10.6.0-beta", "10.6.1-beta"}, "v10.4 health/version")
+            require(health.status_code == 200 and health.json().get("version") in {"10.4.0-beta", "10.4.1-beta", "10.4.2-beta", "10.4.3-beta", "10.4.4-beta", "10.5.0-beta", "10.5.1-beta", "10.6.0-beta", "10.6.1-beta", "10.7.0-beta", "10.8.0-beta", "10.8.1-beta"}, "v10.4 health/version")
             setup = client.post("/setup", data={"username":"v104validator","email":"v104@example.invalid","display_name":"V10.4 Validator","password":"validation-password-123","confirm":"validation-password-123"}, follow_redirects=False)
             require(setup.status_code == 303, "v10.4 administrator setup")
             page = client.get("/maintenance/archives", follow_redirects=False)
@@ -204,3 +214,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

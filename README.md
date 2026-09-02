@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/badge/release-v10.6.3--beta-8b5cf6?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/release-v10.8.1--beta-8b5cf6?style=for-the-badge">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Self Hosted" src="https://img.shields.io/badge/Self--Hosted-Yes-111827?style=for-the-badge">
@@ -61,6 +61,22 @@ The missing piece is somewhere those systems can be **viewed, reasoned about and
 `Radarr` · `Sonarr` · `Lidarr` · `Prowlarr` · `Seerr` · `Jellyfin` · `Plex` · `Emby` · `DUMB` · `NzbDAV / InfiniDysk` · `Decypharr` · `DMM` · `AIOStreams` · `Spotify` · multiple Debrid/Usenet providers
 
 ---
+
+## Version 10.8.1 - Recovery Reliability Hotfix
+
+v10.8.1 fixes recovery/import destination resolution, retry state consistency, interrupted-job reconciliation and cancellation cleanup while retaining the v10.8 Media Automation Hub and advisory-only Language Guard behavior.
+
+## Version 10.8.0 - Unblocked Recovery and Media Automation
+
+v10.8 removes Language Guard from every automatic import decision. Recovery & Import skips automatic language ffprobe work, clears historical language-only workflow states and cannot pause, delete provider media or start replacement searches because of language metadata. Manual language scans remain available as advisory diagnostics only.
+
+Every background job now has a compact live terminal, live state/item updates and clean shutdown cancellation. The new **Media Automation** hub stores server-independent collection definitions, provides non-destructive previews and schedules, imports a safe subset of existing Kometa YAML, drives Plex through a detected Kometa installation, and uses additive native collection adapters for Jellyfin and Emby. Jellyfin SmartLists is capability-detected with a native fallback; failure on one server does not stop other targets.
+
+## Version 10.7.0 - One-Click Archived Media Recovery
+
+Archived Media Recovery now has one primary **Recover & Import** action. A persistent job owns archive inspection, provider verification, exact direct Real-Debrid fallback, verified extraction, immediate indexing, Language Guard handling, safe batch TV splitting, fresh naming/import planning and final Sonarr/Radarr import. Detailed progress and logs remain on the job page, while genuine review decisions pause and resume the same saved job.
+
+Manual recovery operations remain available under **Advanced** for troubleshooting.
 
 ## 🩹 Version 10.6.3 — Generated Archive Link Recovery Hotfix
 
@@ -1933,4 +1949,3 @@ ghcr.io/<GITHUB_OWNER>/arrnexus:latest
 python3 -m venv .venv
 Users Management
 -->
-

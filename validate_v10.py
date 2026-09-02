@@ -61,7 +61,7 @@ def main() -> int:
         proc = subprocess.run([node, "--check", str(root / "app" / "static" / "app.js")], text=True, capture_output=True, timeout=60)
         require(proc.returncode == 0, f"JavaScript syntax failed: {proc.stderr}")
 
-    with tempfile.TemporaryDirectory(prefix="arrnexus-v10-validate-") as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix="arrnexus-v10-validate-") as tmp:
         os.environ["DB_PATH"] = str(Path(tmp) / "router.db")
         os.environ["DB_DIR"] = tmp
         os.environ["SESSION_SECRET"] = "validation-only-v10-session-secret"
@@ -186,3 +186,5 @@ if __name__ == "__main__":
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(int(code or 0))
+
+

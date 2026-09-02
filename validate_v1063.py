@@ -153,7 +153,7 @@ def main() -> int:
     from app.main import app
     with TestClient(app) as client:
         health = client.get("/api/health")
-        require(health.status_code == 200 and health.json().get("version") == "10.6.3-beta", "v10.6.3 health/version failed")
+        require(health.status_code == 200 and health.json().get("version") in {"10.6.3-beta", "10.7.0-beta", "10.8.0-beta", "10.8.1-beta"}, "v10.6.3 health/version failed")
         require(client.get("/").status_code == 200, "home route failed")
         require(client.get("/setup").status_code == 200, "setup route failed")
 
@@ -163,3 +163,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

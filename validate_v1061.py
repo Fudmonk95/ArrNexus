@@ -282,7 +282,7 @@ def main() -> int:
             require(client.get("/radarr-rescue").status_code == 200, "Radarr Rescue route failed")
             require(client.get("/archive-rescue").status_code == 200, "Archive Rescue route failed")
             health = client.get("/api/health")
-            require(health.status_code == 200 and health.json().get("version") in {"10.6.1-beta", "10.6.2-beta", "10.6.3-beta"}, "v10.6 health/version failed")
+            require(health.status_code == 200 and health.json().get("version") in {"10.6.1-beta", "10.6.2-beta", "10.6.3-beta", "10.7.0-beta", "10.8.0-beta", "10.8.1-beta"}, "v10.6 health/version failed")
     finally:
         ar.internet_archive_indexers = old_indexers
 
@@ -292,3 +292,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

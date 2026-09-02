@@ -357,10 +357,23 @@ def inspect_source_languages(
     errors: list[str] = []
     for logical in selected:
         try:
-            payload = _ffprobe(logical, policy.probe_timeout_seconds, cancel_check=cancel_check)
-            evaluated = evaluate_probe_payload(
-                payload, policy, external_english_subtitles=_matching_external_english_subtitle(logical)
-            )
+            try:
+                actual = view_path(logical)
+                stat = actual.stat()
+                signature = f"{logical}|{stat.st_size}|{stat.st_mtime_ns}"
+            except (OSError, RuntimeError):
+                # Synthetic validator inputs have no namespace-backed file.
+                # Real media always takes the exact size/mtime fingerprint path.
+                signature = f"synthetic|{logical}"
+            media_fingerprint = hashlib.sha256(signature.encode("utf-8", errors="replace")).hexdigest()
+            file_key = f"language_file:v107:{media_fingerprint}:{_policy_fingerprint(policy)}"
+            evaluated = cache_get(file_key) if not force else None
+            if not isinstance(evaluated, dict):
+                payload = _ffprobe(logical, policy.probe_timeout_seconds, cancel_check=cancel_check)
+                evaluated = evaluate_probe_payload(
+                    payload, policy, external_english_subtitles=_matching_external_english_subtitle(logical)
+                )
+                cache_set(file_key, evaluated)
             rows.append({"path": str(logical), "name": logical.name, **evaluated})
         except Exception as exc:
             rows.append({
@@ -400,7 +413,7 @@ def inspect_source_languages(
         summary = f"Manual review required: language verification incomplete on {len(rows)} of {len(files)} file(s); {action}"
     else:
         bits = ", ".join(missing) if missing else "language policy not met"
-        summary = f"Language Guard blocked source: {bits}"
+        summary = f"Language advisory: {bits}"
 
     result = {
         "status": status,

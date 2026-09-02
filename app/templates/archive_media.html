@@ -35,13 +35,14 @@
 {% elif row.ignored %}<span class="tag mutedtag">Ignored</span>
 {% else %}<span class="tag blue">Review required</span>{% endif %}
 </td>
-<td><div class="card-actions">{% if row.inspection_cached %}<a class="btn small" href="/maintenance/archives?inspect_path={{ row.logical_path|urlencode }}" data-no-soft-nav>Open inspection</a><form method="post" action="/maintenance/archives/inspect" class="inline"><input type="hidden" name="source_path" value="{{ row.logical_path }}"><button class="btn small ghost" type="submit">Re-inspect</button></form>{% else %}<form method="post" action="/maintenance/archives/inspect" class="inline"><input type="hidden" name="source_path" value="{{ row.logical_path }}"><button class="btn small" type="submit">Inspect</button></form>{% endif %}{% if row.extracted and row.extracted.target %}<a class="btn small primary" href="/item?path={{ row.extracted.target|urlencode }}" data-no-soft-nav>Review recovered media</a>{% endif %}<form method="post" action="/maintenance/archives/ignore" class="inline"><input type="hidden" name="source_path" value="{{ row.logical_path }}"><input type="hidden" name="fingerprint" value="{{ row.fingerprint }}"><button class="btn small" name="ignored" value="{{ '0' if row.ignored else '1' }}">{{ 'Restore' if row.ignored else 'Ignore' }}</button></form></div></td>
+<td><div class="card-actions"><form method="post" action="/maintenance/archives/recover-import" class="inline"><input type="hidden" name="source_path" value="{{ row.logical_path }}"><button class="btn small primary" type="submit">Recover & Import</button></form>{% if row.inspection_cached %}<a class="btn small" href="/maintenance/archives?inspect_path={{ row.logical_path|urlencode }}" data-no-soft-nav>Open inspection</a><form method="post" action="/maintenance/archives/inspect" class="inline"><input type="hidden" name="source_path" value="{{ row.logical_path }}"><button class="btn small ghost" type="submit">Re-inspect</button></form>{% else %}<form method="post" action="/maintenance/archives/inspect" class="inline"><input type="hidden" name="source_path" value="{{ row.logical_path }}"><button class="btn small" type="submit">Inspect</button></form>{% endif %}{% if row.extracted and row.extracted.target %}<a class="btn small" href="/item?path={{ row.extracted.target|urlencode }}" data-no-soft-nav>Review recovered media</a>{% endif %}<form method="post" action="/maintenance/archives/ignore" class="inline"><input type="hidden" name="source_path" value="{{ row.logical_path }}"><input type="hidden" name="fingerprint" value="{{ row.fingerprint }}"><button class="btn small" name="ignored" value="{{ '0' if row.ignored else '1' }}">{{ 'Restore' if row.ignored else 'Ignore' }}</button></form></div></td>
 </tr>{% else %}<tr><td colspan="6" class="empty">No first-volume RAR files found. If RD is complete but an item is missing from DMM Inbox, this scan is the place to check for archived payloads.</td></tr>{% endfor %}
 </tbody></table></div></div>
 
 {% if inspection %}
 <div class="panel">
   <div class="panelhead"><div><h2>{{ inspection.name }}</h2><p>Inspection only — the provider archive has not been changed. {% if inspection.cached %}This listing came from the fingerprint cache.{% else %}The background inspection took {{ inspection.inspection_seconds }}s and is cached until the archive catalogue changes.{% endif %}</p></div><div class="tags"><span class="tag">{{ inspection.volumes }} volume{{ '' if inspection.volumes==1 else 's' }}</span><span class="tag {{ 'green' if inspection.health=='clean' else 'amber' if inspection.health=='partial' else 'red' }}">{{ inspection.health }} archive</span></div></div>
+  <div class="alert success"><strong>Normal workflow</strong><p>One persistent job will verify, recover, index, apply the language setting, split every safe TV season, rebuild naming from fresh files, and import.</p><form method="post" action="/maintenance/archives/recover-import"><input type="hidden" name="source_path" value="{{ inspection.logical_path }}"><button class="btn primary" type="submit">Recover & Import</button></form></div>
 
   {% if inspection.password_protected %}<div class="alert warning"><strong>Password protected.</strong> ArrNexus will not attempt automatic recovery.</div>{% endif %}
   {% if not inspection.safe %}<div class="alert error"><strong>Unsafe archive paths detected.</strong> Recovery is blocked.</div>{% endif %}
@@ -73,6 +74,7 @@
 
   {% if inspection.identity_required and not inspection.identity %}<div class="alert warning"><strong>Resolve identity before recovery.</strong> This archive name is too generic to name safely.</div>{% endif %}
 
+  <details class="advanced-panel"><summary><strong>Advanced / manual recovery controls</strong><small>Inspect, verify, direct-stage and extract separately for troubleshooting.</small></summary>
   {% if inspection.classification == 'media' and inspection.safe and not inspection.password_protected %}
     {% if not inspection.verification %}
       <div class="alert"><strong>Next: verify the video members.</strong> This runs as a background job because cloud-backed RAR verification may take several minutes or longer. It tests video members only and does not extract anything.</div>
@@ -113,6 +115,7 @@
       <form method="post" action="/maintenance/archives/verify" class="inline"><input type="hidden" name="source_path" value="{{ inspection.logical_path }}"><button class="btn" type="submit">Re-verify media</button></form>
     {% endif %}
   {% endif %}
+  </details>
 
   <div class="inline-actions"><a class="btn" href="/maintenance/archives">Back to archive list</a></div>
 </div>

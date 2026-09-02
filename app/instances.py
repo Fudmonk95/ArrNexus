@@ -106,7 +106,9 @@ def discover_instances() -> list[ArrInstance]:
     host = urlsplit(primary_radarr.url).hostname or settings.arr_host
     scheme = urlsplit(primary_radarr.url).scheme or "http"
     found: list[ArrInstance] = []
-    for proc in Path("/proc").iterdir():
+    proc_root = Path("/proc")
+    proc_rows = proc_root.iterdir() if proc_root.is_dir() else ()
+    for proc in proc_rows:
         if not proc.name.isdigit():
             continue
         pid = int(proc.name)

@@ -1,5 +1,30 @@
 # Changelog
 
+## 10.8.1-beta - Recovery Reliability Hotfix
+
+- Resolve the `auto` destination sentinel to a concrete Radarr/Sonarr route before final recovery import and persist that route for retries.
+- Fix the final import path so normal `auto` imports cannot fail with `Invalid movie/tv destination: auto`.
+- Restore the Language Guard policy object used only for reporting after advisory-only imports, preventing a post-import `NameError` after links are created.
+- Allow recovery/import Retry Stage from compatible terminal error states (`failed`, `error`, `complete_with_errors`) and clear stale cancellation state before retry.
+- Reconcile persisted queued/running/cancelling jobs on ArrNexus startup because in-process workers cannot survive a process restart; interrupted recovery jobs retain completed stages and become retryable.
+- Add a bounded cancellation grace period so the UI cannot remain indefinitely at `Cancellation requested; stopping safely`.
+- Start cancellable POSIX subprocesses in their own process group and terminate the complete ffmpeg/ffprobe/unrar process tree with TERM then KILL.
+- Preserve v10.8 advisory-only Language Guard, Media Automation, live job terminal, v10.7 one-click archive recovery, verified split state and non-destructive provider-media guarantees.
+
+## 10.8.0-beta - Unblocked Recovery and Media Automation
+
+- Remove Language Guard from automatic recovery/import decisions; imports never pause, reject, delete provider media or start replacement searches because of language metadata.
+- Migrate stale `language_review`, `language_rejected` and related Inbox states to neutral workflow state while retaining exact-fingerprint observations.
+- Keep manual language scans as advisory diagnostics only.
+- Add a compact live terminal and live item/state/progress polling to every background job without flooding Unified Logs.
+- Add clean shutdown cancellation for tracked workers and schedulers.
+- Fix Windows binary archive staging so byte `0x1A` cannot be misread as end-of-file.
+- Add the Media Automation hub with normalized collection definitions, presets, safe Kometa YAML import, schedules, non-destructive previews and isolated multi-target results.
+- Use Kometa for Plex only when a real executable/config is detected; use additive native APIs for Jellyfin and Emby.
+- Detect Jellyfin SmartLists and retain native collection fallback.
+- Support IMDb, TMDb, Trakt, Plex Watchlist, MDBList, RSS/JSON and exact manual provider-ID sources where configured.
+- Preserve the v10.7 one-click recovery pipeline and all v7-v10.6.3 safety/regression contracts.
+
 ## 10.6.3-beta - Generated Real-Debrid Archive Link Hotfix
 
 - Fix the live Decypharr/Real-Debrid topology where an exact multi-file torrent exposes one generated archive download link instead of containing the virtual `.rar` in its file rows.
@@ -322,3 +347,12 @@
 ## 7.0 — Spotify, Language Guard, Telemetry & Performance
 
 - Added Spotify personal OAuth, Language Guard, native InfiniDysk telemetry, Prowlarr indexer control, corrected Sonarr season search, strict connector verification and performance caches.
+# ArrNexus v10.7.0-beta
+
+- Added the primary one-click **Recover & Import** workflow for archived media.
+- Added persistent recovery/import stages, progress, pause/continue, failed-stage retry, cancellation and a dedicated per-job log.
+- Automated provider verification and exact direct Real-Debrid fallback for CRC, EIO and untrusted Decypharr representations while retaining v10.6.3's no-mounted-byte fallback rule.
+- Automated verified extraction, immediate inventory refresh, Language Guard bypass when checks are off, and exact-file fingerprint caching when checks are on.
+- Added safe batch splitting for all eligible combined TV seasons, ffprobe verification, `.arrnexus-originals` retention, persistent split records and immediate post-split reindexing.
+- Rebuilt naming/import plans from fresh post-split inventory and completed Sonarr/Radarr imports in the same job.
+- Kept all manual recovery operations under Advanced controls.

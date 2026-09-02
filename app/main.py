@@ -24,13 +24,15 @@ from .db import (
     set_item_state, item_states, clear_language_block_states, recent_activity, add_activity,
     create_job, get_job, recent_jobs, update_job, update_job_item, add_job_item,
     job_cancel_requested, request_job_cancel, mark_remaining_job_items_cancelled, remove_job, clear_finished_jobs,
+    add_recovery_job_log, recovery_job_logs,
     list_rules, save_rule, delete_rule, mark_import_undone, cache_get, cache_set,
     authenticate_user, get_user, update_user, setting_get, setting_set, activity_by_day, request_map, list_users, create_user, delete_user, create_password_reset, consume_password_reset,
     user_count, log_event, list_logs, log_sources, list_mounts, save_mount, delete_mount,
     add_scrape, update_scrape, list_scrapes, ui_pref_get, ui_pref_set,
     update_user_access, requests_today, title_timeline, all_settings, replace_nonsecret_settings, request_rows, update_request_progress,
+    reconcile_interrupted_jobs,
 )
-from .scanner import scan_source, scan_media_root, inspect_item, normalize_title, human_size, invalidate_scan_cache
+from .scanner import scan_source, scan_media_root, inspect_item, normalize_title, human_size, invalidate_scan_cache, video_files
 from .routing import decide_movie, decide_tv
 from .arr import RadarrClient, SonarrClient, LidarrClient, ProwlarrClient, ArrError, poster_url
 from .router_service import import_one, import_grouped_tv_sources, route_item, discover_lookup, discover_add, client_for_instance, LanguageRejectedSafe
@@ -96,6 +98,8 @@ from . import tv_recovery
 from . import archive_media
 from . import media_identity
 from . import tv_source_selection
+from . import recovery_pipeline
+from . import media_automation
 from .process_control import CancelledOperation
 
 BASE = Path(__file__).resolve().parent
@@ -105,10 +109,13 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["human_size"] = human_size
 templates.env.globals["app_setting"] = setting_get
-templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.6.3-beta"
+templates.env.globals["app_version"] = lambda: APP_VERSION if "APP_VERSION" in globals() else "10.8.1-beta"
 templates.env.globals["release_channel"] = lambda: "beta" if "-beta" in APP_VERSION else (setting_get("update.channel", "stable") or "stable")
 
-APP_VERSION = "10.6.3-beta"
+APP_VERSION = "10.8.1-beta"
+# Retained validator compatibility markers only:
+# APP_VERSION = "10.6.1-beta"
+# APP_VERSION = "10.6.3-beta"
 
 
 @app.middleware("http")
@@ -192,6 +199,23 @@ _MUSIC_ARTIST_SNAPSHOTS: dict[str, StaleSnapshot] = {}
 @app.on_event("startup")
 async def startup():
     init_db()
+    # In-process workers cannot survive a web-process restart. Reconcile any
+    # persisted non-terminal jobs before new schedulers/workers are launched so
+    # the UI never remains permanently stuck on running/cancelling.
+    try:
+        reconciled = reconcile_interrupted_jobs()
+        if int(reconciled.get("failed") or 0) or int(reconciled.get("cancelled") or 0):
+            log_event(
+                "warning", "jobs", "startup_reconciliation",
+                f"Reconciled {reconciled.get('failed', 0)} interrupted and {reconciled.get('cancelled', 0)} cancelling job(s)",
+                reconciled,
+            )
+    except Exception as exc:
+        try: log_event("warning", "jobs", "startup_reconciliation_failed", str(exc))
+        except Exception: pass
+    # v10.8 migrates every historical Language Guard workflow state to a
+    # neutral state. Cached exact-fingerprint observations are retained.
+    clear_language_block_states("Language Guard is advisory in v10.8")
     try:
         migrated = migrate_legacy_providers()
         if migrated:
@@ -226,6 +250,16 @@ async def startup():
         list_task.add_done_callback(RUNNING_TASKS.discard)
     except Exception as exc:
         try: log_event("warning", "lists", "scheduler_start_failed", str(exc))
+        except Exception: pass
+
+    # v10.8 collection automation scheduler. Definitions are disabled until
+    # the administrator enables them after previewing their target diffs.
+    try:
+        automation_task = asyncio.create_task(media_automation_scheduler_loop())
+        RUNNING_TASKS.add(automation_task)
+        automation_task.add_done_callback(RUNNING_TASKS.discard)
+    except Exception as exc:
+        try: log_event("warning", "media_automation", "scheduler_start_failed", str(exc))
         except Exception: pass
 
     # Pre-warm expensive namespace inventories off the request path.  This is
@@ -294,6 +328,17 @@ async def startup():
         warm_ui.add_done_callback(RUNNING_TASKS.discard)
     except Exception:
         pass
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Stop schedulers/workers promptly during clean Uvicorn or test shutdown."""
+    tasks = [task for task in list(RUNNING_TASKS) if not task.done()]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    RUNNING_TASKS.clear()
 
 
 def logged_in(request: Request):
@@ -777,7 +822,7 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
 
         primary = group[0]
         managed = [r for r in group if r.get("state") in {"imported", "linked"} or r.get("linked_paths")]
-        rejected_rows = [r for r in group if lang_on and r.get("language_badge_key") == "fail"]
+        rejected_rows = []  # v10.8 language observations never drive Inbox workflow state.
         language_counts: dict[str, int] = {}
         for row in group:
             key = "disabled" if not lang_on else str(row.get("language_badge_key") or "unchecked")
@@ -849,10 +894,6 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
                 primary["state"] = "partial" if primary["pending_seasons"] else "imported"
             else:
                 primary["state"] = "imported"
-        elif rejected_rows:
-            primary["state"] = "language_rejected"
-        elif lang_on and (language_counts.get("recheck_required") or language_counts.get("unknown") or language_counts.get("probe_failed")):
-            primary["state"] = "language_review"
         else:
             primary["state"] = "waiting"
         primary["duplicate"] = len(group) > 1
@@ -1297,19 +1338,12 @@ async def item_language_check(request: Request, source_path: str = Form(...)):
     item = inspect_item(source_path)
     result = await asyncio.to_thread(inspect_source_languages, source_path, item.fingerprint, True)
     status = str(result.get("status") or "unknown")
-    if status == "fail":
-        set_item_state(source_path, "language_rejected", result.get("summary") or "Language rejected")
-    elif status in {"unknown", "probe_failed", "error"}:
-        set_item_state(source_path, "language_review", result.get("summary") or "Manual language review required")
-    elif status == "pass":
-        current = (item_states().get(source_path) or {}).get("state", "")
-        if current in {"language_rejected", "language_issue", "language_review"}:
-            set_item_state(source_path, "waiting", "Current Language Guard policy passed")
+    clear_language_block_states("Manual language scan completed as advisory-only")
     level = "info" if status == "pass" else "warning"
     log_event(level, "language_guard", "source_checked", result.get("summary") or "Language check complete", {"source": source_path, "status": status})
     _INBOX_SNAPSHOT.clear()
     invalidate_scan_cache()
-    return RedirectResponse("/item?path=" + quote(source_path), status_code=303)
+    return RedirectResponse("/item?path=" + quote(source_path) + "&notice=" + quote("Language observation saved for information only; import remains available"), status_code=303)
 
 
 @app.post("/item/language-override")
@@ -1324,10 +1358,7 @@ async def item_language_override(request: Request, source_path: str = Form(...),
         add_activity("language_override", item.title_guess, "Administrator confirmed English audio", source_path)
     elif action == "clear":
         set_language_override(source_path, item.fingerprint, english=False, actor=str(user.get("username") or "administrator"))
-        if language_checks_enabled():
-            set_item_state(source_path, "language_review", "Manual English override cleared; re-check required")
-        else:
-            set_item_state(source_path, "waiting", "Manual English override cleared while Language Checks are OFF")
+        set_item_state(source_path, "waiting", "Manual English override cleared; language remains advisory")
     else:
         raise HTTPException(400, "Invalid language override action")
     _INBOX_SNAPSHOT.clear(); invalidate_scan_cache()
@@ -1487,6 +1518,23 @@ def _launch(coro):
     return task
 
 
+async def _finalize_job_cancel_after_grace(job_id: int, grace_seconds: float = 45.0):
+    """Prevent a cooperative cancellation from remaining non-terminal forever."""
+    await asyncio.sleep(max(1.0, float(grace_seconds)))
+    job, _items = get_job(job_id)
+    if not job or str(job.get("status") or "") != "cancelling":
+        return
+    message = "Cancellation grace period expired; job finalised as cancelled and completed work was retained"
+    mark_remaining_job_items_cancelled(job_id, message)
+    update_job(
+        job_id, status="cancelled", cancel_requested=1, current_operation="Cancelled",
+        current_detail=message, message=message, finished_at=recovery_pipeline.utcnow(),
+    )
+    if str(job.get("kind") or "") == "recover_import":
+        recovery_pipeline.log(job_id, str(job.get("current_stage") or "cancelled"), message, level="warning")
+    log_event("warning", "jobs", "cancel_grace_expired", f"Job #{job_id} cancellation finalised after grace period", {"job_id": job_id})
+
+
 async def run_language_scan_job(job_id: int, force: bool = False):
     job, job_items = get_job(job_id)
     if not job:
@@ -1510,30 +1558,18 @@ async def run_language_scan_job(job_id: int, force: bool = False):
             item = await asyncio.to_thread(inspect_item, source_path)
             result = await asyncio.to_thread(inspect_source_languages, source_path, item.fingerprint, force)
             status = str(result.get("status") or "unknown")
-            if status == "fail":
-                rejected += 1
-                set_item_state(source_path, "language_rejected", result.get("summary") or "Language rejected")
-                update_job_item(iid, status="rejected", stage="language_rejected", message=result.get("summary") or "Language rejected")
-            elif status == "unknown":
-                reviewed += 1
-                set_item_state(source_path, "language_review", result.get("summary") or "Manual language review required")
-                update_job_item(iid, status="review", stage="language_review", message=result.get("summary") or "Manual review required")
-            else:
-                completed += 1
-                # A successful current-policy check clears stale language-only state.
-                current = (item_states().get(source_path) or {}).get("state")
-                if current in {"language_rejected", "language_issue", "language_review"}:
-                    set_item_state(source_path, "waiting", "Current Language Guard policy passed")
-                update_job_item(iid, status="complete", stage="language_pass", message=result.get("summary") or "English verified")
+            completed += 1
+            clear_language_block_states("Language scan completed as advisory-only")
+            update_job_item(iid, status="complete", stage=f"language_advisory_{status}", message=(result.get("summary") or "Language observation complete") + " · advisory only; import remains available")
             log_event("info" if status == "pass" else "warning", "language_guard", "bulk_source_checked", result.get("summary") or "Language check complete", {"source": source_path, "status": status})
         except Exception as exc:
             failed += 1
             update_job_item(iid, status="error", stage="error", message=str(exc))
             log_event("error", "language_guard", "bulk_source_failed", str(exc), {"source": source_path})
         _INBOX_SNAPSHOT.clear()
-        update_job(job_id, completed=completed, failed=failed, rejected=rejected, reviewed=reviewed, message=f"{completed} verified, {reviewed} manual review, {rejected} rejected, {failed} failed")
-    final = "complete_with_errors" if failed else ("complete_with_rejections" if rejected else ("complete_with_reviews" if reviewed else "complete"))
-    update_job(job_id, status=final, completed=completed, failed=failed, rejected=rejected, reviewed=reviewed, message=f"Finished: {completed} verified, {reviewed} manual review, {rejected} language rejected, {failed} failed")
+        update_job(job_id, completed=completed, failed=failed, rejected=0, reviewed=0, message=f"{completed} advisory result(s), {failed} probe failure(s)")
+    final = "complete_with_errors" if failed else "complete"
+    update_job(job_id, status=final, completed=completed, failed=failed, rejected=0, reviewed=0, message=f"Finished: {completed} advisory language result(s), {failed} probe failure(s); import remains available")
 
 
 async def run_language_cleanup_job(job_id: int):
@@ -1719,7 +1755,15 @@ async def job_page(request: Request, job_id: int):
     job, items = get_job(job_id)
     if not job:
         raise HTTPException(404)
-    return templates.TemplateResponse("job.html", {"request": request, "job": job, "items": items})
+    pipeline = job.get("kind") == "recover_import"
+    return templates.TemplateResponse("job.html", {
+        "request": request, "job": job, "items": items,
+        "pipeline_stages": recovery_pipeline.stage_rows(
+            str(job.get("resume_stage") or job.get("current_stage") or "queued"),
+            paused=str(job.get("status") or "").startswith("paused_"), failed=str(job.get("status") or "") == "failed",
+        ) if pipeline else [],
+        "recovery_logs": recovery_job_logs(job_id, limit=2000),
+    })
 
 
 @app.get("/jobs/{job_id}/review", response_class=HTMLResponse)
@@ -1765,6 +1809,7 @@ async def cancel_job(request: Request, job_id: int):
     if not request_job_cancel(job_id):
         raise HTTPException(409, "Job is already finished or cannot be cancelled")
     log_event("info", "jobs", "cancel_requested", f"Cancellation requested for job #{job_id}", {"job_id": job_id})
+    _launch(_finalize_job_cancel_after_grace(job_id))
     return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
 
@@ -1789,7 +1834,15 @@ async def job_api(request: Request, job_id: int):
     job, items = get_job(job_id)
     if not job:
         raise HTTPException(404)
-    return {"job": job, "items": items}
+    pipeline = job.get("kind") == "recover_import"
+    return {
+        "job": job, "items": items,
+        "stages": recovery_pipeline.stage_rows(
+            str(job.get("resume_stage") or job.get("current_stage") or "queued"),
+            paused=str(job.get("status") or "").startswith("paused_"), failed=str(job.get("status") or "") == "failed",
+        ) if pipeline else [],
+        "recovery_logs": recovery_job_logs(job_id, limit=2000),
+    }
 
 
 @app.get("/api/jobs-active")
@@ -1797,6 +1850,222 @@ async def active_jobs_api(request: Request):
     require_auth(request)
     rows=[dict(x) for x in recent_jobs(20) if x["status"] in {"queued","running","cancelling"}]
     return {"jobs":rows}
+
+
+# ===== ARRNEXUS V10.8 MEDIA AUTOMATION HUB ================================
+
+@app.get("/media-automation", response_class=HTMLResponse)
+async def media_automation_page(request: Request, notice: str = "", error: str = ""):
+    require_admin(request)
+    return templates.TemplateResponse("media_automation.html", {
+        "request": request, "definitions": media_automation.list_definitions(),
+        "capabilities": await media_automation.server_capabilities(),
+        "notice": notice, "error": error,
+    })
+
+
+@app.get("/media-automation/collections", response_class=HTMLResponse)
+async def media_automation_collections(request: Request):
+    return await media_automation_page(request)
+
+
+@app.get("/media-automation/collections/new", response_class=HTMLResponse)
+async def media_automation_new(request: Request):
+    require_admin(request)
+    return templates.TemplateResponse("media_automation_edit.html", {
+        "request": request, "item": None, "source_types": media_automation.SOURCE_TYPES,
+        "capabilities": await media_automation.server_capabilities(),
+    })
+
+
+@app.get("/media-automation/collections/{automation_id}", response_class=HTMLResponse)
+async def media_automation_edit(request: Request, automation_id: int):
+    require_admin(request)
+    item = media_automation.get_definition(automation_id)
+    if not item:
+        raise HTTPException(404, "Collection automation not found")
+    return templates.TemplateResponse("media_automation_edit.html", {
+        "request": request, "item": item, "source_types": media_automation.SOURCE_TYPES,
+        "capabilities": await media_automation.server_capabilities(),
+    })
+
+
+@app.post("/media-automation/collections/save")
+async def media_automation_save(request: Request):
+    require_admin(request)
+    form = await request.form()
+    targets = []
+    for kind in ("plex", "jellyfin", "emby"):
+        if str(form.get(f"target_{kind}") or "") == "1":
+            targets.append({"server_type": kind, "library_name": str(form.get(f"library_{kind}") or ""),
+                            "collection_name": str(form.get(f"collection_{kind}") or form.get("name") or ""),
+                            "engine": str(form.get(f"engine_{kind}") or form.get("engine") or "auto"), "enabled": True})
+    try:
+        ident = media_automation.save_definition(
+            automation_id=int(form.get("automation_id") or 0) or None, name=str(form.get("name") or ""),
+            media_type=str(form.get("media_type") or "mixed"), source_type=str(form.get("source_type") or "manual"),
+            source_ref=str(form.get("source_ref") or ""), engine=str(form.get("engine") or "auto"),
+            schedule_hours=int(form.get("schedule_hours") or 24), enabled=str(form.get("enabled") or "") == "1",
+            acquire_missing=str(form.get("acquire_missing") or "") == "1", summary=str(form.get("summary") or ""),
+            sort=str(form.get("sort") or "source"), artwork_url=str(form.get("artwork_url") or ""),
+            manual_items=str(form.get("manual_items") or ""), targets=targets,
+        )
+    except Exception as exc:
+        return RedirectResponse("/media-automation?error=" + quote(str(exc)), status_code=303)
+    return RedirectResponse(f"/media-automation/collections/{ident}?notice=" + quote("Collection automation saved"), status_code=303)
+
+
+@app.post("/media-automation/collections/{automation_id}/delete")
+async def media_automation_delete(request: Request, automation_id: int):
+    require_admin(request)
+    media_automation.delete_definition(automation_id)
+    return RedirectResponse("/media-automation?notice=" + quote("Definition deleted; server collections were not changed"), status_code=303)
+
+
+@app.get("/media-automation/collections/{automation_id}/preview", response_class=HTMLResponse)
+async def media_automation_preview(request: Request, automation_id: int):
+    require_admin(request)
+    item = media_automation.get_definition(automation_id)
+    if not item:
+        raise HTTPException(404)
+    try:
+        preview = await media_automation.preview_definition(item)
+        error = ""
+    except Exception as exc:
+        preview = {"ok": False, "desired": [], "targets": []}; error = str(exc)
+    if "application/json" in request.headers.get("accept", ""):
+        return JSONResponse({"definition": item, "preview": preview, "error": error})
+    return templates.TemplateResponse("media_automation_preview.html", {"request": request, "item": item, "preview": preview, "error": error})
+
+
+async def run_media_automation_job(job_id: int, automation_id: int):
+    job, items = get_job(job_id)
+    if not job or not items:
+        return
+    iid = int(items[0]["id"]); run_id = media_automation.create_run(automation_id, job_id)
+    definition = media_automation.get_definition(automation_id)
+    if not definition:
+        recovery_pipeline.fail(job_id, iid, "loading", "Collection definition no longer exists", {})
+        media_automation.finish_run(run_id, "failed", {"error": "Definition deleted"}); return
+    def job_log(stage: str, message: str):
+        add_recovery_job_log(job_id, message, stage=stage, level="error" if stage == "error" else "info")
+        update_job(job_id, current_stage=stage, current_operation=message, current_detail=message)
+        update_job_item(iid, stage=stage, status="running", message=message)
+    try:
+        update_job(job_id, status="running", started_at=recovery_pipeline.utcnow(), progress=5,
+                   current_stage="resolving", current_operation="Resolving collection source", message="Media automation running")
+        result = await media_automation.sync_definition(definition, log=job_log, cancel_check=lambda: job_cancel_requested(job_id))
+        if job_cancel_requested(job_id):
+            raise CancelledOperation("Media automation cancelled; completed targets were retained")
+        failed = sum(1 for x in result.get("targets") or [] if not x.get("ok"))
+        status = "complete_with_errors" if failed and result.get("ok") else "complete" if result.get("ok") else "failed"
+        media_automation.finish_run(run_id, status, result)
+        update_job_item(iid, status="complete" if result.get("ok") else "error", stage="complete", message=f"{len(result.get('targets') or []) - failed} target(s) synced; {failed} failed", result=result)
+        update_job(job_id, status=status, completed=1 if result.get("ok") else 0, failed=failed, progress=100,
+                   current_stage="complete", current_operation="Media automation complete", current_detail=f"{len(result.get('targets') or []) - failed} target(s) synced; {failed} failed",
+                   message="Media automation complete" if result.get("ok") else "All media automation targets failed", finished_at=recovery_pipeline.utcnow())
+        add_recovery_job_log(job_id, f"Media automation finished: {len(result.get('targets') or []) - failed} target(s) synced; {failed} failed", stage="complete", level="warning" if failed else "info")
+        log_event("info" if result.get("ok") else "error", "media_automation", "sync_finished", f"Media automation job #{job_id} finished", {"job_id": job_id, "definition_id": automation_id, "failed_targets": failed})
+    except (CancelledOperation, asyncio.CancelledError) as exc:
+        result = {"cancelled": True, "detail": str(exc)}; media_automation.finish_run(run_id, "cancelled", result)
+        update_job_item(iid, status="cancelled", stage="cancelled", message=str(exc), result=result)
+        update_job(job_id, status="cancelled", current_stage="cancelled", current_operation="Cancelled", current_detail=str(exc), message=str(exc), finished_at=recovery_pipeline.utcnow())
+        add_recovery_job_log(job_id, str(exc), stage="cancelled", level="warning")
+    except Exception as exc:
+        media_automation.finish_run(run_id, "failed", {"error": str(exc)})
+        recovery_pipeline.fail(job_id, iid, str((get_job(job_id)[0] or {}).get("current_stage") or "syncing"), str(exc), {})
+        log_event("error", "media_automation", "sync_failed", f"Media automation job #{job_id} failed", {"job_id": job_id, "definition_id": automation_id, "error": str(exc)})
+
+
+async def media_automation_scheduler_loop():
+    """Launch due enabled definitions without duplicating an active run."""
+    await asyncio.sleep(90)
+    while True:
+        try:
+            now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+            for definition in media_automation.list_definitions():
+                if not int(definition.get("enabled") or 0) or not definition.get("targets"):
+                    continue
+                latest = definition.get("latest_run") or {}
+                if str(latest.get("status") or "") in {"queued", "running"}:
+                    continue
+                stamp = str(latest.get("finished_at") or latest.get("created_at") or "")
+                try:
+                    last = __import__("datetime").datetime.fromisoformat(stamp.replace("Z", "+00:00")) if stamp else None
+                    if last and last.tzinfo is None: last = last.replace(tzinfo=__import__("datetime").timezone.utc)
+                except Exception:
+                    last = None
+                if last and (now - last).total_seconds() < int(definition.get("schedule_hours") or 24) * 3600:
+                    continue
+                ident = int(definition["id"])
+                jid = create_job("media_automation", [{"source_path": f"media-automation:{ident}", "display_name": definition["name"], "result": {"automation_id": ident, "scheduled": True}}])
+                add_recovery_job_log(jid, "Scheduled media automation queued", stage="queued")
+                _launch(run_media_automation_job(jid, ident))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log_event("warning", "media_automation", "scheduler_cycle_failed", str(exc))
+        await asyncio.sleep(300)
+
+
+@app.post("/media-automation/collections/{automation_id}/sync")
+async def media_automation_sync(request: Request, automation_id: int):
+    require_admin(request)
+    item = media_automation.get_definition(automation_id)
+    if not item:
+        raise HTTPException(404)
+    jid = create_job("media_automation", [{"source_path": f"media-automation:{automation_id}", "display_name": item["name"], "result": {"automation_id": automation_id}}])
+    add_recovery_job_log(jid, "Media automation queued", stage="queued")
+    _launch(run_media_automation_job(jid, automation_id))
+    return RedirectResponse(f"/jobs/{jid}", status_code=303)
+
+
+@app.get("/media-automation/presets", response_class=HTMLResponse)
+async def media_automation_presets(request: Request):
+    require_admin(request)
+    return templates.TemplateResponse("media_automation_presets.html", {"request": request, "presets": media_automation.PRESETS})
+
+
+@app.post("/media-automation/presets/{slug}")
+async def media_automation_add_preset(request: Request, slug: str):
+    require_admin(request)
+    try:
+        ident = media_automation.create_from_preset(slug)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    return RedirectResponse(f"/media-automation/collections/{ident}?notice=" + quote("Preset added in disabled preview-first mode"), status_code=303)
+
+
+@app.post("/media-automation/import-kometa")
+async def media_automation_import_kometa(request: Request, config_file: UploadFile = File(...), library_name: str = Form("")):
+    require_admin(request)
+    payload = await config_file.read(2 * 1024 * 1024 + 1)
+    if len(payload) > 2 * 1024 * 1024:
+        raise HTTPException(413, "Kometa YAML import is limited to 2 MB")
+    try:
+        created = media_automation.import_kometa_yaml(payload.decode("utf-8-sig"), library_name=library_name.strip())
+    except UnicodeDecodeError:
+        raise HTTPException(400, "Kometa YAML must be UTF-8 text")
+    if not created:
+        return RedirectResponse("/media-automation?error=" + quote("No supported Kometa collection definitions were found"), status_code=303)
+    return RedirectResponse("/media-automation?notice=" + quote(f"Imported {len(created)} Kometa collection definition(s) in disabled preview-first mode"), status_code=303)
+
+
+@app.get("/media-automation/servers", response_class=HTMLResponse)
+async def media_automation_servers(request: Request, notice: str = ""):
+    require_admin(request)
+    return templates.TemplateResponse("media_automation_servers.html", {"request": request, "capabilities": await media_automation.server_capabilities(), "kometa": media_automation.kometa_state(), "source_state": media_automation.source_provider_state(), "notice": notice})
+
+
+@app.post("/media-automation/servers/save")
+async def media_automation_servers_save(request: Request):
+    require_admin(request)
+    form = await request.form()
+    for kind in ("plex", "jellyfin", "emby"):
+        save_connection(kind, str(form.get(f"{kind}_url") or ""), str(form.get(f"{kind}_token") or ""))
+    media_automation.save_kometa_settings(str(form.get("kometa_executable") or ""), str(form.get("kometa_config_path") or ""), str(form.get("kometa_managed_path") or ""))
+    media_automation.save_source_settings(str(form.get("mdblist_api_key") or ""))
+    return RedirectResponse("/media-automation/servers?notice=" + quote("Media automation connections saved"), status_code=303)
 
 
 
@@ -2304,20 +2573,13 @@ async def settings_language_checks(request: Request):
     form = await request.form()
     enabled = str(form.get("enabled") or "false").lower() in {"1", "true", "yes", "on"}
     set_language_checks_enabled(enabled)
-    cleared = 0
-    if not enabled:
-        # Keep cached scans/overrides, but remove stale language-only workflow
-        # states so cards cannot continue demanding a re-check while bypass is on.
-        cleared = clear_language_block_states()
+    cleared = clear_language_block_states("Language observations are advisory in v10.8")
     _INBOX_SNAPSHOT.clear(); invalidate_scan_cache(); invalidate_library_cache()
     log_event("info", "language_guard", "master_toggle", f"Language Checks {'ON' if enabled else 'OFF'}", {"cleared_language_blocks": cleared})
     return_to = str(form.get("return_to") or "/inbox")
     if not return_to.startswith("/") or return_to.startswith("//"):
         return_to = "/inbox"
-    if enabled:
-        message = "Language Checks ON"
-    else:
-        message = f"Language Checks OFF - imports bypass Language Guard; cleared {cleared} stale language-only block(s)"
+    message = f"Language observations {'ON' if enabled else 'OFF'} - import remains unblocked; cleared {cleared} stale workflow state(s)"
     sep = "&" if "?" in return_to else "?"
     return RedirectResponse(return_to + sep + "notice=" + quote(message), status_code=303)
 
@@ -4134,6 +4396,274 @@ async def tv_recovery_split(request: Request):
 
 
 # ===== ARRNEXUS V10.4 ARCHIVED MEDIA RECOVERY ===============================
+
+async def run_recover_import_job(job_id: int):
+    """Run archive recovery through Arr import as one resumable persistent job."""
+    job, items = get_job(job_id)
+    if not job or not items:
+        return
+    ji = items[0]
+    iid = int(ji["id"])
+    source_path = str(ji.get("source_path") or "")
+    cfg = cache_get(f"recovery_pipeline:job:{job_id}") or {}
+    result = dict(ji.get("result") or {})
+    completed_stages = set(result.get("completed_stages") or [])
+    cancel_check = lambda: job_cancel_requested(job_id)
+
+    def save(stage: str, **values):
+        completed_stages.add(stage)
+        result.update(values)
+        result["completed_stages"] = sorted(completed_stages, key=lambda x: recovery_pipeline.STAGE_INDEX.get(x, 999))
+        update_job_item(iid, result=result)
+
+    def cancelled():
+        if cancel_check():
+            raise CancelledOperation("Recovery & Import cancelled; provider archive and completed verified work were retained")
+
+    try:
+        update_job(job_id, status="running", cancel_requested=0, started_at=job.get("started_at") or recovery_pipeline.utcnow())
+        log_event("info", "recovery_import", "job_started", f"Recovery/import job #{job_id} started", {"job_id": job_id, "source": source_path})
+
+        cancelled()
+        if "inspecting" not in completed_stages:
+            recovery_pipeline.set_stage(job_id, iid, "inspecting", "Inspecting archive", Path(source_path).name)
+            inspection = await asyncio.to_thread(archive_media.inspect_archive, source_path, force=False, cancel_check=cancel_check)
+            if not inspection.get("safe") or inspection.get("password_protected"):
+                raise RuntimeError("Archive cannot be recovered automatically because it is unsafe or password protected")
+            if inspection.get("identity_required") and not inspection.get("identity"):
+                recovery_pipeline.pause(job_id, iid, "naming", "Choose the exact TMDb identity, then Continue Job", {**result, "inspection": inspection, "completed_stages": list(completed_stages)})
+                return
+            save("inspecting", inspection={"fingerprint": inspection.get("fingerprint"), "media_count": inspection.get("media_count"), "identity": inspection.get("identity")})
+
+        cancelled()
+        row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
+        if not row:
+            raise RuntimeError("RAR source is no longer present in the DMM source tree")
+        fingerprint = str(row.get("fingerprint") or "")
+        verification = row.get("verification") if isinstance(row.get("verification"), dict) else None
+        if "provider_verification" not in completed_stages:
+            recovery_pipeline.set_stage(job_id, iid, "provider_verification", "Verifying provider archive", "Testing every video member independently")
+            def verify_progress(done, total, member, member_status):
+                pct = 5 + int((done / max(total, 1)) * 7)
+                recovery_pipeline.set_stage(job_id, iid, "provider_verification", "Provider verification", f"{Path(member).name} - {done}/{total} - {member_status}", progress=pct)
+            verification = await asyncio.to_thread(archive_media.verify_archive_media, source_path, expected_fingerprint=fingerprint, progress=verify_progress, cancel_check=cancel_check)
+            save("provider_verification", provider_verification={"verified": verification.get("verified_count"), "failed": verification.get("failed_count")})
+
+        cancelled()
+        if int((verification or {}).get("failed_count") or 0) > 0 and "direct_recovery" not in completed_stages:
+            recovery_pipeline.set_stage(job_id, iid, "direct_recovery", "Recovering exact Real-Debrid original", "Provider CRC/EIO result is untrusted")
+            def stage_progress(done, total, name, stage):
+                pct = 12 + int((done / max(total, 1)) * 11)
+                recovery_pipeline.set_stage(job_id, iid, "direct_recovery", "Direct Real-Debrid recovery", f"{Path(name).name} - {human_size(done)} / {human_size(total)}", progress=pct)
+            direct = await asyncio.to_thread(archive_media.stage_and_reverify, source_path, expected_fingerprint=fingerprint, progress=stage_progress, cancel_check=cancel_check)
+            classification = str(direct.get("classification") or "")
+            if classification not in {"provider_mount_untrusted_direct_verified", "virtual_source_read_path"} and direct.get("still_failed"):
+                raise RuntimeError("The exact direct archive still has failed members; automatic recovery stopped safely")
+            recovery_pipeline.log(job_id, "direct_recovery", f"Direct source classification: {classification}", mounted_size=direct.get("mounted_size"), direct_size=direct.get("direct_size"))
+            save("direct_recovery", direct_recovery={"classification": classification, "size_difference": direct.get("size_difference")})
+        elif "direct_recovery" not in completed_stages:
+            recovery_pipeline.log(job_id, "direct_recovery", "Provider verification passed; direct fallback not required")
+            save("direct_recovery", direct_recovery={"classification": "provider_verified"})
+
+        cancelled()
+        if "extraction" not in completed_stages:
+            recovery_pipeline.set_stage(job_id, iid, "extraction", "Extracting verified media", "Using the authoritative verified archive source")
+            refreshed = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None) or row
+            verified = [str(x.get("path") or "") for x in (((refreshed.get("verification") or {}).get("members")) or []) if x.get("status") == "verified"]
+            extracted = await asyncio.to_thread(archive_media.extract_archive, source_path, expected_fingerprint=fingerprint, selected_media=verified, cancel_check=cancel_check)
+            target = str(extracted.get("target") or "")
+            save("extraction", recovered_target=target, extraction={"recovered": extracted.get("recovered"), "videos": extracted.get("videos")})
+        else:
+            target = str(result.get("recovered_target") or "")
+        if not target:
+            raise RuntimeError("Verified extraction did not produce a recovered-media source")
+
+        cancelled()
+        recovery_pipeline.set_stage(job_id, iid, "indexing", "Indexing recovered media", target)
+        invalidate_scan_cache(); invalidate_library_cache(); _INBOX_SNAPSHOT.clear()
+        recovered_item = await asyncio.to_thread(inspect_item, target)
+        save("indexing", recovered_fingerprint=recovered_item.fingerprint, inventory=recovery_pipeline.active_video_paths(target, video_files))
+
+        cancelled()
+        recovery_pipeline.set_stage(job_id, iid, "language", "Language advisory", "Import is never blocked by audio-language metadata")
+        clear_language_block_states("Language Guard is advisory in v10.8; recovery/import may continue")
+        language = {"status": "advisory", "compliant": True, "automatic_scan": False,
+                    "summary": "Language Guard advisory-only - skipped automatic ffprobe language scan"}
+        recovery_pipeline.log(job_id, "language", language["summary"])
+        save("language", language=language)
+
+        cancelled()
+        recovery_pipeline.set_stage(job_id, iid, "tv_analysis", "Analysing recovered media", "Detecting individual, joined and combined episodes")
+        current_item = await asyncio.to_thread(inspect_item, target)
+        split_results = list(result.get("split_results") or [])
+        if current_item.media_type == "tv":
+            plan = await tv_recovery.analyse_source(target, cancel_check=cancel_check)
+            save("tv_analysis", tv_digest=plan.get("digest"))
+            safe = [x for x in plan.get("files") or [] if x.get("needs_split") and x.get("boundaries") and x.get("mode") == "chapters" and int(x.get("confidence") or 0) >= 90]
+            unsafe = [x for x in plan.get("files") or [] if x.get("needs_split") and x not in safe]
+            recovery_pipeline.set_stage(job_id, iid, "tv_splitting", "Splitting all safe combined seasons", f"{len(safe)} safe season file(s)")
+            for index, row_to_split in enumerate(safe, 1):
+                cancelled()
+                season = int(row_to_split.get("season") or 0)
+                recovery_pipeline.set_stage(job_id, iid, "tv_splitting", f"Splitting Season {season}", f"Safe season {index} of {len(safe)}", progress=63 + int(index / max(len(safe), 1) * 15))
+                split = await asyncio.to_thread(tv_recovery.split_plan, str(plan.get("digest") or ""), str(row_to_split.get("path") or ""), False, cancel_check)
+                recovery_pipeline.record_split(str(row_to_split.get("path") or ""), str(row_to_split.get("source_signature") or ""), split)
+                split_results.append(split)
+                invalidate_scan_cache(); invalidate_library_cache(); _INBOX_SNAPSHOT.clear()
+                await asyncio.to_thread(inspect_item, target)
+                recovery_pipeline.log(job_id, "tv_splitting", f"Season {season} split, ffprobe verified and reindexed", generated=len(split.get("outputs") or []))
+            save("tv_splitting", split_results=split_results)
+            if safe:
+                current_item = await asyncio.to_thread(inspect_item, target)
+            if unsafe and not bool(cfg.get("skip_unsafe")):
+                review = [{"path": x.get("path"), "season": x.get("season"), "confidence": x.get("confidence"), "mode": x.get("mode")} for x in unsafe]
+                recovery_pipeline.pause(job_id, iid, "tv_boundary", "One or more combined seasons do not have safe automatic boundaries", {**result, "tv_review": review, "split_results": split_results})
+                return
+        else:
+            save("tv_analysis", tv_digest="", split_results=[])
+            save("tv_splitting")
+
+        cancelled()
+        recovery_pipeline.set_stage(job_id, iid, "ready_to_import", "Building fresh naming and import plan", "Re-reading post-split inventory")
+        fresh_item = await asyncio.to_thread(inspect_item, target)
+        fresh_files = recovery_pipeline.active_video_paths(target, video_files)
+        if fresh_item.media_type == "tv" and bool(cfg.get("skip_unsafe")):
+            final_tv_plan = await tv_recovery.analyse_source(target, cancel_check=cancel_check)
+            unsafe_paths = {str(x.get("path") or "") for x in final_tv_plan.get("files") or [] if x.get("needs_split")}
+            fresh_files = [path for path in fresh_files if path not in unsafe_paths]
+            recovery_pipeline.log(job_id, "ready_to_import", f"Excluded {len(unsafe_paths)} unsafe combined file(s) from the import plan")
+        selected_files = fresh_files if fresh_item.media_type == "tv" else None
+
+        # Resolve the UI/API ``auto`` sentinel once the post-recovery identity and
+        # media type are authoritative.  Persist the concrete route in both the
+        # job config and item so a retry cannot fall back to the invalid literal
+        # destination ``auto`` at the final import stage.
+        requested_destination = str(cfg.get("destination_key") or "auto").strip() or "auto"
+        resolved_for_route, _identity = media_identity.apply_to_item(fresh_item)
+        resolved_media_type = str(resolved_for_route.media_type or fresh_item.media_type)
+        routed_for_import = await route_item(resolved_for_route)
+        recommended_destination = str(routed_for_import["decision"].key or "default")
+        resolved_destination = recommended_destination if requested_destination == "auto" else requested_destination
+        destination_roots = movie_roots() if resolved_media_type == "movie" else tv_roots()
+        if resolved_destination not in destination_roots:
+            raise ImportErrorSafe(f"Invalid {resolved_media_type} destination: {resolved_destination}")
+        cfg["requested_destination_key"] = requested_destination
+        cfg["destination_key"] = resolved_destination
+        cache_set(f"recovery_pipeline:job:{job_id}", cfg)
+        update_job_item(iid, destination_key=resolved_destination)
+        recovery_pipeline.log(
+            job_id, "ready_to_import",
+            f"Import route resolved: {requested_destination} -> {resolved_destination}",
+            media_type=resolved_media_type, recommended=recommended_destination,
+        )
+
+        import_plan = {
+            "source": target, "media_type": resolved_media_type, "fingerprint": fresh_item.fingerprint,
+            "files": fresh_files, "excluded_originals": True,
+            "requested_destination_key": requested_destination, "destination_key": resolved_destination,
+        }
+        save("ready_to_import", import_plan=import_plan, resolved_destination_key=resolved_destination)
+
+        cancelled()
+        recovery_pipeline.set_stage(job_id, iid, "importing", "Importing to Sonarr or Radarr", f"{len(fresh_files)} fresh media file(s) -> {resolved_destination}")
+        imported = await import_one(target, resolved_destination, selected_files=selected_files, cancel_check=cancel_check)
+        save("importing", import_result={"arr": imported.get("arr"), "arr_instance": imported.get("arr_instance"), "created": imported.get("created") or []})
+        save("imported")
+        update_job_item(iid, status="complete", stage="imported", message=f"Imported {len(imported.get('created') or [])} media file(s)", result=result)
+        update_job(job_id, status="imported", completed=1, failed=0, reviewed=0, progress=100, current_stage="imported", current_operation="Recovery & Import complete", current_detail=f"{len(imported.get('created') or [])} links created", message="Recovery & Import complete", finished_at=recovery_pipeline.utcnow(), resume_stage="")
+        recovery_pipeline.log(job_id, "imported", "Recovery & Import completed successfully", created=len(imported.get("created") or []))
+        log_event("info", "recovery_import", "job_finished", f"Recovery/import job #{job_id} completed", {"job_id": job_id, "created": len(imported.get("created") or [])})
+    except CancelledOperation as exc:
+        update_job_item(iid, status="cancelled", stage="cancelled", message=str(exc), result=result)
+        update_job(job_id, status="cancelled", current_operation="Cancelled", current_detail=str(exc), message=str(exc), finished_at=recovery_pipeline.utcnow())
+        recovery_pipeline.log(job_id, "cancelled", str(exc), level="warning")
+        log_event("info", "recovery_import", "job_cancelled", f"Recovery/import job #{job_id} cancelled", {"job_id": job_id})
+    except LanguageRejectedSafe as exc:
+        if bool(getattr(exc, "manual_review", False)):
+            recovery_pipeline.pause(job_id, iid, "language", str(exc), result)
+        else:
+            recovery_pipeline.fail(job_id, iid, "language", str(exc), result)
+            log_event("error", "recovery_import", "job_failed", f"Recovery/import job #{job_id} failed at language", {"job_id": job_id, "error": str(exc)})
+    except Exception as exc:
+        stage = str((get_job(job_id)[0] or {}).get("current_stage") or "inspecting")
+        recovery_pipeline.fail(job_id, iid, stage, str(exc), result)
+        log_event("error", "recovery_import", "job_failed", f"Recovery/import job #{job_id} failed at {stage}", {"job_id": job_id, "error": str(exc)})
+
+
+@app.post("/maintenance/archives/recover-import")
+async def archived_media_recover_import(request: Request):
+    require_admin(request)
+    form = await request.form()
+    source_path = str(form.get("source_path") or "").strip()
+    destination_key = str(form.get("destination_key") or "auto").strip()
+    if not is_within_logical(source_path, source_root()):
+        raise HTTPException(400, "Invalid archive source")
+    row = next((x for x in archive_media.scan_archives(True, 2000) if x.get("logical_path") == source_path), None)
+    if not row:
+        raise HTTPException(404, "Archive source was not found")
+    jid = create_job("recover_import", [{"source_path": source_path, "display_name": Path(source_path).name, "destination_key": destination_key}])
+    cache_set(f"recovery_pipeline:job:{jid}", {"destination_key": destination_key})
+    add_recovery_job_log(jid, "One-click Recovery & Import queued", stage="queued")
+    _launch(run_recover_import_job(jid))
+    return RedirectResponse(f"/jobs/{jid}", status_code=303)
+
+
+@app.post("/jobs/{job_id}/continue")
+async def continue_recover_import_job(request: Request, job_id: int):
+    require_admin(request)
+    job, items = get_job(job_id)
+    if not job or job.get("kind") != "recover_import" or not str(job.get("status") or "").startswith("paused_"):
+        raise HTTPException(409, "This recovery job is not paused for review")
+    if str(job.get("status") or "") == "paused_language_review" and items:
+        result = dict(items[0].get("result") or {})
+        completed = set(result.get("completed_stages") or [])
+        completed.add("language")
+        result.update(language={"status": "advisory", "compliant": True, "automatic_scan": False,
+                                "summary": "Legacy language pause cleared by v10.8"}, completed_stages=list(completed))
+        update_job_item(int(items[0]["id"]), result=result)
+        clear_language_block_states("Legacy v10.7 language pause cleared by v10.8")
+    update_job(job_id, status="queued", reviewed=0, failed=0, message="Continuing from the saved stage")
+    if items:
+        update_job_item(int(items[0]["id"]), status="queued", stage=str(job.get("resume_stage") or "queued"), message="Continuing from saved state")
+    _launch(run_recover_import_job(job_id))
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@app.post("/jobs/{job_id}/retry")
+async def retry_recover_import_job(request: Request, job_id: int):
+    require_admin(request)
+    job, items = get_job(job_id)
+    retryable = {"failed", "error", "complete_with_errors"}
+    status = str((job or {}).get("status") or "")
+    if not job or job.get("kind") != "recover_import" or status not in retryable:
+        raise HTTPException(409, "Only a failed recovery/import job can retry its saved stage")
+    resume_stage = str(job.get("resume_stage") or job.get("current_stage") or "queued")
+    update_job(
+        job_id, status="queued", failed=0, reviewed=0, cancel_requested=0,
+        message=f"Retrying saved stage: {resume_stage}", current_operation="Retry queued",
+        current_detail=f"Continuing from {resume_stage}", finished_at="", resume_stage=resume_stage,
+    )
+    if items:
+        update_job_item(int(items[0]["id"]), status="queued", stage=resume_stage, message="Retrying from saved state")
+    recovery_pipeline.log(job_id, resume_stage, f"Retry accepted from terminal status {status}; resuming at {resume_stage}")
+    _launch(run_recover_import_job(job_id))
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@app.post("/jobs/{job_id}/skip-unsafe-tv")
+async def skip_unsafe_tv_and_continue(request: Request, job_id: int):
+    require_admin(request)
+    job, items = get_job(job_id)
+    if not job or job.get("kind") != "recover_import" or job.get("status") != "paused_tv_boundary_review":
+        raise HTTPException(409, "This job is not paused for TV boundary review")
+    cfg = cache_get(f"recovery_pipeline:job:{job_id}") or {}
+    cfg["skip_unsafe"] = True
+    cache_set(f"recovery_pipeline:job:{job_id}", cfg)
+    update_job(job_id, status="queued", reviewed=0, message="Skipping unsafe combined files and continuing with safe episodes")
+    if items:
+        update_job_item(int(items[0]["id"]), status="queued", stage="tv_splitting", message="Unsafe combined files will be excluded from import")
+    _launch(run_recover_import_job(job_id))
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
 async def run_archive_inspect_job(job_id: int):
     job, items = get_job(job_id)

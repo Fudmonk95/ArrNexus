@@ -48,7 +48,7 @@ def main() -> int:
     require(logo.is_file() and logo.stat().st_size > 10_000, "v9 ArrNexus wordmark asset missing")
     require(icon.is_file() and icon.stat().st_size > 10_000, "v9 ArrNexus icon asset missing")
 
-    with tempfile.TemporaryDirectory(prefix="arrnexus-v9-validate-") as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix="arrnexus-v9-validate-") as tmp:
         os.environ["DB_PATH"] = str(Path(tmp) / "router.db")
         os.environ["DB_DIR"] = tmp
         os.environ["SESSION_SECRET"] = "validation-only-v9-session-secret"
@@ -186,3 +186,5 @@ if __name__ == "__main__":
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(int(code or 0))
+
+

@@ -29,6 +29,12 @@ from .scanner import VIDEO_EXTS, inspect_item
 from . import media_identity
 from .process_control import run_cancellable, CancelledOperation
 
+if not hasattr(os, "pread"):
+    def _portable_pread(fd: int, size: int, offset: int) -> bytes:
+        os.lseek(fd, offset, os.SEEK_SET)
+        return os.read(fd, size)
+    os.pread = _portable_pread  # type: ignore[attr-defined]
+
 ARCHIVE_EXTS = {".rar"}
 NESTED_ARCHIVE_EXTS = {".rar", ".zip", ".7z", ".tar", ".gz", ".bz2", ".xz"}
 _SCAN_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
@@ -720,7 +726,9 @@ def _reopen_stage_fd(fd: int | None, source: Path) -> int:
             os.close(fd)
         except OSError:
             pass
-    return os.open(str(source), os.O_RDONLY)
+    # Windows defaults low-level descriptors to text mode, where a binary
+    # 0x1A byte can be treated as legacy EOF. RAR staging must always be binary.
+    return os.open(str(source), os.O_RDONLY | getattr(os, "O_BINARY", 0))
 
 
 def _copy_provider_file_resilient(
@@ -898,7 +906,7 @@ def _copy_http_resumable(
             headers = {"Range": f"bytes={offset}-"} if offset else {}
             try:
                 timeout = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=30.0)
-                with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": "ArrNexus/10.6.3"}) as client:
+                with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": "ArrNexus/10.8.0"}) as client:
                     with client.stream("GET", url, headers=headers) as response:
                         if response.status_code >= 400:
                             raise RuntimeError(f"direct HTTPS staging returned HTTP {response.status_code}")

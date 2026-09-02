@@ -73,6 +73,18 @@ CREATE TABLE IF NOT EXISTS job_items (
 );
 CREATE INDEX IF NOT EXISTS idx_job_items_job ON job_items(job_id);
 
+CREATE TABLE IF NOT EXISTS recovery_job_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    level TEXT NOT NULL DEFAULT 'info',
+    stage TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL,
+    context_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_job_logs_job ON recovery_job_logs(job_id,id);
+
 CREATE TABLE IF NOT EXISTS activity (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     kind TEXT NOT NULL,
@@ -234,6 +246,52 @@ CREATE TABLE IF NOT EXISTS media_list_runs (
     FOREIGN KEY(list_id) REFERENCES media_lists(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_media_list_runs_list ON media_list_runs(list_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS media_automations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    media_type TEXT NOT NULL DEFAULT 'mixed',
+    source_type TEXT NOT NULL DEFAULT 'manual',
+    source_ref TEXT NOT NULL DEFAULT '',
+    definition_json TEXT NOT NULL DEFAULT '{}',
+    engine TEXT NOT NULL DEFAULT 'auto',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    schedule_hours INTEGER NOT NULL DEFAULT 24,
+    acquire_missing INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_media_automations_enabled ON media_automations(enabled);
+
+CREATE TABLE IF NOT EXISTS media_automation_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    automation_id INTEGER NOT NULL,
+    server_type TEXT NOT NULL,
+    library_name TEXT NOT NULL DEFAULT '',
+    collection_name TEXT NOT NULL DEFAULT '',
+    engine TEXT NOT NULL DEFAULT 'auto',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_collection_id TEXT NOT NULL DEFAULT '',
+    last_status TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    last_sync_at TEXT,
+    FOREIGN KEY(automation_id) REFERENCES media_automations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_media_automation_targets_definition ON media_automation_targets(automation_id);
+
+CREATE TABLE IF NOT EXISTS media_automation_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    automation_id INTEGER NOT NULL,
+    job_id INTEGER,
+    preview INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'queued',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT,
+    FOREIGN KEY(automation_id) REFERENCES media_automations(id) ON DELETE CASCADE,
+    FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_media_automation_runs_definition ON media_automation_runs(automation_id,id DESC);
 """
 
 
@@ -290,6 +348,17 @@ def _migrate(conn: sqlite3.Connection):
     job_cols = _columns(conn, "jobs")
     if job_cols and "cancel_requested" not in job_cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0")
+    for name, decl in {
+        "progress": "INTEGER NOT NULL DEFAULT 0",
+        "current_stage": "TEXT NOT NULL DEFAULT 'queued'",
+        "current_operation": "TEXT NOT NULL DEFAULT ''",
+        "current_detail": "TEXT NOT NULL DEFAULT ''",
+        "started_at": "TEXT",
+        "finished_at": "TEXT",
+        "resume_stage": "TEXT NOT NULL DEFAULT ''",
+    }.items():
+        if name not in _columns(conn, "jobs"):
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {decl}")
     item_cols = _columns(conn, "job_items")
     if item_cols and "result_json" not in item_cols:
         conn.execute("ALTER TABLE job_items ADD COLUMN result_json TEXT NOT NULL DEFAULT '{}'")
@@ -318,6 +387,64 @@ def db():
         conn.commit()
     finally:
         conn.close()
+
+
+def reconcile_interrupted_jobs() -> dict[str, int]:
+    """Terminalise jobs that could not have survived an ArrNexus process restart.
+
+    Background workers are intentionally in-process.  Therefore any persisted
+    queued/running/cancelling job found during the next startup has no live owner.
+    Recovery/import jobs retain their completed-stage result and become retryable
+    from the last saved stage; cancellation requests become cleanly cancelled.
+    """
+    now = _utcnow()
+    counts = {"failed": 0, "cancelled": 0}
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE status IN ('queued','running','cancelling') ORDER BY id"
+        ).fetchall()
+        for row in rows:
+            job_id = int(row["id"])
+            status = str(row["status"] or "")
+            kind = str(row["kind"] or "")
+            stage = str(row["current_stage"] or row["resume_stage"] or "queued")
+            if status == "cancelling" or int(row["cancel_requested"] or 0):
+                message = "Cancellation finalised after ArrNexus restart; completed work was retained"
+                conn.execute(
+                    """UPDATE jobs SET status='cancelled',cancel_requested=1,message=?,
+                       current_operation='Cancelled',current_detail=?,finished_at=?,updated_at=? WHERE id=?""",
+                    (message, message, now, now, job_id),
+                )
+                conn.execute(
+                    """UPDATE job_items SET status='cancelled',stage='cancelled',message=?,updated_at=?
+                       WHERE job_id=? AND status IN ('queued','running')""",
+                    (message, now, job_id),
+                )
+                counts["cancelled"] += 1
+                level = "warning"
+            else:
+                if stage in {"", "queued", "cancelled", "imported"} or stage.startswith("paused_"):
+                    stage = str(row["resume_stage"] or "inspecting" if kind == "recover_import" else row["current_stage"] or "queued")
+                message = "ArrNexus restarted before this job reached a terminal state"
+                detail = message + (f"; retry from {stage}" if kind == "recover_import" else "")
+                conn.execute(
+                    """UPDATE jobs SET status='failed',failed=CASE WHEN failed<1 THEN 1 ELSE failed END,
+                       cancel_requested=0,message=?,current_operation='Interrupted by restart',current_detail=?,
+                       resume_stage=?,finished_at=?,updated_at=? WHERE id=?""",
+                    (message, detail, stage if kind == "recover_import" else str(row["resume_stage"] or ""), now, now, job_id),
+                )
+                conn.execute(
+                    """UPDATE job_items SET status='error',message=?,updated_at=?
+                       WHERE job_id=? AND status IN ('queued','running')""",
+                    (detail, now, job_id),
+                )
+                counts["failed"] += 1
+                level = "error"
+            conn.execute(
+                "INSERT INTO recovery_job_logs(job_id,level,stage,message,context_json) VALUES(?,?,?,?,?)",
+                (job_id, level, stage, message, '{"reconciled_on_startup":true}'),
+            )
+    return counts
 
 
 def rowdict(row):
@@ -488,14 +615,50 @@ def recent_jobs(limit: int = 20):
 
 
 def update_job(job_id: int, **fields):
-    allowed = {"status", "total", "completed", "failed", "rejected", "reviewed", "cancel_requested", "message"}
+    allowed = {"status", "total", "completed", "failed", "rejected", "reviewed", "cancel_requested", "message", "progress", "current_stage", "current_operation", "current_detail", "started_at", "finished_at", "resume_stage"}
     pairs = [(k, v) for k, v in fields.items() if k in allowed]
     if not pairs:
         return
     sql = ",".join(f"{k}=?" for k, _ in pairs) + ",updated_at=?"
     vals = [v for _, v in pairs] + [_utcnow(), job_id]
     with db() as conn:
+        previous = conn.execute("SELECT kind,current_stage,current_operation,current_detail,message FROM jobs WHERE id=?", (int(job_id),)).fetchone()
         conn.execute(f"UPDATE jobs SET {sql} WHERE id=?", vals)
+        stage = str(fields.get("current_stage") or (previous["current_stage"] if previous else "") or "")
+        message = str(fields.get("current_detail") or fields.get("current_operation") or fields.get("message") or "").strip()
+        old_message = str((previous["current_detail"] or previous["current_operation"] or previous["message"] or "") if previous else "").strip()
+        if message and message != old_message and str(previous["kind"] if previous else "") not in {"recover_import", "media_automation"}:
+            conn.execute(
+                "INSERT INTO recovery_job_logs(job_id,level,stage,message,context_json) VALUES(?,?,?,?,?)",
+                (int(job_id), "info", stage, message, "{}"),
+            )
+
+
+def add_recovery_job_log(job_id: int, message: str, *, stage: str = "", level: str = "info", context: dict | None = None) -> int:
+    """Persist verbose recovery/import output outside Unified Logs."""
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO recovery_job_logs(job_id,level,stage,message,context_json) VALUES(?,?,?,?,?)",
+            (int(job_id), str(level or "info"), str(stage or ""), str(message or ""), json.dumps(context or {}, sort_keys=True)),
+        )
+        return int(cur.lastrowid)
+
+
+def recovery_job_logs(job_id: int, *, after_id: int = 0, limit: int = 2000) -> list[dict]:
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM recovery_job_logs WHERE job_id=? AND id>? ORDER BY id LIMIT ?",
+            (int(job_id), max(0, int(after_id)), max(1, min(10000, int(limit)))),
+        ).fetchall()
+    out = []
+    for row in rows:
+        value = dict(row)
+        try:
+            value["context"] = json.loads(value.pop("context_json") or "{}")
+        except Exception:
+            value["context"] = {}
+        out.append(value)
+    return out
 
 
 def update_job_item(item_id: int, **fields):
@@ -508,7 +671,15 @@ def update_job_item(item_id: int, **fields):
     sql = ",".join(f"{k}=?" for k, _ in pairs) + ",updated_at=?"
     vals = [v for _, v in pairs] + [_utcnow(), item_id]
     with db() as conn:
+        previous = conn.execute("SELECT i.job_id,i.stage,i.message,j.kind FROM job_items i JOIN jobs j ON j.id=i.job_id WHERE i.id=?", (int(item_id),)).fetchone()
         conn.execute(f"UPDATE job_items SET {sql} WHERE id=?", vals)
+        message = str(fields.get("message") or "").strip()
+        old_message = str(previous["message"] or "").strip() if previous else ""
+        if previous and message and message != old_message and str(previous["kind"] or "") not in {"recover_import", "media_automation"}:
+            conn.execute(
+                "INSERT INTO recovery_job_logs(job_id,level,stage,message,context_json) VALUES(?,?,?,?,?)",
+                (int(previous["job_id"]), "info", str(fields.get("stage") or previous["stage"] or ""), message, "{}"),
+            )
 
 
 

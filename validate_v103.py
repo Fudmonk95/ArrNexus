@@ -11,6 +11,17 @@ import subprocess
 import sys
 import tempfile
 
+def _stop_process(proc, force=False):
+    try:
+        if hasattr(os, "killpg"):
+            os.killpg(proc.pid, signal.SIGKILL if force else signal.SIGTERM)
+        elif force:
+            proc.kill()
+        else:
+            proc.terminate()
+    except (ProcessLookupError, OSError):
+        pass
+
 
 def require(ok: bool, message: str) -> None:
     if not ok:
@@ -43,7 +54,7 @@ def run_retained(root: Path) -> None:
         print(f"[retained] starting {label}", flush=True)
         env = os.environ.copy()
         env.update(extra)
-        with tempfile.TemporaryDirectory(prefix=f"arrnexus-retained-{label.replace('.', '')}-") as td:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix=f"arrnexus-retained-{label.replace('.', '')}-") as td:
             out_path = Path(td) / "stdout.log"
             err_path = Path(td) / "stderr.log"
             with out_path.open("wb") as out, err_path.open("wb") as err:
@@ -55,7 +66,7 @@ def run_retained(root: Path) -> None:
                     rc = proc.wait(timeout=60)
                 except subprocess.TimeoutExpired:
                     try:
-                        os.killpg(proc.pid, signal.SIGKILL)
+                        _stop_process(proc, True)
                     except ProcessLookupError:
                         pass
                     proc.wait(timeout=10)
@@ -70,7 +81,7 @@ def run_retained(root: Path) -> None:
                     # Kill only leftover descendants in the validator's private
                     # process group. The direct validator has already exited.
                     try:
-                        os.killpg(proc.pid, signal.SIGTERM)
+                        _stop_process(proc)
                     except ProcessLookupError:
                         pass
             stdout = out_path.read_text(encoding="utf-8", errors="replace")
@@ -98,7 +109,7 @@ def main() -> int:
         require(proc.returncode == 0, f"JavaScript syntax failed: {proc.stderr}")
 
     # Import the application only after binding it to an isolated fresh DB.
-    with tempfile.TemporaryDirectory(prefix="arrnexus-v103-validate-") as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix="arrnexus-v103-validate-") as tmp:
         os.environ["DB_PATH"] = str(Path(tmp) / "router.db")
         os.environ["DB_DIR"] = tmp
         os.environ["SESSION_SECRET"] = "validation-only-v103-session-secret"
@@ -241,3 +252,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

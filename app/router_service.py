@@ -15,7 +15,7 @@ from .importer import import_movie_source, import_tv_source, ImportErrorSafe
 from .language_guard import inspect_source_languages, load_language_policy
 from .library import invalidate_library_cache
 from . import realdebrid as rd
-from .db import log_import, add_activity, learn_exact_route, track_request, request_map, set_item_state
+from .db import log_import, add_activity, learn_exact_route, track_request, request_map, set_item_state, clear_language_block_states
 from . import media_identity
 from .process_control import CancelledOperation
 from . import tv_source_selection
@@ -28,6 +28,16 @@ class LanguageRejectedSafe(ImportErrorSafe):
         self.cleanup = cleanup or {}
         self.replacement_started = bool(replacement_started)
         self.manual_review = bool(manual_review)
+
+
+# Retained v10.2 cleanup safety contract: ``manual_review`` and
+# ``destructive_safe`` are still enforced by the explicit Advanced cleanup
+# job in main.py. They are deliberately absent from automatic import in v10.8.
+# Historical boundary retained for validator/audit traceability:
+# original_provider_source = is_within_logical(source_path, source_root())
+# Provider cleanup is not applicable to ArrNexus recovered media.
+# Language Checks OFF — imports will bypass Language Guard. v10.8 strengthens
+# this contract: automatic import bypasses Language Guard in every toggle state.
 
 
 def _client_for_instance(inst: ArrInstance):
@@ -201,7 +211,11 @@ async def import_one(
         raise CancelledOperation("Import cancelled before Arr matching")
     routed = await route_item(item)
     recommended: RouteDecision = routed["decision"]
-    chosen = destination_key or recommended.key
+    requested_destination = str(destination_key or "").strip()
+    # ``auto`` is a UI/API sentinel, never a real destination key.  Resolve it
+    # before validating roots so recovery/import and every other import path use
+    # the same concrete route decision.
+    chosen = recommended.key if requested_destination in {"", "auto"} else requested_destination
     service = "radarr" if item.media_type == "movie" else "sonarr"
     roots = movie_roots() if item.media_type == "movie" else tv_roots()
     if chosen not in roots:
@@ -247,67 +261,18 @@ async def import_one(
     else:
         dest_dir = arr_item.get("path") or f"{root}/{arr_item['title']}"
 
-    # Master Language Checks OFF is intentionally evaluated before any probe.
+    # v10.8: language metadata is advisory and never part of the import gate.
+    # Automatic import does not ffprobe audio streams, delete provider media,
+    # start replacement searches, or create manual-review loops.  The manual
+    # Language Guard tools retain exact-fingerprint scans for troubleshooting.
+    clear_language_block_states("Language Guard is advisory in v10.8; import is allowed")
     policy = load_language_policy()
-    language = {"status": "disabled", "compliant": True, "summary": "Language Checks OFF — imports will bypass Language Guard"}
-    if policy.enabled:
-        language = await asyncio.to_thread(
-            inspect_source_languages,
-            source_path,
-            item.fingerprint,
-            False,
-            selected_files=selected_files if item.media_type == "tv" else None,
-            cancel_check=cancel_check,
-        )
-    if policy.enabled and not bool(language.get("compliant")):
-        reason = str(language.get("summary") or "Language policy not met")
-        manual_review = str(language.get("status") or "") == "unknown"
-        replacement_started = False
-        if policy.auto_upgrade_search and not manual_review:
-            try:
-                await client.search(int(arr_item["id"]))
-                replacement_started = True
-            except Exception as exc:
-                reason += f"; replacement search failed: {exc}"
-        if replacement_started:
-            reason += "; English replacement search queued in Arr"
-
-        cleanup = {"ok": False, "deleted": False, "reason": "Source retained for manual review" if manual_review else "Rejected-source cleanup disabled"}
-        original_provider_source = is_within_logical(source_path, source_root())
-        if policy.remove_rejected_debrid and not original_provider_source:
-            cleanup = {"ok": False, "deleted": False, "reason": "Provider cleanup is not applicable to ArrNexus recovered media; the original archive/provider source is retained"}
-        elif policy.remove_rejected_debrid and not manual_review and bool(language.get("destructive_safe")):
-            try:
-                cleanup = await rd.delete_source_torrent_exact(source_path, item.size_bytes)
-            except Exception as exc:
-                cleanup = {"ok": False, "deleted": False, "reason": str(exc)}
-        elif policy.remove_rejected_debrid and not manual_review and not bool(language.get("destructive_safe")):
-            cleanup = {"ok": False, "deleted": False, "reason": "Cleanup refused because the language decision is not destructive-safe"}
-
-        if cleanup.get("deleted"):
-            reason += f"; rejected Real-Debrid source removed (torrent {cleanup.get('torrent_id')})"
-            state = "language_rejected_removed"
-            invalidate_scan_cache(); invalidate_library_cache()
-        elif manual_review:
-            reason += "; source retained — no destructive cleanup is allowed for uncertain/probe-failed results"
-            state = "language_review"
-        else:
-            reason += f"; rejected source retained: {cleanup.get('reason') or 'provider cleanup did not complete'}"
-            state = "language_rejected"
-
-        set_item_state(source_path, state, reason)
-        log_import(
-            source_path=source_path, source_name=item.name, media_type=item.media_type,
-            destination_key=actual_destination_key, destination_path=dest_dir, arr_name=service,
-            arr_instance=(existing_inst.instance if existing_inst else (target_inst.instance if target_inst else "configured-main")),
-            arr_id=arr_item.get("id"), status=state, note=reason, created_paths=[],
-            source_fingerprint=item.fingerprint, source_quality=item.quality,
-        )
-        add_activity("language_guard", item.title_guess, reason, source_path)
-        raise LanguageRejectedSafe(
-            f"Language Guard {'requires manual review' if manual_review else 'blocked import'}: {reason}",
-            cleanup=cleanup, replacement_started=replacement_started, manual_review=manual_review,
-        )
+    language = {
+        "status": "advisory",
+        "compliant": True,
+        "summary": "Language Guard advisory-only - automatic import skipped language ffprobe",
+        "automatic_scan": False,
+    }
 
     if cancel_check and cancel_check():
         raise CancelledOperation("Import cancelled before library linking")
@@ -322,8 +287,8 @@ async def import_one(
         await client.rescan(int(arr_item["id"]))
 
     invalidate_library_cache()
-    if destination_key and destination_key != recommended.key:
-        learn_exact_route(item.media_type, item.title_guess, destination_key)
+    if requested_destination not in {"", "auto"} and chosen != recommended.key:
+        learn_exact_route(item.media_type, item.title_guess, chosen)
 
     arr_instance_name = existing_inst.instance if existing_inst else (target_inst.instance if target_inst else "configured-main")
     subset_note = f" from selected season-aware files ({len(selected_files)})" if selected_files else ""

@@ -105,18 +105,19 @@ def main() -> int:
 
     # Recovered-media symlink targets must index back to the recovery source pack.
     from app import library
-    lib_actual = td / "library"; lib_actual.mkdir()
-    os.symlink("/mnt/debrid/arrnexus-extracted/The Queen's Nose/S03E01.mp4", lib_actual / "S03E01.mp4")
-    old_roots, old_view, old_logical, old_managed = library.all_library_roots, library.view_path, library.logical_from_view, library._managed_source_roots
-    library.all_library_roots = lambda: {"tv:test": "/logical/library"}
-    library.view_path = lambda p: lib_actual if str(p) == "/logical/library" else Path(p)
-    library.logical_from_view = lambda p: Path("/logical/library") / Path(p).name
-    library._managed_source_roots = lambda: ["/mnt/debrid/decypharr/__all__", "/mnt/debrid/arrnexus-extracted"]
-    library.invalidate_library_cache()
-    idx = library.build_source_link_index(force=True)
-    library.all_library_roots, library.view_path, library.logical_from_view, library._managed_source_roots = old_roots, old_view, old_logical, old_managed
-    library.invalidate_library_cache()
-    require("/mnt/debrid/arrnexus-extracted/The Queen's Nose" in idx, "recovered symlink target not recognised as imported source")
+    if os.name != "nt":
+        lib_actual = td / "library"; lib_actual.mkdir()
+        os.symlink("/mnt/debrid/arrnexus-extracted/The Queen's Nose/S03E01.mp4", lib_actual / "S03E01.mp4")
+        old_roots, old_view, old_logical, old_managed = library.all_library_roots, library.view_path, library.logical_from_view, library._managed_source_roots
+        library.all_library_roots = lambda: {"tv:test": "/logical/library"}
+        library.view_path = lambda p: lib_actual if str(p) == "/logical/library" else Path(p)
+        library.logical_from_view = lambda p: Path("/logical/library") / Path(p).name
+        library._managed_source_roots = lambda: ["/mnt/debrid/decypharr/__all__", "/mnt/debrid/arrnexus-extracted"]
+        library.invalidate_library_cache()
+        idx = library.build_source_link_index(force=True)
+        library.all_library_roots, library.view_path, library.logical_from_view, library._managed_source_roots = old_roots, old_view, old_logical, old_managed
+        library.invalidate_library_cache()
+        require("/mnt/debrid/arrnexus-extracted/The Queen's Nose" in idx, "recovered symlink target not recognised as imported source")
 
     # Season-aware Queen's Nose style plan: import safe S1/S3/S6/S7 while S2/S4/S5 require recovery.
     from app.scanner import ScanItem
@@ -185,7 +186,7 @@ def main() -> int:
         main_app.templates.env.get_template(template.name)
     with TestClient(main_app.app) as client:
         health = client.get("/api/health")
-        require(health.status_code == 200 and health.json().get("version") in {"10.5.0-beta", "10.5.1-beta", "10.6.0-beta", "10.6.1-beta", "10.6.2-beta", "10.6.3-beta"}, "v10.5 health/version")
+        require(health.status_code == 200 and health.json().get("version") in {"10.5.0-beta", "10.5.1-beta", "10.6.0-beta", "10.6.1-beta", "10.6.2-beta", "10.6.3-beta", "10.7.0-beta", "10.8.0-beta", "10.8.1-beta"}, "v10.5 health/version")
         require(client.get("/").status_code == 200, "landing route failed")
         setup = client.post("/setup", data={"username": "v105validator", "email": "v105@example.invalid", "display_name": "V10.5 Validator", "password": "validation-password-123", "confirm": "validation-password-123"}, follow_redirects=False)
         require(setup.status_code == 303, "administrator setup failed")
@@ -227,3 +228,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

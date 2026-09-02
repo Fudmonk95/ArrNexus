@@ -12,7 +12,7 @@ episodes.
 import asyncio
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
@@ -33,14 +33,15 @@ def staging_root() -> Path:
     raw = (setting_get("tv_recovery.staging_root", "") or "").strip()
     if not raw or raw == "/data/split-cache":
         raw = archive_media.extraction_root()
-    path = Path(raw)
+    path = PurePosixPath(raw) if raw.startswith("/") else Path(raw)
     if not path.is_absolute() or not is_within_logical(path, dumb_root()):
         raise RuntimeError("TV Recovery output root must be an absolute DUMB-visible path")
     return path
 
 
 def save_staging_root(value: str) -> None:
-    path = Path(str(value or "").strip())
+    raw = str(value or "").strip()
+    path = PurePosixPath(raw) if raw.startswith("/") else Path(raw)
     if not path.is_absolute() or not is_within_logical(path, dumb_root()):
         raise ValueError(f"TV Recovery output root must live under {dumb_root()}")
     setting_set("tv_recovery.staging_root", str(path))

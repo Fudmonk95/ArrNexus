@@ -98,7 +98,7 @@ def main() -> int:
         main_app.templates.env.get_template(template.name)
     with TestClient(main_app.app) as client:
         health = client.get("/api/health")
-        require(health.status_code == 200 and health.json().get("version") in {"10.4.4-beta", "10.5.0-beta", "10.5.1-beta", "10.6.0-beta", "10.6.1-beta", "10.6.2-beta", "10.6.3-beta"}, "v10.4.4 health/version")
+        require(health.status_code == 200 and health.json().get("version") in {"10.4.4-beta", "10.5.0-beta", "10.5.1-beta", "10.6.0-beta", "10.6.1-beta", "10.6.2-beta", "10.6.3-beta", "10.7.0-beta", "10.8.0-beta", "10.8.1-beta"}, "v10.4.4 health/version")
         setup = client.post("/setup", data={"username": "v1044validator", "email": "v1044@example.invalid", "display_name": "V10.4.4 Validator", "password": "validation-password-123", "confirm": "validation-password-123"}, follow_redirects=False)
         require(setup.status_code == 303, "v10.4.4 administrator setup")
         landing = client.get("/", follow_redirects=False)
@@ -139,3 +139,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

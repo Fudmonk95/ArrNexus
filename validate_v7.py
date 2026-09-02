@@ -26,7 +26,7 @@ def main() -> int:
     root = Path(__file__).resolve().parent
     require(compileall.compile_dir(root / "app", quiet=1), "Python compilation failed")
 
-    with tempfile.TemporaryDirectory(prefix="arrnexus-v7-validate-") as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix="arrnexus-v7-validate-") as tmp:
         os.environ["DB_PATH"] = str(Path(tmp) / "router.db")
         os.environ["DB_DIR"] = tmp
         os.environ["SESSION_SECRET"] = "validation-only-session-secret"
@@ -470,3 +470,5 @@ if __name__ == "__main__":
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(int(code or 0))
+
+
