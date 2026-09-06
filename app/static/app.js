@@ -1,149 +1,20 @@
 (function(){
-  window.toggleAll=function(master,name){document.querySelectorAll('input[name="'+name+'"]').forEach(cb=>cb.checked=master.checked);updateSelected();};
-  window.updateSelected=function(){const n=document.querySelectorAll('input[name="source_path"]:checked').length;document.querySelectorAll('[data-selected-count]').forEach(el=>el.textContent=n);};
-  const JOB_TOAST_DISMISS_KEY='arrnexus:dismissed-job-toasts';
-  function dismissedJobs(){try{return new Set(JSON.parse(sessionStorage.getItem(JOB_TOAST_DISMISS_KEY)||'[]').map(String));}catch(_e){return new Set();}}
-  function rememberDismissedJob(id){if(id===undefined||id===null||id==='')return;const values=dismissedJobs();values.add(String(id));sessionStorage.setItem(JOB_TOAST_DISMISS_KEY,JSON.stringify(Array.from(values).slice(-100)));}
-  function forgetDismissedJob(id){const values=dismissedJobs();if(values.delete(String(id)))sessionStorage.setItem(JOB_TOAST_DISMISS_KEY,JSON.stringify(Array.from(values)));}
-  function toast(html,href,jobId){
-    const stack=document.getElementById('jobToastStack');if(!stack)return;
-    const card=document.createElement('div');card.className='job-toast';
-    if(jobId!==undefined&&jobId!==null)card.dataset.toastJob=String(jobId);
-    const body=document.createElement(href?'a':'div');body.className='job-toast-body';if(href)body.href=href;body.innerHTML=html;
-    const close=document.createElement('button');close.type='button';close.className='job-toast-dismiss';close.setAttribute('data-toast-dismiss','1');close.setAttribute('aria-label','Dismiss job notification');close.title='Dismiss notification - the job keeps running';close.textContent='×';
-    card.append(body,close);stack.prepend(card);return card;
+  const esc=(v)=>String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  async function pollPipeline(){
+    if(!window.ArrNexusPipeline)return;
+    try{
+      const r=await fetch('/api/pipeline/live',{headers:{'Accept':'application/json'},cache:'no-store'});
+      const data=await r.json();
+      if(!data.ok)throw new Error(data.error||'Pipeline unavailable');
+      for(const [k,v] of Object.entries(data.summary||{})){
+        const el=document.querySelector(`[data-stat="${k}"]`);if(el)el.textContent=v;
+      }
+      const body=document.querySelector('#pipeline-table tbody');
+      if(body){
+        body.innerHTML=(data.rows||[]).map(x=>`<tr><td><strong>${esc(x.title)}</strong>${x.year?`<div class="muted">${esc(x.year)}</div>`:''}</td><td>${esc(x.requested_by||'—')}</td><td>${esc(x.service||'—')}</td><td><span class="stage stage-${esc(x.stage)}">${esc(x.stage_label)}</span></td><td>${esc(x.detail)}</td><td class="mono small">${esc(x.zurg_path||'—')}</td></tr>`).join('')||'<tr><td colspan="6" class="empty">No recent Seerr requests.</td></tr>';
+      }
+    }catch(e){console.debug('pipeline poll:',e.message)}
+    setTimeout(pollPipeline,2000);
   }
-  function updateToastBody(node,html){const body=node?.querySelector('.job-toast-body');if(body)body.innerHTML=html;}
-  async function pollJob(id,node){try{if(!node?.isConnected)return;const r=await fetch('/api/jobs/'+id,{headers:{Accept:'application/json'}});if(!r.ok)return;const d=await r.json();const j=d.job||{};const done=(j.completed||0)+(j.reviewed||0)+(j.rejected||0)+(j.failed||0),total=j.total||1,p=Math.round(done/total*100);updateToastBody(node,'<strong>Import job #'+id+' · '+(j.status||'running').replaceAll('_',' ')+'</strong><small>'+(j.completed||0)+' complete · '+(j.reviewed||0)+' manual review · '+(j.rejected||0)+' rejected · '+(j.failed||0)+' failed · '+(j.message||'')+'</small><div class="job-progress"><i style="width:'+p+'%"></i></div>');if(['queued','running','cancelling'].includes(j.status)&&node.isConnected)setTimeout(()=>pollJob(id,node),1500);}catch(_e){}}
-  async function pollActive(){try{const r=await fetch('/api/jobs-active');if(!r.ok)return;const d=await r.json(),dismissed=dismissedJobs();(d.jobs||[]).forEach(j=>{if(dismissed.has(String(j.id))||document.querySelector('[data-toast-job="'+j.id+'"]'))return;const n=toast('<strong>Import job #'+j.id+'</strong><small>'+j.message+'</small><div class="job-progress"><i></i></div>','/jobs/'+j.id,j.id);pollJob(j.id,n);});}catch(_e){}}
-  let recoveryPollToken=0;
-  function renderRecoveryJob(d){const j=d.job||{},root=document.querySelector('.job-live[data-job-id="'+j.id+'"]');if(!root)return;const calculated=Math.round((((j.completed||0)+(j.failed||0)+(j.reviewed||0)+(j.rejected||0))/Math.max(1,j.total||1))*100),progress=Number(j.progress||calculated||0);const bar=root.querySelector('#jobBar');if(bar)bar.style.width=progress+'%';const pct=root.querySelector('#recoveryPercent');if(pct)pct.textContent=progress+'%';const op=root.querySelector('#recoveryOperation');if(op)op.textContent=j.current_operation||j.message||'';const detail=root.querySelector('#recoveryDetail');if(detail)detail.textContent=j.current_detail||j.message||'';const title=root.querySelector('#jobTitle');if(title)title.textContent=j.message||'';const summary=root.querySelector('#jobSummary');if(summary)summary.textContent=(j.completed||0)+' completed · '+(j.reviewed||0)+' manual review · '+(j.rejected||0)+' rejected · '+(j.failed||0)+' failed · '+(j.total||0)+' total';const state=root.querySelector('#jobState');if(state){state.textContent=String(j.status||'').replaceAll('_',' ');state.className='tag state-'+String(j.status||'');}const spinner=root.querySelector('.activity-spinner');if(spinner)spinner.classList.toggle('stopped',!['queued','running','cancelling'].includes(j.status));const stageRoot=root.querySelector('#recoveryStages');if(stageRoot)stageRoot.innerHTML=(d.stages||[]).map(s=>'<div class="recovery-stage '+esc(s.state)+'"><span>'+(s.state==='complete'?'✓':s.state==='active'?'●':s.state==='paused'?'Ⅱ':s.state==='failed'?'!':'○')+'</span><div><strong>'+esc(s.label)+'</strong><small>'+esc(s.state)+'</small></div></div>').join('');const logRoot=root.querySelector('#recoveryLog');if(logRoot){const follow=logRoot.scrollHeight-logRoot.scrollTop-logRoot.clientHeight<70;logRoot.innerHTML=(d.recovery_logs||[]).map(x=>'<div data-log-id="'+Number(x.id||0)+'" class="log-'+esc(x.level)+'"><time>'+esc(x.created_at)+'</time><span>'+esc(String(x.stage||'').replaceAll('_',' '))+'</span><p>'+esc(x.message)+'</p></div>').join('')||'<div class="empty">Waiting for job output…</div>';if(follow)logRoot.scrollTop=logRoot.scrollHeight;}const itemRoot=root.querySelector('#jobItems');if(itemRoot)itemRoot.innerHTML=(d.items||[]).map(x=>'<div class="job-item '+esc(x.status)+'" id="job-item-'+Number(x.id||0)+'"><div><strong>'+esc(x.display_name)+'</strong><small>'+esc(String(x.stage||'').replaceAll('_',' '))+' · route '+esc(x.destination_key||'auto')+'</small></div><div><span class="tag state-'+esc(x.status)+'">'+esc(String(x.status||'').replaceAll('_',' '))+'</span><small class="job-message">'+esc(x.message||'')+'</small></div></div>').join('');}
-  async function pollRecoveryPage(token){const root=document.querySelector('.job-live[data-job-id]');if(!root||token!==recoveryPollToken)return;try{const r=await fetch('/api/jobs/'+root.dataset.jobId,{headers:{Accept:'application/json'}});if(!r.ok)return;const d=await r.json();renderRecoveryJob(d);if(['queued','running','cancelling'].includes(d.job?.status)&&token===recoveryPollToken)setTimeout(()=>pollRecoveryPage(token),1200);}catch(_e){if(token===recoveryPollToken)setTimeout(()=>pollRecoveryPage(token),2500);}}
-  function startRecoveryPagePoll(){recoveryPollToken++;const token=recoveryPollToken;if(document.querySelector('.job-live[data-job-id]'))pollRecoveryPage(token);}
-  document.addEventListener('change',e=>{if(e.target?.name==='source_path')updateSelected();});
-  document.addEventListener('click',e=>{
-    const dismiss=e.target.closest('[data-toast-dismiss]');if(dismiss){e.preventDefault();e.stopPropagation();const card=dismiss.closest('.job-toast');if(card?.dataset.toastJob)rememberDismissedJob(card.dataset.toastJob);card?.remove();return;}
-    const menu=e.target.closest('[data-mobile-menu]');if(menu){document.getElementById('appSidebar')?.classList.toggle('open');return;}
-    const update=e.target.closest('[data-check-update]');if(update){update.disabled=true;update.textContent='Checking…';fetch('/api/update-check',{headers:{Accept:'application/json'}}).then(r=>r.json()).then(d=>{const el=document.getElementById('updateResult');if(el)el.textContent=d.error?'Update check failed: '+d.error:(!d.configured?'Set a GitHub repository first':(d.update_available?'Update available: '+d.latest:'Up to date · '+(d.latest||d.current)));}).catch(err=>{const el=document.getElementById('updateResult');if(el)el.textContent='Update check failed: '+err.message;}).finally(()=>{update.disabled=false;update.textContent='Check now';});return;}
-    const b=e.target.closest('[data-reveal]');if(b){const input=b.parentElement.querySelector('input');if(input){input.type=input.type==='password'?'text':'password';b.textContent=input.type==='password'?'Show':'Hide';}return;}
-    const arrow=e.target.closest('[data-scroll-shelf]');if(arrow){const shelf=document.getElementById('shelf-'+arrow.dataset.scrollShelf);if(shelf)shelf.scrollBy({left:(Number(arrow.dataset.dir)||1)*Math.max(500,shelf.clientWidth*.8),behavior:'smooth'});return;}
-    const logLine=e.target.closest('[data-log-line]');if(logLine){logLine.classList.toggle('open');return;}
-    const liveBtn=e.target.closest('[data-live-logs]');if(liveBtn){liveBtn.dataset.paused=liveBtn.dataset.paused==='1'?'0':'1';liveBtn.textContent=liveBtn.dataset.paused==='1'?'Live: off':'Live: on';return;}
-  });
-  document.addEventListener('submit',async e=>{
-    const form=e.target;if(form.id!=='bulkForm'&&form.action&&!form.action.endsWith('/import'))return;if(form.id!=='bulkForm'&&!form.matches('[data-ajax-import]'))return;
-    e.preventDefault();if(form.id==='bulkForm'&&!form.querySelector('input[name="source_path"]:checked')){toast('<strong>Nothing selected</strong><small>Select at least one DMM item first.</small>');return;}
-    try{const r=await fetch(form.action,{method:'POST',body:new FormData(form),headers:{'X-Requested-With':'ArrNexus',Accept:'application/json'}});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.detail||'Import could not start');forgetDismissedJob(d.job_id);const n=toast('<strong>Import job #'+d.job_id+' started</strong><small>'+d.total+' item(s) queued. Click for details.</small><div class="job-progress"><i style="width:3%"></i></div>',d.url,d.job_id);pollJob(d.job_id,n);}catch(err){toast('<strong>Import failed to start</strong><small>'+err.message+'</small>');}
-  });
-  function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));}
-  async function refreshExternalLogs(){const stream=document.getElementById('unifiedLogStream');if(!stream)return;const origin=stream.dataset.logOrigin;if(!['dumb','infinidysk'].includes(origin))return;const btn=document.querySelector('[data-live-logs]');if(btn?.dataset.paused==='1'||document.hidden)return;try{const u=new URL('/api/logs/external',location.origin);u.searchParams.set('origin',origin);u.searchParams.set('process',stream.dataset.logProcess||'DUMB');u.searchParams.set('level',stream.dataset.logLevel||'all');u.searchParams.set('q',stream.dataset.logQuery||'');const r=await fetch(u,{headers:{Accept:'application/json'}});if(!r.ok)return;const d=await r.json();if(d.error)return;stream.innerHTML=(d.rows||[]).map(x=>{const diag=x.diagnostic?'<div class="log-diagnostic"><strong>'+esc(x.diagnostic.title)+'</strong><div>'+esc(x.diagnostic.explanation)+'</div><ul>'+((x.diagnostic.actions||[]).map(a=>'<li>'+esc(a)+'</li>').join(''))+'</ul></div>':'';return '<div class="log-line" data-level="'+esc(x.level)+'" data-log-line><span class="log-time">'+esc(x.created_at)+'</span><span class="log-level">'+esc(x.level)+'</span><span class="log-source">'+esc(x.source)+'</span><span class="log-message">'+esc(x.message)+'</span>'+diag+'</div>';}).join('')||'<div class="log-empty">No matching logs.</div>';}catch(_e){}}
-  document.addEventListener('DOMContentLoaded',()=>{updateSelected();pollActive();startRecoveryPagePoll();setInterval(pollActive,7000);setInterval(refreshExternalLogs,4500);if('serviceWorker' in navigator)navigator.serviceWorker.register('/static/sw.js').catch(()=>{});});
-  document.addEventListener('arrnexus:navigated',startRecoveryPagePoll);
-})();
-
-/* ArrNexus v9.4: persistent shell, intent prefetch, route timing and stale-while-revalidate page cache. */
-(function(){
-  const pageCache=new Map(),inflight=new Map();
-  const FRESH_MS=45000,STALE_MS=180000,MAX_PAGES=36;
-  const progress=()=>document.getElementById('nxProgress');
-  function startProgress(){const p=progress();if(!p)return;p.classList.remove('done');void p.offsetWidth;p.classList.add('loading');}
-  function finishProgress(){const p=progress();if(!p)return;p.classList.remove('loading');p.classList.add('done');setTimeout(()=>p.classList.remove('done'),320);}
-  function canSoftNavigate(a){if(!a||a.target==='_blank'||a.hasAttribute('download')||a.dataset.noSoftNav!==undefined)return false;const href=a.getAttribute('href')||'';if(!href||href.startsWith('#')||href.startsWith('mailto:')||href.startsWith('javascript:'))return false;let u;try{u=new URL(href,location.href);}catch(_){return false;}if(u.origin!==location.origin)return false;if(['/logout','/settings/export-config','/diagnostics/download','/download/'].some(x=>u.pathname.startsWith(x)))return false;if(u.pathname.startsWith('/browser/file')||u.pathname.startsWith('/settings/backup/'))return false;return true;}
-  function trimCache(){while(pageCache.size>MAX_PAGES){const first=pageCache.keys().next().value;pageCache.delete(first);}}
-  async function fetchPage(key){if(inflight.has(key))return inflight.get(key);const job=fetch(key,{headers:{'X-ArrNexus-Navigation':'1','Accept':'text/html'},credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error('HTTP '+r.status);const html=await r.text();pageCache.set(key,{html,at:Date.now()});trimCache();return html;}).finally(()=>inflight.delete(key));inflight.set(key,job);return job;}
-  async function getPage(url,{prefetch=false,force=false}={}){const key=new URL(url,location.href).href,cached=pageCache.get(key),age=cached?Date.now()-cached.at:Infinity;if(cached&&!force&&age<FRESH_MS)return cached.html;if(cached&&!force&&!prefetch&&age<STALE_MS){fetchPage(key).catch(()=>{});return cached.html;}return fetchPage(key);}
-  function applyPage(html,url,push=true){const parser=new DOMParser(),doc=parser.parseFromString(html,'text/html'),incoming=doc.getElementById('pageContent'),current=document.getElementById('pageContent');if(!incoming||!current){location.href=url;return;}current.innerHTML=incoming.innerHTML;current.classList.remove('nx-loading');current.classList.add('nx-loaded');setTimeout(()=>current.classList.remove('nx-loaded'),180);const newHeading=doc.querySelector('.nx-title-wrap h1'),heading=document.querySelector('.nx-title-wrap h1');if(newHeading&&heading)heading.textContent=newHeading.textContent;const newKicker=doc.querySelector('.nx-kicker'),kicker=document.querySelector('.nx-kicker');if(newKicker&&kicker)kicker.textContent=newKicker.textContent;if(doc.title)document.title=doc.title;const targetPath=new URL(url,location.href).pathname;document.querySelectorAll('.nx-nav-links>a').forEach(a=>{const p=new URL(a.href,location.href).pathname;a.classList.toggle('active',p==='/'?targetPath==='/':targetPath.startsWith(p));});document.getElementById('appSidebar')?.classList.remove('open');if(push)history.pushState({arrnexus:true},'',url);window.scrollTo({top:0,behavior:'instant'});if(typeof window.updateSelected==='function')window.updateSelected();document.dispatchEvent(new CustomEvent('arrnexus:navigated',{detail:{url}}));}
-  async function navigate(url,push=true){const main=document.getElementById('pageContent');if(!main){location.href=url;return;}main.classList.add('nx-loading');main.setAttribute('aria-busy','true');startProgress();try{const html=await getPage(url);applyPage(html,url,push);}catch(err){console.warn('Soft navigation fallback',err);location.href=url;return;}finally{main.removeAttribute('aria-busy');finishProgress();}}
-  document.addEventListener('click',e=>{const a=e.target.closest('a');if(!canSoftNavigate(a)||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button!==0)return;e.preventDefault();navigate(a.href,true);},true);
-  let hoverTimer=null;document.addEventListener('pointerover',e=>{const a=e.target.closest('a');if(!canSoftNavigate(a))return;clearTimeout(hoverTimer);hoverTimer=setTimeout(()=>getPage(a.href,{prefetch:true}).catch(()=>{}),220);});
-  document.addEventListener('pointerdown',e=>{const a=e.target.closest('a');if(canSoftNavigate(a))getPage(a.href,{prefetch:true}).catch(()=>{});},{passive:true});
-  window.addEventListener('popstate',()=>navigate(location.href,false));
-
-  // v9.2 deliberately does not crawl/prefetch every sidebar route in the background.
-  // Expensive pages are fetched only on explicit navigation or sustained pointer intent.
-})();
-
-/* Native InfiniDysk live overview + passive, cached update badge. */
-(function(){
-  let infiniBusy=false;function humanBytes(n){n=Number(n||0);const units=['B','KB','MB','GB','TB'];let i=0;while(n>=1024&&i<units.length-1){n/=1024;i++;}return(i===0?Math.round(n):n.toFixed(1))+' '+units[i];}
-  function graphPoints(rows){const vals=(rows||[]).map(x=>Math.max(0,Number(x.bytesFetched||x.bytesServed||0))),peak=Math.max(0,...vals);if(!peak||!vals.length)return'';return vals.map((v,i)=>{const x=vals.length<=1?0:(i/(vals.length-1))*100,y=96-(v/peak)*88;return x.toFixed(2)+','+y.toFixed(2);}).join(' ');}
-  async function refreshInfini(){const root=document.querySelector('[data-infinidysk-live]');if(!root||document.hidden||infiniBusy)return;infiniBusy=true;try{const w=root.dataset.window||'24h',r=await fetch('/api/infinidysk/live?window='+encodeURIComponent(w),{headers:{Accept:'application/json'},credentials:'same-origin'});if(!r.ok)return;const d=await r.json();if(!d.ok)return;const t=d.overview?.tiles||{};root.querySelectorAll('[data-infini-stat]').forEach(el=>{const k=el.dataset.infiniStat,v=Number(t[k]||0);el.textContent=el.dataset.format==='bytes'?humanBytes(v):el.dataset.format==='rate'?humanBytes(v/60)+'/s':String(v);});const pts=graphPoints(d.overview?.throughput||[]),line=root.querySelector('[data-infini-graph]'),area=root.querySelector('[data-infini-area]');if(line&&pts)line.setAttribute('points',pts);if(area&&pts)area.setAttribute('points','0,100 '+pts+' 100,100');const count=root.querySelector('[data-infini-queue-count]'),slots=d.queue?.slots||[];if(count)count.textContent=slots.length+' active queue item(s)';}catch(_e){}finally{infiniBusy=false;}}
-  async function checkVersionBadge(){ return; }
-  function activate(){refreshInfini();checkVersionBadge();}document.addEventListener('DOMContentLoaded',activate);document.addEventListener('arrnexus:navigated',activate);setInterval(refreshInfini,5000);
-})();
-
-// v9.4 help utilities
-document.addEventListener('click', async (event) => {
-  const button = event.target.closest('[data-copy-text]');
-  if (!button) return;
-  event.preventDefault();
-  const text = button.getAttribute('data-copy-text') || '';
-  if (!text) return;
-  try {
-    await navigator.clipboard.writeText(text);
-    const original = button.textContent;
-    button.textContent = 'Copied ✓';
-    window.setTimeout(() => { button.textContent = original; }, 1200);
-  } catch (_) {
-    window.prompt('Copy this value:', text);
-  }
-});
-
-/* ArrNexus v10.6 - native release discovery, correct version modal and post-update cleanup. */
-(function(){
-  const modal=()=>document.getElementById('v10UpdateModal');
-  let latestMeta=null,installing=false,statusTimer=null;
-  const escapeHtml=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
-  const cleanVersion=v=>String(v||'').trim().replace(/^v/i,'').toLowerCase();
-  function versionKey(v){const raw=cleanVersion(v),m=raw.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/),nums=m?[Number(m[1]||0),Number(m[2]||0),Number(m[3]||0)]:[0,0,0],stable=!/(alpha|beta|rc|dev)/.test(raw);return [...nums,stable?1:0];}
-  function compareVersions(a,b){const aa=versionKey(a),bb=versionKey(b);for(let i=0;i<aa.length;i++){if(aa[i]!==bb[i])return aa[i]>bb[i]?1:-1;}return 0;}
-  function currentVersion(){const badge=document.querySelector('.nx-version-badge'),value=badge?.dataset.currentVersion||document.querySelector('[data-update-current]')?.textContent||'';return cleanVersion(value);}
-  function normalizedMeta(meta){const current=currentVersion()||cleanVersion(meta?.current),latest=cleanVersion(meta?.latest)||current,out={...(meta||{}),current,latest};if(!latest||compareVersions(latest,current)<=0){out.update_available=false;out.installable=false;if(compareVersions(latest,current)<0)out.latest=current;}return out;}
-  function setResult(text){const el=document.getElementById('updateResult');if(el)el.innerHTML=text;}
-  function clearBadge(){const badge=document.querySelector('.nx-version-badge');if(!badge)return;badge.classList.remove('has-update');const em=badge.querySelector('[data-version-update]');if(em){em.hidden=true;em.textContent='UPDATE';}}
-  function decorate(meta){meta=normalizedMeta(meta);latestMeta=meta;clearBadge();const badge=document.querySelector('.nx-version-badge');if(meta.update_available&&badge){badge.classList.add('has-update');const em=badge.querySelector('[data-version-update]');if(em){em.hidden=false;em.textContent='UPDATE '+meta.latest;}}if(meta.error)setResult('<span class="state-error">Update check failed: '+escapeHtml(meta.error)+'</span>');else if(meta.update_available)setResult('Update available: <strong>v'+escapeHtml(meta.latest)+'</strong> · '+(meta.installable?'ready for in-app installation':'manual update required'));else setResult('ArrNexus is up to date · <strong>v'+escapeHtml(meta.current)+'</strong>');return meta;}
-  function renderModal(meta,{force=false,showCurrent=false}={}){const root=modal();if(!root)return;meta=decorate(meta);const dismissed=localStorage.getItem('arrnexus:update-dismissed');if(!force&&meta.update_available&&dismissed===String(meta.latest||''))return;if(!meta.update_available&&!showCurrent)return;root.hidden=false;root.setAttribute('aria-hidden','false');const title=root.querySelector('#v10UpdateTitle'),msg=root.querySelector('#v10UpdateMessage'),cur=root.querySelector('[data-update-current]'),target=root.querySelector('[data-update-target]'),install=root.querySelector('[data-install-update]'),release=root.querySelector('[data-update-release]'),status=root.querySelector('[data-update-status]'),bar=root.querySelector('[data-update-progress]');if(cur)cur.textContent='v'+meta.current;if(target)target.textContent='v'+(meta.update_available?meta.latest:meta.current);if(bar&&!installing)bar.hidden=true;if(status&&!installing)status.textContent='';if(meta.update_available){if(title)title.textContent='A new ArrNexus release is ready.';if(msg)msg.textContent=meta.installable?'ArrNexus will verify the release, back up the database, run the full validator and restart automatically.':(meta.reason||'The release is available but cannot be installed automatically from this runtime.');if(install){install.hidden=false;install.disabled=!meta.installable;install.textContent=installing?'Installing...':'Install update';}}else{if(title)title.textContent=meta.error?'Update check could not complete.':'ArrNexus is up to date.';if(msg)msg.textContent=meta.error?String(meta.error):'The running version matches the newest release available on the configured update channel.';if(install){install.hidden=true;install.disabled=true;}}if(release){if(meta.release_url){release.hidden=false;release.href=meta.release_url;}else{release.hidden=true;release.removeAttribute('href');}}}
-  function hideModal(){const root=modal();if(!root)return;root.hidden=true;root.setAttribute('aria-hidden','true');if(latestMeta?.update_available&&latestMeta.latest)localStorage.setItem('arrnexus:update-dismissed',String(latestMeta.latest));}
-  async function check(forceModal=false,showCurrent=false){try{const r=await fetch('/api/update-check?ts='+Date.now(),{headers:{Accept:'application/json','Cache-Control':'no-cache'},credentials:'same-origin',cache:'no-store'});if(!(r.headers.get('content-type')||'').includes('json'))return null;const d=decorate(await r.json());localStorage.setItem('arrnexus:update-status',JSON.stringify({at:Date.now(),current:d.current,data:d}));if(forceModal||d.update_available)renderModal(d,{force:forceModal,showCurrent});return d;}catch(err){const d=decorate({current:currentVersion(),latest:currentVersion(),update_available:false,error:err.message});if(forceModal)renderModal(d,{force:true,showCurrent:true});return d;}}
-  function completedUpdate(){installing=false;if(statusTimer){clearTimeout(statusTimer);statusTimer=null;}localStorage.removeItem('arrnexus:update-status');localStorage.removeItem('arrnexus:update-dismissed');clearBadge();const root=modal(),msg=root?.querySelector('[data-update-status]');if(msg)msg.textContent='Update installed successfully. Reloading ArrNexus...';window.setTimeout(()=>{hideModal();location.reload();},650);}
-  async function pollStatus(){if(statusTimer)clearTimeout(statusTimer);try{const r=await fetch('/api/update-status?ts='+Date.now(),{headers:{Accept:'application/json'},credentials:'same-origin',cache:'no-store'});if(r.ok){const d=await r.json(),root=modal(),msg=root?.querySelector('[data-update-status]'),bar=root?.querySelector('[data-update-progress]'),fill=bar?.querySelector('i');if(msg)msg.textContent=d.message||d.state||'';if(bar){bar.hidden=false;if(fill)fill.style.width=Math.max(3,Math.min(100,Number(d.progress||0)))+'%';}setResult(escapeHtml(d.message||d.state||'Updating...'));if(d.state==='failed'||d.state==='rolled_back'){installing=false;const b=root?.querySelector('[data-install-update]');if(b){b.hidden=false;b.disabled=false;b.textContent='Try again';}return;}const target=cleanVersion(latestMeta?.latest||d.target),active=cleanVersion(d.active||d.current);if(target&&active&&compareVersions(active,target)>=0&&(d.state==='running'||d.state==='complete'||d.state==='installed')){completedUpdate();return;}}}catch(_e){}
-    if(installing){try{const h=await fetch('/api/health?ts='+Date.now(),{cache:'no-store'});if(h.ok){const j=await h.json(),target=cleanVersion(latestMeta?.latest),running=cleanVersion(j.version);if(target&&running&&compareVersions(running,target)>=0){completedUpdate();return;}}}catch(_e){}statusTimer=setTimeout(pollStatus,1600);}}
-  async function install(){if(installing)return;if(!latestMeta?.update_available){latestMeta=await check(true,true);if(!latestMeta?.update_available)return;}if(!latestMeta.installable){renderModal(latestMeta,{force:true,showCurrent:true});return;}if(!window.confirm('Install ArrNexus v'+latestMeta.latest+' now? ArrNexus will back up the database, validate the release and restart itself.'))return;installing=true;localStorage.removeItem('arrnexus:update-dismissed');renderModal(latestMeta,{force:true,showCurrent:true});const root=modal(),button=root?.querySelector('[data-install-update]');if(button){button.hidden=false;button.disabled=true;button.textContent='Installing...';}try{const r=await fetch('/api/update-install',{method:'POST',headers:{Accept:'application/json'},credentials:'same-origin',cache:'no-store'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'Update could not start');if(!d.started){installing=false;localStorage.removeItem('arrnexus:update-status');latestMeta=await check(false,false);renderModal(latestMeta,{force:true,showCurrent:true});return;}const msg=root?.querySelector('[data-update-status]');if(msg)msg.textContent=d.message||'Update started';pollStatus();}catch(err){installing=false;if(button){button.hidden=false;button.disabled=false;button.textContent='Install update';}const msg=root?.querySelector('[data-update-status]');if(msg)msg.textContent=err.message;}}
-  document.addEventListener('click',e=>{const open=e.target.closest('[data-update-open]');if(open){e.preventDefault();check(true,true);return;}if(e.target.closest('[data-update-dismiss]')){hideModal();return;}if(e.target.closest('[data-install-update]')){e.preventDefault();install();return;}if(e.target.closest('[data-check-update]')){e.preventDefault();check(true,true);return;}});
-  async function activate(){const badge=document.querySelector('.nx-version-badge');if(!badge||badge.dataset.updateCheck!=='1')return;const current=currentVersion();let cache=null;try{cache=JSON.parse(localStorage.getItem('arrnexus:update-status')||'null');}catch(_e){}if(cache&&cleanVersion(cache.current||cache.data?.current)===current&&Date.now()-Number(cache.at||0)<600000){const d=decorate(cache.data);if(d.update_available)renderModal(d,{force:false,showCurrent:false});return;}localStorage.removeItem('arrnexus:update-status');await check(false,false);}
-  document.addEventListener('DOMContentLoaded',activate);document.addEventListener('arrnexus:navigated',activate);
-})();
-
-
-/* ArrNexus v10.2 — Dark/Light appearance toggle. No legacy theme gallery. */
-(function(){
-  const KEY='arrnexus:appearance';
-  function normalized(value){return value==='light'?'light':'dark';}
-  function apply(value){
-    const mode=normalized(value);
-    document.documentElement.dataset.appearance=mode;
-    document.documentElement.style.colorScheme=mode;
-    try{localStorage.setItem(KEY,mode);}catch(_e){}
-    document.querySelectorAll('[data-appearance-toggle]').forEach(button=>{
-      button.textContent=mode==='dark'?'☀':'☾';
-      button.title=mode==='dark'?'Switch to Light appearance':'Switch to Dark appearance';
-      button.setAttribute('aria-label',button.title);
-      button.dataset.currentAppearance=mode;
-    });
-    const meta=document.querySelector('meta[name="theme-color"]');
-    if(meta)meta.setAttribute('content',mode==='dark'?'#030304':'#fafafa');
-  }
-  function activate(){
-    let saved='dark';
-    try{saved=normalized(localStorage.getItem(KEY));}catch(_e){}
-    apply(saved);
-  }
-  document.addEventListener('click',event=>{
-    const button=event.target.closest('[data-appearance-toggle]');
-    if(!button)return;
-    event.preventDefault();
-    apply(document.documentElement.dataset.appearance==='light'?'dark':'light');
-  });
-  document.addEventListener('DOMContentLoaded',activate);
-  document.addEventListener('arrnexus:navigated',activate);
+  window.addEventListener('load',pollPipeline);
 })();

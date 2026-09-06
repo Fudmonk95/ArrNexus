@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% block title %}Live Requests · ArrNexus{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Live Requests</h1><p>Follow Seerr → Arr → Zurg → library completion as it happens.</p></div><span class="live-dot">LIVE</span></div>
+{% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+<div id="pipeline-summary" class="stat-grid compact">
+  <div class="stat"><span>Total</span><strong data-stat="total">{{ live.summary.total|default(0) }}</strong></div>
+  <div class="stat"><span>Active</span><strong data-stat="active">{{ live.summary.active|default(0) }}</strong></div>
+  <div class="stat"><span>Finished</span><strong data-stat="finished">{{ live.summary.finished|default(0) }}</strong></div>
+  <div class="stat"><span>Failed</span><strong data-stat="failed">{{ live.summary.failed|default(0) }}</strong></div>
+</div>
+<section class="panel"><div class="panel-head"><h2>Request lifecycle</h2><span class="muted">Refreshes every 2 seconds</span></div>
+<div id="pipeline-table" class="table-wrap"><table><thead><tr><th>Request</th><th>Requested by</th><th>Service</th><th>Stage</th><th>Detail</th><th>Zurg</th></tr></thead><tbody>
+{% for row in live.rows %}<tr><td><strong>{{ row.title }}</strong>{% if row.year %}<div class="muted">{{ row.year }}</div>{% endif %}</td><td>{{ row.requested_by or '—' }}</td><td>{{ row.service }}</td><td><span class="stage stage-{{ row.stage }}">{{ row.stage_label }}</span></td><td>{{ row.detail }}</td><td class="mono small">{{ row.zurg_path or '—' }}</td></tr>{% else %}<tr><td colspan="6" class="empty">No recent Seerr requests.</td></tr>{% endfor %}
+</tbody></table></div></section>
+<section class="panel"><div class="panel-head"><h2>Recorded transitions</h2><span class="muted">Persisted by ArrNexus</span></div>
+<div class="table-wrap"><table><thead><tr><th>Title</th><th>Type</th><th>Current stage</th><th>Updated</th></tr></thead><tbody>{% for row in history %}<tr><td>{{ row.title }}</td><td>{{ row.media_type }}</td><td>{{ row.stage }}</td><td class="muted">{{ row.updated_at }}</td></tr>{% else %}<tr><td colspan="4" class="empty">Nothing recorded yet.</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}
+{% block scripts %}<script>window.ArrNexusPipeline=true;</script>{% endblock %}

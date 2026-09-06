@@ -3,12 +3,33 @@ services:
     build: .
     container_name: arrnexus
     restart: unless-stopped
-    pid: host
-    cap_add:
-      - SYS_PTRACE
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "8484:8000"
+    environment:
+      DB_PATH: /data/arrnexus.db
+      ZURG_ROOT: /zurg_mnt/zurg
+      ZURG_URL: ${ZURG_URL:-http://host.docker.internal:9999}
+      RADARR_URL: ${RADARR_URL:-http://host.docker.internal:7878}
+      RADARR_API_KEY: ${RADARR_API_KEY:-}
+      SONARR_URL: ${SONARR_URL:-http://host.docker.internal:8989}
+      SONARR_API_KEY: ${SONARR_API_KEY:-}
+      LIDARR_URL: ${LIDARR_URL:-http://host.docker.internal:8686}
+      LIDARR_API_KEY: ${LIDARR_API_KEY:-}
+      PROWLARR_URL: ${PROWLARR_URL:-http://host.docker.internal:9696}
+      PROWLARR_API_KEY: ${PROWLARR_API_KEY:-}
+      JELLYFIN_URL: ${JELLYFIN_URL:-http://host.docker.internal:8096}
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:-}
+      SEERR_URL: ${SEERR_URL:-http://host.docker.internal:5055}
+      SEERR_API_KEY: ${SEERR_API_KEY:-}
+      ARRNEXUS_SESSION_SECRET: ${ARRNEXUS_SESSION_SECRET:-}
+      ARRNEXUS_HTTPS_ONLY: ${ARRNEXUS_HTTPS_ONLY:-false}
     volumes:
       - ./data:/data
+      - type: bind
+        source: /zurg_mnt
+        target: /zurg_mnt
+        read_only: true
+        bind:
+          propagation: rslave

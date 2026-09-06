@@ -1,0 +1,8 @@
+{% extends "base.html" %}{% block title %}Arr Services · ArrNexus{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Arr Services</h1><p>Connections used for list import, orchestration, library status and request tracking.</p></div></div>
+<div class="grid two">
+{% for s in services %}<section class="panel"><div class="panel-head"><div><h2>{{ s.label }}</h2><span class="status-line"><span class="dot {{ 'good' if s.ok else 'bad' }}"></span>{{ 'Online' if s.ok else ('Not configured' if not s.configured else 'Offline') }}</span></div><span class="muted">{{ s.version }}</span></div>
+<form method="post" action="/arr-services/{{ s.key }}" class="stack"><label>URL<input name="url" value="{{ s.url }}" placeholder="http://host.docker.internal:0000" required></label><label>API key<input name="api_key" type="password" placeholder="{{ 'Leave blank to keep current key' if s.configured else 'API key' }}"></label><button class="primary" type="submit">Save {{ s.label }}</button></form>{% if s.error and s.configured %}<p class="error-text small">{{ s.error }}</p>{% endif %}</section>{% endfor %}
+</div>
+{% endblock %}

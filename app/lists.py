@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-"""External Lists & Watchlists automation for ArrNexus v10.2.
+"""External list/watchlist automation for the Zurg-native ArrNexus v11.
 
-List adapters deliberately stop at normalized media identities.  ArrNexus then
-uses the same Radarr/Sonarr discovery, routing and acquisition code used by the
-rest of the product; a list is another request source, not a parallel importer.
+Lists add titles to Radarr or Sonarr and let the Arr stack perform its normal search.
+ArrNexus never stages, extracts, renames or imports media files.
 """
 
 import asyncio
@@ -21,23 +20,18 @@ import xml.etree.ElementTree as ET
 import httpx
 
 from .db import db, setting_get, setting_set, setting_delete, log_event
-from .connections import get_connection
-from .paths import movie_roots, tv_roots
-from .router_service import discover_lookup, discover_add, client_for_destination
-from .acquisition import plan_and_grab, STRATEGIES
+from .catalog import discover_lookup, add_candidate, existing
 
 TRAKT_API = "https://api.trakt.tv"
 TRAKT_AUTH = "https://auth.trakt.tv"
 TMDB_API = "https://api.themoviedb.org/3"
 SIMKL_API = "https://api.simkl.com"
-PLEX_DISCOVER = "https://discover.provider.plex.tv"
 
 SOURCE_TYPES = {
     "trakt_watchlist": "Trakt Watchlist",
     "trakt_list": "Trakt List",
     "imdb": "IMDb public list",
     "tmdb": "TMDb list",
-    "plex_watchlist": "Plex Watchlist",
     "simkl": "Simkl Watchlist",
     "rss": "RSS / Atom",
     "json": "Custom JSON",
@@ -115,12 +109,7 @@ def save_definition(
         raise ValueError("Unsupported list source")
     if media_type not in MEDIA_TYPES:
         raise ValueError("Unsupported media type")
-    if acquisition_strategy not in STRATEGIES:
-        acquisition_strategy = "automatic"
-    if movie_destination != "auto" and movie_destination not in movie_roots():
-        raise ValueError(f"Unknown Radarr destination: {movie_destination}")
-    if tv_destination != "auto" and tv_destination not in tv_roots():
-        raise ValueError(f"Unknown Sonarr destination: {tv_destination}")
+    acquisition_strategy = "arr_native"
     interval = max(1, min(24 * 30, int(sync_interval_hours or 12)))
     values = (
         name, source_type, (source_ref or "").strip(), media_type,
@@ -186,7 +175,6 @@ def save_simkl(client_id: str, access_token: str) -> None:
 
 
 def provider_state() -> dict[str, Any]:
-    plex = get_connection("plex")
     return {
         "trakt_client_id": setting_get("lists.trakt.client_id"),
         "trakt_client_configured": bool(setting_get("lists.trakt.client_id") and setting_get("lists.trakt.client_secret")),
@@ -199,7 +187,6 @@ def provider_state() -> dict[str, Any]:
         "tmdb_configured": bool(setting_get("lists.tmdb.api_key")),
         "simkl_client_id": setting_get("lists.simkl.client_id"),
         "simkl_configured": bool(setting_get("lists.simkl.client_id") and setting_get("lists.simkl.access_token")),
-        "plex_configured": bool(plex.api_key),
     }
 
 
@@ -476,12 +463,24 @@ async def _fetch_tmdb(defn: dict[str, Any]) -> list[NormalizedItem]:
     if not key:
         raise RuntimeError("TMDb API key is not configured")
     ref = str(defn.get("source_ref") or "").strip()
-    if not re.fullmatch(r"\d+", ref):
-        raise RuntimeError("TMDb source must be a numeric list ID")
+    path = ""
+    if re.fullmatch(r"\d+", ref):
+        path = f"/list/{ref}"
+    else:
+        parsed = urlparse(ref) if ref.startswith(("http://", "https://")) else None
+        raw_path = (parsed.path if parsed else ref).strip("/")
+        if raw_path.startswith("trending/") and re.fullmatch(r"trending/(movie|tv)/(day|week)", raw_path):
+            path = "/" + raw_path
+        else:
+            match = re.search(r"(?:^|/)list/(\d+)(?:/|$)", raw_path)
+            if match:
+                path = f"/list/{match.group(1)}"
+    if not path:
+        raise RuntimeError("TMDb source must be a list ID/list URL or trending/movie|tv/day|week")
     async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
-        r = await client.get(f"{TMDB_API}/list/{ref}", params={"api_key": key, "language": "en-GB"})
+        r = await client.get(f"{TMDB_API}{path}", params={"api_key": key, "language": "en-GB"})
     if r.status_code >= 400:
-        raise RuntimeError(f"TMDb list: {r.status_code} {r.text[:400]}")
+        raise RuntimeError(f"TMDb source: {r.status_code} {r.text[:400]}")
     data = r.json(); out = []
     wanted = defn.get("media_type") or "mixed"
     for row in data.get("items") or []:
@@ -506,7 +505,7 @@ async def _fetch_imdb(defn: dict[str, Any]) -> list[NormalizedItem]:
         url = ref
     else:
         raise RuntimeError("IMDb source must be an imdb.com list URL or list ID")
-    headers = {"User-Agent": "Mozilla/5.0 ArrNexus/10.2", "Accept-Language": "en-GB,en;q=0.8"}
+    headers = {"User-Agent": "Mozilla/5.0 ArrNexus/11.0", "Accept-Language": "en-GB,en;q=0.8"}
     async with httpx.AsyncClient(timeout=45.0, follow_redirects=True, headers=headers) as client:
         r = await client.get(url)
     if r.status_code >= 400:
@@ -530,7 +529,7 @@ async def _fetch_feed(defn: dict[str, Any]) -> list[NormalizedItem]:
     if parsed.scheme not in {"http", "https"}:
         raise RuntimeError("RSS/Atom source must be an http(s) URL")
     async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
-        r = await client.get(url, headers={"User-Agent": "ArrNexus/10.2"})
+        r = await client.get(url, headers={"User-Agent": "ArrNexus/11.0"})
     if r.status_code >= 400:
         raise RuntimeError(f"Feed: {r.status_code} {r.text[:300]}")
     try:
@@ -558,7 +557,7 @@ async def _fetch_json(defn: dict[str, Any]) -> list[NormalizedItem]:
     if parsed.scheme not in {"http", "https"}:
         raise RuntimeError("Custom JSON source must be an http(s) URL")
     async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
-        r = await client.get(url, headers={"User-Agent": "ArrNexus/10.2", "Accept": "application/json"})
+        r = await client.get(url, headers={"User-Agent": "ArrNexus/11.0", "Accept": "application/json"})
     if r.status_code >= 400:
         raise RuntimeError(f"JSON list: {r.status_code} {r.text[:300]}")
     data = r.json(); rows = data.get("items") if isinstance(data, dict) else data
@@ -577,36 +576,6 @@ async def _fetch_json(defn: dict[str, Any]) -> list[NormalizedItem]:
             try: return int(v) if v not in (None, "") else None
             except Exception: return None
         out.append(NormalizedItem(kind,title,_ival(row.get("year")),str(row.get("imdb") or row.get("imdb_id") or ""),_ival(row.get("tmdb") or row.get("tmdb_id")),_ival(row.get("tvdb") or row.get("tvdb_id")),str(row.get("id") or "")))
-    return _dedupe(out)
-
-
-async def _fetch_plex(defn: dict[str, Any]) -> list[NormalizedItem]:
-    token = get_connection("plex").api_key
-    if not token:
-        raise RuntimeError("Plex token is not configured in Connections")
-    headers = {"X-Plex-Token": token, "Accept": "application/json", "X-Plex-Product": "ArrNexus", "X-Plex-Client-Identifier": "arrnexus-v10.2"}
-    params = {"includeCollections": 1, "includeExternalMedia": 1, "includeAdvanced": 1, "X-Plex-Container-Start": 0, "X-Plex-Container-Size": 1000}
-    async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
-        r = await client.get(f"{PLEX_DISCOVER}/library/sections/watchlist/all", headers=headers, params=params)
-    if r.status_code >= 400:
-        raise RuntimeError(f"Plex Watchlist: {r.status_code} {r.text[:300]}")
-    data=r.json(); mc=data.get("MediaContainer") or {}
-    rows=mc.get("Metadata") or mc.get("Video") or []
-    if isinstance(rows, dict): rows=[rows]
-    out=[]; wanted=defn.get("media_type") or "mixed"
-    for row in rows:
-        kind="tv" if str(row.get("type") or "").lower() in {"show","series"} else "movie"
-        if wanted != "mixed" and wanted != kind: continue
-        ids={}
-        for g in row.get("Guid") or []:
-            gid=str(g.get("id") or "")
-            if "://" in gid:
-                k,v=gid.split("://",1); ids[k]=v
-        title=str(row.get("title") or "").strip()
-        if title:
-            try: year=int(row.get("year")) if row.get("year") else None
-            except Exception: year=None
-            out.append(NormalizedItem(kind,title,year,ids.get("imdb", ""),int(ids["tmdb"]) if ids.get("tmdb","").isdigit() and kind=="movie" else None,int(ids["tvdb"]) if ids.get("tvdb","").isdigit() else None,str(row.get("ratingKey") or "")))
     return _dedupe(out)
 
 
@@ -643,7 +612,6 @@ async def fetch_items(defn: dict[str, Any]) -> list[NormalizedItem]:
     if kind == "imdb": return await _fetch_imdb(defn)
     if kind == "rss": return await _fetch_feed(defn)
     if kind == "json": return await _fetch_json(defn)
-    if kind == "plex_watchlist": return await _fetch_plex(defn)
     if kind == "simkl": return await _fetch_simkl(defn)
     raise RuntimeError("Unsupported list source")
 
@@ -680,22 +648,18 @@ async def resolve_item(item: NormalizedItem) -> dict[str, Any] | None:
 
 
 async def _already_owned(candidate: dict[str, Any], media_type: str) -> dict[str, Any] | None:
-    if candidate.get("arrnexus_request"):
-        return candidate.get("arrnexus_request")
-    service = "radarr" if media_type == "movie" else "sonarr"
-    dests = movie_roots() if media_type == "movie" else tv_roots()
-    id_key = "tmdbId" if media_type == "movie" else "tvdbId"
-    ext = candidate.get(id_key)
-    for dest in dests:
-        try:
-            client, _inst = client_for_destination(service, dest)
-            rows = await (client.movies() if media_type == "movie" else client.series())
-            hit = next((r for r in rows if ext and r.get(id_key) == ext), None)
-            if hit:
-                return {"destination": dest, "arr_id": hit.get("id"), "has_file": bool(hit.get("hasFile") or (hit.get("statistics") or {}).get("episodeFileCount"))}
-        except Exception:
-            continue
-    return None
+    hit = await existing(
+        media_type,
+        tmdb_id=(int(candidate.get("tmdbId") or 0) or None),
+        tvdb_id=(int(candidate.get("tvdbId") or 0) or None),
+        imdb_id=str(candidate.get("imdbId") or candidate.get("imdb") or ""),
+    )
+    if not hit:
+        return None
+    return {
+        "arr_id": hit.get("id"),
+        "has_file": bool(hit.get("hasFile") or (hit.get("statistics") or {}).get("episodeFileCount")),
+    }
 
 
 async def preview_definition(defn: dict[str, Any], limit: int = 500) -> dict[str, Any]:
@@ -726,31 +690,19 @@ async def preview_definition(defn: dict[str, Any], limit: int = 500) -> dict[str
 
 
 async def sync_definition(defn: dict[str, Any], *, preview: bool = False, user_id: int | None = None) -> dict[str, Any]:
-    preview_data=await preview_definition(defn, 5000)
+    preview_data = await preview_definition(defn, 5000)
     added=[]; errors=[]
     if not preview:
         for row in preview_data["rows"]:
             if row.get("state") != "new" or not row.get("candidate"):
                 continue
             kind=row["media_type"]
-            destination=defn.get("movie_destination") if kind=="movie" else defn.get("tv_destination")
+            root = defn.get("movie_destination") if kind == "movie" else defn.get("tv_destination")
             try:
-                result=await discover_add(row["candidate"],kind,destination or "auto",search=False,user_id=user_id,monitored=bool(defn.get("monitor")))
-                arr_id=int((result.get("item") or {}).get("id") or 0)
-                if bool(defn.get("search_automatically")) and arr_id:
-                    service="radarr" if kind=="movie" else "sonarr"
-                    client,_inst=client_for_destination(service,result.get("destination") or destination or "auto")
-                    strategy=str(defn.get("acquisition_strategy") or "automatic")
-                    try:
-                        plan=await plan_and_grab(client,kind,arr_id,strategy)
-                    except Exception as exc:
-                        # Preserve the Arr add even if advanced acquisition cannot find a candidate.
-                        try:
-                            await client.search(arr_id)
-                            plan={"fallback":"native Arr search","error":str(exc)}
-                        except Exception:
-                            plan={"error":str(exc)}
-                    result["acquisition"]=plan
+                result = await add_candidate(
+                    row["candidate"], kind, root=root or "auto",
+                    search=bool(defn.get("search_automatically")), monitored=bool(defn.get("monitor")),
+                )
                 added.append({"title":row["title"],"media_type":kind,"result":result})
             except Exception as exc:
                 errors.append({"title":row.get("title"),"media_type":kind,"error":str(exc)})
