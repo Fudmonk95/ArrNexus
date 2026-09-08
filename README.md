@@ -1,76 +1,181 @@
-# ArrNexus v11.0.0-beta
+# ArrNexus v12.0.0
 
-ArrNexus v11 is a deliberately smaller, Zurg-first control plane for my own media server.
+ArrNexus is the Zurg-first control and orchestration layer for my personal media server.
 
-## Why v11 exists
+v12 turns the v11 control plane into an active recovery system without bringing back the old archive/extraction/filesystem stack. ArrNexus now supervises missing media and broken Arr queue items while leaving the actual acquisition/storage layer to the Arr applications, Real-Debrid/Zurg and the existing DUMB stack.
 
-Earlier ArrNexus releases accumulated a large amount of low-level media handling. That made ArrNexus responsible for work that no longer belongs here.
-
-The current Zurg nightly builds now provide the source-library layer I need, including the provider-facing and low-level media presentation work. Because that layer is working reliably on my server, ArrNexus no longer tries to duplicate it.
-
-**Zurg is now the source library. ArrNexus is the management and orchestration layer above it.**
-
-For Zurg itself, start with the official project and its release-cycle documentation:
-
-- https://github.com/debridmediamanager/zurg-public
-- https://github.com/debridmediamanager/zurg-public/wiki
-- https://github.com/debridmediamanager/zurg-public/wiki/Release-cycle
-
-The public Zurg project explains the stable/nightly release model and how to obtain the build appropriate to your setup.
-
-## Personal-build notice
-
-From v11 onward, ArrNexus releases are built for **my own server and my own workflow**. I am no longer trying to make every future release fit other people's stacks.
-
-The source remains available for people who want to inspect it, fork it and change it under the repository's existing licence. If this direction is not right for your setup, you are welcome to continue your own build and modify it however you want. Future ArrNexus releases from me should be treated as personal-server releases rather than general support releases.
-
-## The v11 architecture
+## Architecture
 
 ```text
-                 Seerr
-                   |
-                   v
-          Sonarr / Radarr
-             |       |
-             +---+---+
-                 |
-              ArrNexus
-         health / visibility
-       lists / orchestration
-                 |
-                 v
-        /zurg_mnt/zurg
-                 |
-                Zurg
-                 |
-                 v
-              Jellyfin
-
-Music Hub: Spotify + Beatport + Lidarr
-Media Automation: Jellyfin collections + Kometa YAML
+                         Seerr
+                           |
+                           v
+                  Sonarr / Radarr / Lidarr
+                     |       |       |
+                     +-------+-------+
+                             |
+               +-------------+-------------+
+               |                           |
+               v                           v
+      Missing Media Orchestrator     Queue Janitor
+      controlled search policy       import / failure repair
+               |                           |
+               +-------------+-------------+
+                             |
+                          ArrNexus
+                observe / decide / trigger
+                             |
+                             v
+                    /zurg_mnt/zurg
+                             |
+                            Zurg
+                             |
+                             v
+                          Jellyfin
 ```
 
-ArrNexus treats `/zurg_mnt/zurg` as read-only. It observes Zurg; it does not rename, move, split, extract or stage source media. DMM talks directly to Zurg on this server, so ArrNexus does not maintain a second acquisition inbox between them.
+**Responsibility split**
 
-## What remains
+- **ArrNexus** decides what should be searched, when to retry, when to stop, and how to handle queue warnings.
+- **Sonarr / Radarr / Lidarr** perform searches, grabs, blocklisting and imports through their normal APIs.
+- **NeutArr** can continue to own periodic missing-media search cadence.
+- **Swaparr** can continue to handle stalled downloads when enabled through NeutArr.
+- **Zurg** remains responsible for acquisition visibility, the mounted source library and working views.
+- **Jellyfin** remains the supported media server for this personal build.
 
-- Zurg filesystem and endpoint health
-- Zurg library activity and unplayable visibility
-- Sonarr connection and native list import
-- Radarr connection and native list import
-- Lidarr connection and Music Hub acquisition
-- Prowlarr health visibility
-- Seerr request tracking
-- Jellyfin library and collection automation
-- Spotify Music Hub
-- Beatport search hand-off
-- Trakt, TMDb, IMDb, RSS, JSON and Simkl list sources
-- Kometa YAML import/export for collection definitions
-- local authentication, logs, diagnostics and database backups
+ArrNexus does **not** rename, move, split, extract, repair archives or stage source media.
 
-## Live request tracking
+## New in v12
 
-The **Live Requests** page polls Seerr, Sonarr/Radarr and Zurg every two seconds and builds a single request timeline:
+### Missing Media Orchestrator
+
+The Missing Media page inventories monitored missing content from:
+
+- Radarr movies;
+- Sonarr episodes and seasons; and
+- Lidarr albums.
+
+It creates a persistent recovery queue and tracks each item through states such as:
+
+```text
+Detected
+  -> Searching
+  -> Arr queue
+  -> Zurg working
+  -> Mounted
+  -> Resolved
+```
+
+The scheduler is deliberately controlled:
+
+- batch size: 1–5;
+- delay between searches;
+- maximum simultaneous active acquisitions;
+- daily search limit;
+- maximum searches without acquisition;
+- cooldown between repeated no-result searches; and
+- hard failed-release limit shared with queue recovery state.
+
+For Sonarr, multiple missing episodes in the same season are grouped into a **SeasonSearch** rather than firing one request per episode. A single missing episode uses **EpisodeSearch**.
+
+Before dispatching a search ArrNexus checks the Arr queues and the Zurg correlation index. If the media is already queued, in `__downloads__`, being processed in `__magic__` / `__nzb__`, or already mounted, ArrNexus observes it instead of creating duplicate work.
+
+### NeutArr coexistence
+
+v12 treats NeutArr as useful again rather than as something ArrNexus must replace.
+
+With **NeutArr coexistence mode** enabled (the default):
+
+- NeutArr owns the automatic missing-media search cadence;
+- ArrNexus still inventories missing media;
+- ArrNexus tracks Arr/Zurg activity and recovery state;
+- manual **Search now** actions remain available; and
+- ArrNexus does not run a second automatic missing-media scheduler on top of NeutArr.
+
+Turn coexistence mode off only when you want ArrNexus itself to own automatic missing-media search scheduling.
+
+### Auto Import + Queue Janitor
+
+The Queue Janitor continuously evaluates Sonarr, Radarr and Lidarr queues and applies a conservative decision tree.
+
+```text
+                    ARR QUEUE ITEM
+                          |
+              +-----------+-----------+
+              |                       |
+              v                       v
+       GOOD MEDIA MAY EXIST      RELEASE IS BROKEN
+       ID/manual-import issue     failed / corrupt / bad
+              |                       |
+              v                       v
+       SAFE EXPLICIT IMPORT       REMOVE FROM CLIENT
+       using Arr IDs/history      BLOCKLIST RELEASE
+              |                       |
+          +---+---+                   v
+          |       |              CONTROLLED RETRY
+       success  unsafe                |
+          |       |                   v
+          v       v              HARD RETRY LIMIT
+        clean   attention          /        \
+                                  no        yes
+                                  |          |
+                                retry    stop + Needs Attention
+```
+
+#### Queue rules
+
+| Queue condition | Automatic policy |
+| --- | --- |
+| Download failed | remove from client + blocklist + search another release |
+| Zurg / provider / Real-Debrid timeout or failure | remove + blocklist + search another |
+| No files found eligible for import | remove + blocklist + search another |
+| Broken archive / missing articles / extraction failure reported by the Arr | remove + blocklist + search another |
+| ffprobe genuinely cannot read visible media | remove + blocklist + search another |
+| Confirmed sample | remove + blocklist + search another |
+| Invalid season / episode / album mapping | do **not** blindly import; cleanup/retry only |
+| Unable to determine whether file is a sample | inspect with ffprobe first; unreadable/too-short media can then fail/retry |
+| Matched by ID / Manual Import required | **attempt explicit safe auto-import first** |
+| Successful import | let the Arr complete normal queue cleanup |
+| Stalled/no-progress download | defer to NeutArr/Swaparr by default |
+
+The ID/manual-import rule is intentionally evaluated conservatively. If the candidate also contains an invalid season, invalid episode, sample, unknown-media, language/quality or similar unsafe rejection, ArrNexus will not force-import it.
+
+### Hard retry limit
+
+The default failed-release limit is **3**.
+
+Example:
+
+```text
+47 Meters Down
+
+Attempt 1: missing articles
+Attempt 2: provider timeout
+Attempt 3: unreadable media
+
+STATUS: Needs Attention
+Automatic searching stopped
+```
+
+Failure counters and Janitor actions are persisted in SQLite. **Reset & resume** clears the active retry counter but retains the Janitor audit history.
+
+### Dry-run first
+
+Both recovery engines ship safely:
+
+```text
+Missing Media automatic scheduler: disabled
+Queue Janitor automatic actions:     disabled
+Dry-run:                              enabled
+NeutArr coexistence:                  enabled
+Swaparr stall deferral:               enabled
+```
+
+Start by scanning and running dry-run cycles. Enable live actions only after the classifications match the queue behaviour on the live server.
+
+### Live Requests / Zurg tracking
+
+v12 keeps the background lifecycle tracker introduced in v11:
 
 ```text
 Requested
@@ -78,77 +183,144 @@ Requested
   -> Searching
   -> Grabbed
   -> Zurg working
-  -> Mounted in Zurg
+  -> Zurg scraping
+  -> Mounted
   -> Imported
-  -> Finished
+  -> Available
 ```
 
-The exact stages are inferred from the systems that currently own each step. ArrNexus stores stage changes so the current state and recent transitions remain visible.
+Provider/Zurg work runs in background caches so the web UI does not wait for a large Zurg scan.
 
-## Music Hub
+### Zurg health and cache visibility
 
-Music Hub has been reduced to the sources I actually use:
+ArrNexus reports:
 
-- **Spotify** for account/library discovery and catalogue search
-- **Beatport** for current web search hand-off
-- **Lidarr** for adding and searching artists
+- mounted filesystem health;
+- Zurg version/nightly string;
+- movie, show and music counts;
+- `__downloads__`, `__magic__`, `__nzb__` and unplayable counts;
+- protected HTTP endpoint reachability;
+- correlation-index state;
+- Zurg cache size; and
+- free space on the cache filesystem.
 
-Beatport no longer depends on a private API integration. ArrNexus creates a current Beatport search URL and hands the query to Beatport directly.
+The cache mount is read-only inside ArrNexus. ArrNexus does not automatically purge Zurg's cache.
 
-## Media Automation / Kometa
+### Spotify OAuth
 
-Media Automation is now Jellyfin-first. ArrNexus can:
+Spotify uses an explicit public ArrNexus URL rather than the local LAN address.
 
-- resolve collection definitions from supported list sources;
-- preview matches against the Jellyfin library;
-- create/update Jellyfin collections;
-- run collection definitions on a schedule;
-- import supported Kometa YAML collection IDs; and
-- export collection definitions as Kometa YAML.
+Example:
 
-ArrNexus does not pretend to own the external Kometa runtime. It manages the collection definitions and the Jellyfin result on this server.
+```text
+ARRNEXUS_PUBLIC_URL=https://arrnexus.example.com
+```
 
-## Installation
+Callback:
 
-### Requirements
+```text
+https://arrnexus.example.com/music/spotify/callback
+```
 
-- Docker Engine with Compose support
-- a working Zurg mount on the host at `/zurg_mnt/zurg`
-- the `/zurg_mnt` mount capable of propagating into the ArrNexus container
-- whichever Arr services you want ArrNexus to use
+Copy the exact callback displayed on **Music Hub -> Spotify settings** into the Spotify developer application.
 
-### Deploy
+## Existing integrations
+
+- Zurg
+- Sonarr
+- Radarr
+- Lidarr
+- Prowlarr
+- Seerr
+- Jellyfin
+- NeutArr coexistence / Swaparr stall ownership
+- Spotify
+- Beatport search hand-off
+- Trakt
+- TMDb
+- IMDb
+- Simkl
+- RSS / custom JSON lists
+- Kometa YAML import/export
+
+## Personal-build notice
+
+From v11 onward, ArrNexus releases are built around my own server and workflow rather than trying to be a universal media-stack product.
+
+The repository remains open source under the repository's existing licensing terms. Anyone is welcome to fork it, adapt it or continue it for their own stack.
+
+The only media server targeted by this personal build is **Jellyfin**.
+
+## Removed architecture stays removed
+
+v12 does not reintroduce the old low-level media-processing layers. Zurg now handles the source-library/acquisition responsibilities that made those layers unnecessary.
+
+ArrNexus remains an orchestration/control application: **observe, decide, trigger, correlate, retry, stop and report**.
+
+## Installation / Portainer
+
+### Host layout used by this build
+
+```text
+/mnt/appdata/arrnexus/data       -> /data
+/zurg_mnt                        -> /zurg_mnt (read-only, rslave)
+/mnt/appdata/zurg-rclone-cache   -> /host/zurg-rclone-cache (read-only)
+```
+
+Database:
+
+```text
+/data/router.db
+```
+
+The supplied `portainer-stack.yml` is aligned with the current server.
+
+### Build the v12 image on the server
 
 ```bash
-cp .env.example .env
-mkdir -p data
-docker compose up -d --build
+cd ArrNexus-v12.0.0
+./scripts/build-local-image.sh
 ```
 
-Open:
+This creates:
 
 ```text
-http://SERVER-IP:8484
+arrnexus:v12.0.0
 ```
 
-On first launch, create the local administrator account and then configure service URLs/API keys under **Arr Services**.
+Then update the existing Portainer ArrNexus stack to use that image.
 
-### Zurg mount
-
-The Compose file bind-mounts the host's `/zurg_mnt` read-only using `rslave` propagation. The expected source root inside ArrNexus is:
+**Do not create a new ArrNexus data directory.** Keep:
 
 ```text
-/zurg_mnt/zurg
+/mnt/appdata/arrnexus/data:/data
 ```
 
-Do not install another mount process inside ArrNexus. Zurg owns the mount; ArrNexus only consumes it.
+v12 extends the existing SQLite database in place with recovery/orchestration tables.
 
-## Updating from v10
+See `docs/PORTAINER_UPDATE_v12.0.0.md` for the exact update sequence.
 
-v11 is an architectural reset, not a cosmetic update. Back up your existing ArrNexus data first.
+## Verifying the running container
 
-The v11 database initializer can reuse the core local user/list/automation tables from an existing database, but the application no longer loads the removed low-level subsystems. For the cleanest personal-server migration, keep a copy of the old data directory, deploy v11 separately, then configure only the services you still use.
+```bash
+./scripts/verify-running.sh
+```
+
+Or manually:
+
+```bash
+curl -fsS http://127.0.0.1:8484/api/health
+docker logs --tail 100 arrnexus
+```
+
+## Zurg resources
+
+Official project resources:
+
+- https://github.com/debridmediamanager/zurg-public
+- https://github.com/debridmediamanager/zurg-public/wiki
+- https://github.com/debridmediamanager/zurg-public/wiki/Release-cycle
 
 ## Release status
 
-**v11.0.0-beta** is the first stripped Zurg-first release. It intentionally has fewer features than v10 because the removed features no longer belong in ArrNexus on this server.
+**ArrNexus v12.0.0** is the first stable-named release of the Zurg-first recovery/orchestration architecture.

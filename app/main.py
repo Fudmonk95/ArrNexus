@@ -21,24 +21,38 @@ from .config import settings
 from .connections import SERVICES, get_connection, save_connection
 from .db import (
     all_settings, authenticate_user, create_user, get_user, init_db, list_logs,
-    log_event, pipeline_events, pipeline_history, setting_get, setting_set,
+    log_event, pipeline_events, pipeline_history, pipeline_recent_events, setting_get, setting_set,
     update_user, user_count,
 )
 from . import lists as media_lists
 from . import media_automation
 from . import music
 from . import pipeline
+from . import orchestrator
+from . import queue_janitor
 from . import zurg
-from .services import status_rows
+from . import services
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+try:
+    APP_VERSION = (BASE_DIR.parent / "VERSION").read_text(encoding="utf-8").strip() or "12.0.0"
+except OSError:
+    APP_VERSION = "12.0.0"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     tasks = [
+        asyncio.create_task(zurg.status_loop(), name="zurg-status"),
+        asyncio.create_task(zurg.index_loop(), name="zurg-index"),
+        asyncio.create_task(zurg.storage_loop(), name="zurg-storage"),
+        asyncio.create_task(services.status_loop(), name="service-health"),
+        asyncio.create_task(pipeline.tracker_loop(), name="request-tracker"),
+        asyncio.create_task(orchestrator.scan_loop(), name="missing-media-scan"),
+        asyncio.create_task(orchestrator.dispatcher_loop(), name="missing-media-dispatcher"),
+        asyncio.create_task(queue_janitor.scan_loop(), name="queue-janitor"),
         asyncio.create_task(media_lists.scheduler_loop(), name="media-list-scheduler"),
         asyncio.create_task(media_automation.scheduler_loop(), name="media-automation-scheduler"),
     ]
@@ -50,7 +64,7 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-app = FastAPI(title="ArrNexus", version="11.0.0-beta", lifespan=lifespan)
+app = FastAPI(title="ArrNexus", version=APP_VERSION, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
@@ -72,7 +86,7 @@ def _render(request: Request, template: str, **context):
         "request": request,
         "user": _user(request),
         "flash": _pop_flash(request),
-        "version": "11.0.0-beta",
+        "version": APP_VERSION,
     }
     base.update(context)
     return TEMPLATES.TemplateResponse(request=request, name=template, context=base)
@@ -178,37 +192,42 @@ async def profile_save(request: Request, username: str = Form(...), display_name
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    zurg_status, services, live = await asyncio.gather(
-        zurg.status(), status_rows(), pipeline.live_snapshot(), return_exceptions=True,
-    )
+    # Dashboard rendering is intentionally cache-only. Slow providers, Zurg
+    # indexing and request correlation run in background tasks and can never
+    # block the web UI.
+    zurg_status = zurg.cached_status()
+    live = pipeline.cached_snapshot()
     return _render(
         request,
         "dashboard.html",
-        zurg={"ok": False, "root": settings.zurg_root, "readable": False, "counts": {"movies": 0, "shows": 0, "__unplayable__": 0, "__downloads__": 0}, "endpoint": {"status": None}} if isinstance(zurg_status, Exception) else zurg_status,
-        zurg_error=str(zurg_status) if isinstance(zurg_status, Exception) else "",
-        services=[] if isinstance(services, Exception) else services,
-        live={"summary": {"total": 0, "active": 0, "finished": 0, "failed": 0}, "rows": []} if isinstance(live, Exception) else live,
-        live_error=str(live) if isinstance(live, Exception) else "",
+        zurg=zurg_status,
+        zurg_error=zurg_status.get("cache_error", ""),
+        services=services.cached_status_rows(),
+        service_state=services.cache_state(),
+        live=live,
+        live_error=" · ".join(live.get("errors") or []),
+        tracker=pipeline.tracker_state(),
+        orchestrator=orchestrator.cached_state(),
+        janitor=queue_janitor.cached_state(),
     )
 
 
 @app.get("/pipeline", response_class=HTMLResponse)
 async def pipeline_page(request: Request):
-    try:
-        live = await pipeline.live_snapshot(force=True)
-        error = ""
-    except Exception as exc:
-        live, error = {"summary": {}, "rows": []}, str(exc)
-    return _render(request, "pipeline.html", live=live, history=pipeline_history(120), error=error)
+    live = pipeline.cached_snapshot()
+    return _render(
+        request, "pipeline.html", live=live, history=pipeline_history(120),
+        events=pipeline_recent_events(160), tracker=pipeline.tracker_state(),
+        error=" · ".join(live.get("errors") or []),
+    )
 
 
 @app.get("/api/pipeline/live")
 async def pipeline_api(request: Request):
     _require_user(request)
-    try:
-        return await pipeline.live_snapshot(force=True)
-    except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc), "rows": [], "summary": {}}, status_code=503)
+    # Return the already-built snapshot immediately; the background tracker
+    # refreshes every few seconds.
+    return pipeline.cached_snapshot()
 
 
 @app.get("/api/pipeline/{item_key:path}/events")
@@ -219,19 +238,21 @@ async def pipeline_events_api(request: Request, item_key: str):
 
 @app.get("/zurg", response_class=HTMLResponse)
 async def zurg_page(request: Request):
-    status = await zurg.status()
-    return _render(request, "zurg.html", zurg=status, recent=zurg.recent_entries(80))
+    status = zurg.cached_status()
+    recent = await asyncio.to_thread(zurg.recent_entries, 80)
+    return _render(request, "zurg.html", zurg=status, recent=recent, index=zurg.index_state())
 
 
 @app.get("/api/zurg/status")
 async def zurg_api(request: Request):
     _require_user(request)
-    return await zurg.status()
+    return zurg.cached_status()
 
 
 @app.get("/arr-services", response_class=HTMLResponse)
 async def arr_services_page(request: Request):
-    return _render(request, "arr_services.html", services=await status_rows(), service_names=SERVICES)
+    rows = await services.status_rows(timeout=7.0)
+    return _render(request, "arr_services.html", services=rows, service_names=SERVICES)
 
 
 @app.post("/arr-services/{service}")
@@ -247,7 +268,144 @@ async def arr_service_save(request: Request, service: str, url: str = Form(...),
 @app.get("/api/services")
 async def services_api(request: Request):
     _require_user(request)
-    return {"ok": True, "services": await status_rows()}
+    return {"ok": True, "services": services.cached_status_rows(), "state": services.cache_state()}
+
+
+
+@app.get("/missing-media", response_class=HTMLResponse)
+async def missing_media_page(request: Request):
+    state = orchestrator.cached_state()
+    return _render(request, "missing_media.html", state=state, cfg=state["settings"])
+
+
+@app.post("/missing-media/settings")
+async def missing_media_settings(
+    request: Request,
+    enabled: bool = Form(False), dry_run: bool = Form(False), radarr: bool = Form(False), sonarr: bool = Form(False), lidarr: bool = Form(False),
+    batch_size: int = Form(3), delay_seconds: int = Form(30), max_active: int = Form(5), daily_limit: int = Form(50),
+    max_search_attempts: int = Form(5), max_failures: int = Form(3), cooldown_hours: float = Form(6), search_observe_minutes: int = Form(10),
+    priority: str = Form("least_attempts"), neutarr_coexist: bool = Form(False),
+):
+    orchestrator.save_settings(locals())
+    _flash(request, "Missing Media Orchestrator settings saved.", "success")
+    return _go("/missing-media")
+
+
+@app.post("/missing-media/scan")
+async def missing_media_scan(request: Request):
+    try:
+        await orchestrator.refresh()
+        _flash(request, "Missing-media scan refreshed.", "success")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/missing-media")
+
+
+@app.post("/missing-media/dispatch")
+async def missing_media_dispatch(request: Request):
+    try:
+        result = await orchestrator.dispatch_once(manual=True)
+        _flash(request, result.get("detail") or result.get("action") or "Dispatch complete.", "success" if result.get("ok") else "error")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/missing-media")
+
+
+@app.post("/missing-media/item/search")
+async def missing_media_item_search(request: Request, item_key: str = Form(...)):
+    try:
+        result = await orchestrator.dispatch_once(item_key, manual=True)
+        _flash(request, result.get("detail") or "Search action complete.", "success")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/missing-media")
+
+
+@app.post("/missing-media/item/pause")
+async def missing_media_item_pause(request: Request, item_key: str = Form(...)):
+    orchestrator.pause_item(item_key)
+    _flash(request, "Item paused and moved to Needs Attention.", "success")
+    return _go("/missing-media")
+
+
+@app.post("/missing-media/item/resume")
+async def missing_media_item_resume(request: Request, item_key: str = Form(...)):
+    orchestrator.resume_item(item_key)
+    _flash(request, "Item resumed.", "success")
+    return _go("/missing-media")
+
+
+@app.get("/api/missing-media")
+async def missing_media_api(request: Request):
+    _require_user(request)
+    return orchestrator.cached_state()
+
+
+@app.get("/queue-janitor", response_class=HTMLResponse)
+async def queue_janitor_page(request: Request):
+    state = queue_janitor.cached_state()
+    return _render(request, "queue_janitor.html", state=state, cfg=state["settings"])
+
+
+@app.post("/queue-janitor/settings")
+async def queue_janitor_settings(
+    request: Request,
+    enabled: bool = Form(False), dry_run: bool = Form(False), radarr: bool = Form(False), sonarr: bool = Form(False), lidarr: bool = Form(False),
+    auto_import: bool = Form(False), cleanup_bad: bool = Form(False), search_after_cleanup: bool = Form(False), swaparr_defer_stalled: bool = Form(False),
+    interval_seconds: int = Form(30), warning_grace_minutes: int = Form(5), max_failures: int = Form(3), cooldown_hours: float = Form(6),
+    min_movie_seconds: int = Form(300), min_episode_seconds: int = Form(60), min_music_seconds: int = Form(20),
+):
+    queue_janitor.save_settings(locals())
+    _flash(request, "Queue Janitor settings saved.", "success")
+    return _go("/queue-janitor")
+
+
+@app.post("/queue-janitor/scan")
+async def queue_janitor_scan(request: Request):
+    try:
+        await queue_janitor.refresh(run_actions=False)
+        _flash(request, "Queue scan refreshed without making changes.", "success")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/queue-janitor")
+
+
+@app.post("/queue-janitor/run")
+async def queue_janitor_run(request: Request):
+    try:
+        await queue_janitor.refresh(run_actions=True, allow_disabled=True)
+        cfg = queue_janitor.settings_state()
+        _flash(request, "Dry-run evaluation complete." if cfg["dry_run"] else "Queue Janitor cycle complete.", "success")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/queue-janitor")
+
+
+@app.post("/queue-janitor/action")
+async def queue_janitor_action(request: Request, service: str = Form(...), queue_id: str = Form(...)):
+    try:
+        await queue_janitor.refresh(run_actions=False)
+        item = queue_janitor.get_cached_item(service, queue_id)
+        if not item:
+            raise ValueError("Queue item is no longer present")
+        result = await queue_janitor.execute(item, force=True)
+        _flash(request, result.get("detail") or result.get("outcome") or "Action complete.", "success" if result.get("outcome") not in {"error", "attention"} else "info")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/queue-janitor")
+
+
+@app.post("/queue-janitor/attention/resume")
+async def queue_janitor_resume(request: Request, media_key: str = Form(...)):
+    queue_janitor.resume_media(media_key)
+    _flash(request, "Recovery counter resumed. The next scan can retry it.", "success")
+    return _go("/queue-janitor")
+
+
+@app.get("/api/queue-janitor")
+async def queue_janitor_api(request: Request):
+    _require_user(request)
+    return queue_janitor.cached_state()
 
 
 @app.get("/lists", response_class=HTMLResponse)
@@ -362,17 +520,17 @@ async def music_page(request: Request, q: str = ""):
     user = _require_user(request)
     uid = int(user["id"])
     try:
-        spotify_hub = await music.spotify_user_hub(uid) if music.spotify_user_linked(uid) else {"linked": False}
+        spotify_hub = await asyncio.wait_for(music.spotify_user_hub(uid), timeout=10) if music.spotify_user_linked(uid) else {"linked": False}
     except Exception as exc:
         spotify_hub = {"linked": True, "profile": {}, "errors": [str(exc)]}
     try:
-        spotify_results = await music.spotify_search(q, "album", 15) if q else []
+        spotify_results = await asyncio.wait_for(music.spotify_search(q, "album", 15), timeout=10) if q else []
     except Exception:
         spotify_results = []
     lidarr_results = []
     if q:
         try:
-            lidarr_results = (await LidarrClient().artist_lookup(q))[:15]
+            lidarr_results = (await asyncio.wait_for(LidarrClient().artist_lookup(q), timeout=10))[:15]
         except Exception:
             lidarr_results = []
     return _render(
@@ -384,25 +542,41 @@ async def music_page(request: Request, q: str = ""):
 
 @app.get("/music/settings", response_class=HTMLResponse)
 async def music_settings_page(request: Request):
-    return _render(request, "music_settings.html", client_id=setting_get("music.spotify.client_id"), market=setting_get("music.spotify.market", "GB"), configured=music.spotify_app_configured())
+    public_url = setting_get("app.public_url", "") or settings.public_url
+    redirect_uri = music.spotify_redirect_uri(public_url, str(request.url))
+    redirect_ok, redirect_message = music.spotify_redirect_validation(redirect_uri)
+    return _render(
+        request, "music_settings.html", client_id=setting_get("music.spotify.client_id"),
+        market=setting_get("music.spotify.market", "GB"), configured=music.spotify_app_configured(),
+        public_url=public_url, redirect_uri=redirect_uri, redirect_ok=redirect_ok, redirect_message=redirect_message,
+    )
 
 
 @app.post("/music/settings")
-async def music_settings_save(request: Request, client_id: str = Form(""), client_secret: str = Form(""), market: str = Form("GB")):
+async def music_settings_save(request: Request, client_id: str = Form(""), client_secret: str = Form(""), market: str = Form("GB"), public_url: str = Form("")):
     setting_set("music.spotify.client_id", client_id.strip())
     if client_secret:
         setting_set("music.spotify.client_secret", client_secret.strip(), True)
     setting_set("music.spotify.market", (market or "GB").strip().upper()[:2])
-    _flash(request, "Spotify settings saved.", "success")
+    setting_set("app.public_url", public_url.strip().rstrip("/"))
+    redirect_uri = music.spotify_redirect_uri(public_url.strip(), str(request.url))
+    ok, message = music.spotify_redirect_validation(redirect_uri)
+    _flash(request, "Spotify settings saved. Redirect URI is ready." if ok else f"Spotify settings saved. {message}", "success" if ok else "info")
     return _go("/music/settings")
 
 
 @app.get("/music/spotify/connect")
 async def spotify_connect(request: Request):
     user = _require_user(request)
+    public_url = setting_get("app.public_url", "") or settings.public_url
+    redirect_uri = music.spotify_redirect_uri(public_url, str(request.url))
+    redirect_ok, redirect_message = music.spotify_redirect_validation(redirect_uri)
+    if not redirect_ok:
+        _flash(request, f"Spotify cannot be linked yet. {redirect_message} Redirect URI: {redirect_uri or 'not configured'}", "error")
+        return _go("/music/settings")
     state = secrets.token_urlsafe(24)
     request.session["spotify_state"] = state
-    redirect_uri = str(request.url_for("spotify_callback"))
+    request.session["spotify_redirect_uri"] = redirect_uri
     try:
         return RedirectResponse(music.spotify_authorize_url(int(user["id"]), state, redirect_uri), status_code=302)
     except Exception as exc:
@@ -413,11 +587,16 @@ async def spotify_connect(request: Request):
 @app.get("/music/spotify/callback", name="spotify_callback")
 async def spotify_callback(request: Request, code: str = "", state: str = "", error: str = ""):
     user = _require_user(request)
-    if error or not code or state != request.session.pop("spotify_state", None):
+    expected_state = request.session.pop("spotify_state", None)
+    redirect_uri = request.session.pop("spotify_redirect_uri", "")
+    if error or not code or state != expected_state:
         _flash(request, error or "Spotify authorization state did not match.", "error")
         return _go("/music")
     try:
-        await music.spotify_exchange_code(int(user["id"]), code, str(request.url_for("spotify_callback")))
+        if not redirect_uri:
+            public_url = setting_get("app.public_url", "") or settings.public_url
+            redirect_uri = music.spotify_redirect_uri(public_url, str(request.url))
+        await music.spotify_exchange_code(int(user["id"]), code, redirect_uri)
         _flash(request, "Spotify linked.", "success")
     except Exception as exc:
         _flash(request, str(exc), "error")
@@ -455,7 +634,7 @@ async def automation_page(request: Request):
     libraries = []
     try:
         from .jellyfin import JellyfinClient
-        libraries = await JellyfinClient().libraries()
+        libraries = await asyncio.wait_for(JellyfinClient().libraries(), timeout=10)
     except Exception:
         pass
     return _render(
@@ -553,15 +732,26 @@ async def logs_page(request: Request, level: str = "all", source: str = "all", q
 async def settings_page(request: Request):
     return _render(
         request, "settings.html", zurg_root=setting_get("zurg.root", settings.zurg_root),
-        zurg_url=setting_get("zurg.url", settings.zurg_url), settings_rows=all_settings(mask_secrets=True),
+        zurg_url=setting_get("zurg.url", settings.zurg_url),
+        zurg_cache_path=setting_get("zurg.cache_path", settings.zurg_cache_path),
+        public_url=setting_get("app.public_url", "") or settings.public_url,
+        settings_rows=all_settings(mask_secrets=True),
     )
 
 
 @app.post("/settings/zurg")
-async def settings_zurg_save(request: Request, zurg_root: str = Form(...), zurg_url: str = Form("")):
+async def settings_zurg_save(request: Request, zurg_root: str = Form(...), zurg_url: str = Form(""), zurg_cache_path: str = Form("")):
     setting_set("zurg.root", zurg_root.strip())
     setting_set("zurg.url", zurg_url.strip())
+    setting_set("zurg.cache_path", zurg_cache_path.strip())
     _flash(request, "Zurg settings saved.", "success")
+    return _go("/settings")
+
+
+@app.post("/settings/app")
+async def settings_app_save(request: Request, public_url: str = Form("")):
+    setting_set("app.public_url", public_url.strip().rstrip("/"))
+    _flash(request, "ArrNexus public URL saved.", "success")
     return _go("/settings")
 
 
@@ -592,8 +782,13 @@ async def about_page(request: Request):
 
 @app.get("/api/health")
 async def health():
-    try:
-        zs = await zurg.status()
-    except Exception as exc:
-        zs = {"ok": False, "error": str(exc)}
-    return {"ok": True, "app": "ArrNexus", "version": "11.0.0-beta", "zurg": zs}
+    return {
+        "ok": True,
+        "app": "ArrNexus",
+        "version": APP_VERSION,
+        "zurg": zurg.cached_status(),
+        "tracker": pipeline.tracker_state(),
+        "services": services.cache_state(),
+        "orchestrator": {"summary": orchestrator.cached_state().get("summary"), "ready": orchestrator.cached_state().get("ready")},
+        "janitor": {"summary": queue_janitor.cached_state().get("summary"), "ready": queue_janitor.cached_state().get("ready")},
+    }

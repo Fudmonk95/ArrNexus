@@ -1,0 +1,62 @@
+{% extends "base.html" %}{% block title %}Queue Janitor · ArrNexus{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Auto Import + Queue Janitor</h1><p>Sonarr, Radarr and Lidarr queue repair: rescue valid ID-matched downloads first, remove confirmed bad releases second, then stop cleanly at the retry limit.</p></div>
+  <div class="head-status"><span class="pill {{ 'good' if cfg.enabled else 'bad' }}">{{ 'Automatic janitor enabled' if cfg.enabled else 'Automatic janitor disabled' }}</span><span class="pill {{ 'warn' if cfg.dry_run else 'good' }}">{{ 'Dry-run' if cfg.dry_run else 'Live actions' }}</span></div>
+</div>
+{% if state.error %}<div class="flash error">{{ state.error }}</div>{% endif %}
+<div class="stat-grid compact"><div class="stat"><span>Queue</span><strong>{{ state.summary.queue|default(0) }}</strong></div><div class="stat"><span>Warnings</span><strong>{{ state.summary.warning|default(0) }}</strong></div><div class="stat"><span>Actionable</span><strong>{{ state.summary.actionable|default(0) }}</strong></div><div class="stat"><span>Needs attention</span><strong>{{ state.summary.attention|default(0) }}</strong></div></div>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>Decision order</h2><span class="muted">The Janitor deliberately prefers saving a valid download over deleting it.</span></div></div>
+  <div class="flow-strip"><span>Queue warning</span><b>→</b><span>ID/manual-import?</span><b>→</b><span>Safe explicit import</span><b>→</b><span>Bad release?</span><b>→</b><span>Remove + blocklist</span><b>→</b><span>Controlled retry</span><b>→</b><span>Needs Attention</span></div>
+  <div class="table-wrap"><table class="rules-table"><thead><tr><th>Queue condition</th><th>ArrNexus action</th></tr></thead><tbody>
+    <tr><td>Matched by ID / Manual Import required</td><td><strong>Try explicit safe ManualImport first.</strong> Never delete just because the release name confused the Arr.</td></tr>
+    <tr><td>Invalid season / episode / album mapping</td><td>Do not force-import. Remove + blocklist only when live cleanup is enabled, then controlled retry.</td></tr>
+    <tr><td>Unable to determine whether sample</td><td>ffprobe the visible queue path or Zurg working path first; readable media can proceed to safe import.</td></tr>
+    <tr><td>Sample, download failure, provider/Zurg timeout, missing articles, corrupt archive, no eligible files, unreadable media</td><td>Remove from client + blocklist exact release + retry until the hard limit.</td></tr>
+    <tr><td>Stalled/no-progress download</td><td>{{ 'Leave it to NeutArr/Swaparr.' if cfg.swaparr_defer_stalled else 'ArrNexus may clean it as a bad release.' }}</td></tr>
+    <tr><td>Hard failed-release limit</td><td>Stop automatic searching, leave the item monitored/missing and move it to Needs Attention.</td></tr>
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>Rules</h2><span class="muted">Dry-run performs read-only inspection and records what would happen. Manual dry-run cycles work even while the automatic scheduler is disabled.</span></div><span class="tag">{{ 'DRY RUN' if cfg.dry_run else 'LIVE ACTIONS' }}</span></div>
+  <form id="janitor-settings" method="post" action="/queue-janitor/settings" class="form-grid">
+    <label class="check"><input type="checkbox" name="enabled" {% if cfg.enabled %}checked{% endif %}> Enable automatic janitor</label>
+    <label class="check"><input type="checkbox" name="dry_run" {% if cfg.dry_run %}checked{% endif %}> Dry-run only</label>
+    <label class="check"><input type="checkbox" name="radarr" {% if cfg.radarr %}checked{% endif %}> Radarr</label>
+    <label class="check"><input type="checkbox" name="sonarr" {% if cfg.sonarr %}checked{% endif %}> Sonarr</label>
+    <label class="check"><input type="checkbox" name="lidarr" {% if cfg.lidarr %}checked{% endif %}> Lidarr</label>
+    <label class="check"><input type="checkbox" name="auto_import" {% if cfg.auto_import %}checked{% endif %}> Auto-import safe ID/manual-import matches first</label>
+    <label class="check"><input type="checkbox" name="cleanup_bad" {% if cfg.cleanup_bad %}checked{% endif %}> Remove + blocklist confirmed bad releases</label>
+    <label class="check"><input type="checkbox" name="search_after_cleanup" {% if cfg.search_after_cleanup %}checked{% endif %}> Search another release after cleanup</label>
+    <label class="check"><input type="checkbox" name="swaparr_defer_stalled" {% if cfg.swaparr_defer_stalled %}checked{% endif %}> Defer stalled downloads to NeutArr/Swaparr</label>
+    <label>Scan interval (seconds)<input type="number" min="10" name="interval_seconds" value="{{ cfg.interval_seconds }}"></label>
+    <label>Warning grace period (minutes)<input type="number" min="0" name="warning_grace_minutes" value="{{ cfg.warning_grace_minutes }}"></label>
+    <label>Hard failed-release limit<input type="number" min="1" name="max_failures" value="{{ cfg.max_failures }}"></label>
+    <label>Attention cooldown (hours)<input type="number" step="0.1" min="0.1" name="cooldown_hours" value="{{ cfg.cooldown_hours }}"></label>
+    <label>Minimum movie duration (seconds)<input type="number" min="30" name="min_movie_seconds" value="{{ cfg.min_movie_seconds }}"></label>
+    <label>Minimum episode duration (seconds)<input type="number" min="20" name="min_episode_seconds" value="{{ cfg.min_episode_seconds }}"></label>
+    <label>Minimum music duration (seconds)<input type="number" min="5" name="min_music_seconds" value="{{ cfg.min_music_seconds }}"></label>
+    <div class="span2"><button class="primary" type="submit">Save rules</button></div>
+  </form>
+  <div class="inline-actions">
+    <form method="post" action="/queue-janitor/scan"><button type="submit">Scan only</button></form>
+    <form method="post" action="/queue-janitor/run"><button type="submit">{{ 'Run dry-run cycle' if cfg.dry_run else 'Run janitor now' }}</button></form>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>Current queue evaluation</h2><span class="muted">ID/manual-import warnings are never deleted before an explicit import attempt. Stalls can remain under Swaparr ownership.</span></div><span class="muted">Updated {{ state.updated_at or 'warming up' }}</span></div>
+  <div class="table-wrap"><table><thead><tr><th>Release</th><th>App</th><th>Class</th><th>Failures</th><th>Recommended action</th><th>Reason</th><th>Run</th></tr></thead><tbody>
+  {% for row in state.rows %}
+  <tr><td><strong>{{ row.release_title }}</strong><div class="mono small muted">{{ row.media_key }}</div></td><td>{{ row.service }}</td><td><span class="stage stage-{{ row.severity }}">{{ row.classification|replace('_',' ')|title }}</span></td><td>{{ row.failures }}/{{ cfg.max_failures }}</td><td>{{ row.recommended_action|replace('_',' ')|title }}</td><td>{{ row.reason }}{% if row.last_detail %}<div class="small muted">{{ row.last_detail }}</div>{% endif %}</td><td>{% if row.recommended_action in ['auto_import','probe','blocklist_retry'] %}<form method="post" action="/queue-janitor/action"><input type="hidden" name="service" value="{{ row.service }}"><input type="hidden" name="queue_id" value="{{ row.queue_id }}"><button type="submit">{{ 'Preview' if cfg.dry_run else 'Run' }}</button></form>{% else %}<span class="muted">—</span>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="7" class="empty">No queue data yet.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+
+{% if state.attention %}<section class="panel"><div class="panel-head"><h2>Needs Attention</h2><span class="muted">Hard retry limit reached or manually paused. Reset &amp; resume clears the retry counter while retaining the action audit trail.</span></div><div class="table-wrap"><table><thead><tr><th>Media</th><th>App</th><th>Failures</th><th>Reason</th><th>Action</th></tr></thead><tbody>{% for row in state.attention %}<tr><td><strong>{{ row.title or row.media_key }}</strong><div class="mono small muted">{{ row.media_key }}</div></td><td>{{ row.service }}</td><td>{{ row.failures }}</td><td>{{ row.pause_reason }}</td><td><form method="post" action="/queue-janitor/attention/resume"><input type="hidden" name="media_key" value="{{ row.media_key }}"><button type="submit">Reset &amp; resume</button></form></td></tr>{% endfor %}</tbody></table></div></section>{% endif %}
+
+<section class="panel"><div class="panel-head"><h2>Recent Janitor actions</h2><span class="muted">Persistent audit trail</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>App</th><th>Release</th><th>Class</th><th>Action</th><th>Outcome</th><th>Detail</th></tr></thead><tbody>{% for row in state.history %}<tr><td class="small muted">{{ row.created_at }}</td><td>{{ row.service }}</td><td>{{ row.release_title }}</td><td>{{ row.classification }}</td><td>{{ row.action }}</td><td><span class="stage stage-{{ row.outcome }}">{{ row.outcome|replace('_',' ')|title }}</span>{% if row.dry_run %} <span class="tag">dry-run</span>{% endif %}</td><td>{{ row.detail }}</td></tr>{% else %}<tr><td colspan="7" class="empty">No Janitor actions recorded yet.</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

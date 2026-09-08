@@ -42,8 +42,14 @@ def database_backup(destination_dir: str | Path | None = None) -> Path:
     destination.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     target = destination / f"arrnexus-{stamp}.db"
-    with sqlite3.connect(source) as src, sqlite3.connect(target) as dst:
+    src = sqlite3.connect(source)
+    dst = sqlite3.connect(target)
+    try:
         src.backup(dst)
+        dst.commit()
+    finally:
+        dst.close()
+        src.close()
     return target
 
 

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{% block title %}ArrNexus{% endblock %}</title>
   <link rel="icon" href="/static/arrnexus-icon.png">
-  <link rel="stylesheet" href="/static/app.css?v=11">
+  <link rel="stylesheet" href="/static/app.css?v={{ version }}">
   {% block head %}{% endblock %}
 </head>
 <body>
@@ -17,6 +17,8 @@
     <nav>
       <a href="/" class="{% if request.url.path == '/' %}active{% endif %}">Dashboard</a>
       <a href="/pipeline" class="{% if request.url.path.startswith('/pipeline') %}active{% endif %}">Live Requests</a>
+      <a href="/missing-media" class="{% if request.url.path.startswith('/missing-media') %}active{% endif %}">Missing Media</a>
+      <a href="/queue-janitor" class="{% if request.url.path.startswith('/queue-janitor') %}active{% endif %}">Queue Janitor</a>
       <a href="/zurg" class="{% if request.url.path.startswith('/zurg') %}active{% endif %}">Zurg</a>
       <a href="/arr-services" class="{% if request.url.path.startswith('/arr-services') %}active{% endif %}">Arr Services</a>
       <a href="/lists" class="{% if request.url.path.startswith('/lists') %}active{% endif %}">List Import</a>
@@ -39,7 +41,7 @@
     {% block content %}{% endblock %}
   </main>
 {% if user %}</div>{% endif %}
-<script src="/static/app.js?v=11"></script>
+<script src="/static/app.js?v={{ version }}"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

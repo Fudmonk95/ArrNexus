@@ -1,7 +1,6 @@
 services:
   arrnexus:
     image: arrnexus:v12.0.0
-    build: .
     container_name: arrnexus
     restart: unless-stopped
     extra_hosts:
@@ -9,10 +8,10 @@ services:
     ports:
       - "8484:8000"
     environment:
-      DB_PATH: ${DB_PATH:-/data/router.db}
+      DB_PATH: /data/router.db
       ARRNEXUS_PUBLIC_URL: ${ARRNEXUS_PUBLIC_URL:-}
-      ZURG_ROOT: ${ZURG_ROOT:-/zurg_mnt/zurg}
-      ZURG_CACHE_PATH: ${ZURG_CACHE_PATH:-/host/zurg-rclone-cache}
+      ZURG_ROOT: /zurg_mnt/zurg
+      ZURG_CACHE_PATH: /host/zurg-rclone-cache
       ZURG_URL: ${ZURG_URL:-http://host.docker.internal:9999}
       RADARR_URL: ${RADARR_URL:-http://host.docker.internal:7878}
       RADARR_API_KEY: ${RADARR_API_KEY:-}
@@ -29,8 +28,8 @@ services:
       ARRNEXUS_SESSION_SECRET: ${ARRNEXUS_SESSION_SECRET:-}
       ARRNEXUS_HTTPS_ONLY: ${ARRNEXUS_HTTPS_ONLY:-false}
     volumes:
-      - ${ARRNEXUS_DATA_DIR:-/mnt/appdata/arrnexus/data}:/data
-      - ${ZURG_CACHE_DIR:-/mnt/appdata/zurg-rclone-cache}:/host/zurg-rclone-cache:ro
+      - /mnt/appdata/arrnexus/data:/data
+      - /mnt/appdata/zurg-rclone-cache:/host/zurg-rclone-cache:ro
       - type: bind
         source: /zurg_mnt
         target: /zurg_mnt

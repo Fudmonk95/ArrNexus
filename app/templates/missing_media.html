@@ -1,0 +1,74 @@
+{% extends "base.html" %}{% block title %}Missing Media · ArrNexus{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Missing Media Orchestrator</h1><p>Controlled recovery for monitored missing movies, episodes/seasons and albums. ArrNexus decides when to search; the Arrs perform the search; Zurg remains the acquisition/storage layer.</p></div>
+  <div class="head-status">
+    <span class="pill {{ 'good' if cfg.enabled else 'bad' }}">{{ 'Scheduler enabled' if cfg.enabled else 'Scheduler disabled' }}</span>
+    <span class="pill {{ 'warn' if cfg.dry_run else 'good' }}">{{ 'Dry-run' if cfg.dry_run else 'Live actions' }}</span>
+    {% if cfg.neutarr_coexist %}<span class="pill good">NeutArr coexist</span>{% endif %}
+  </div>
+</div>
+{% if state.error %}<div class="flash error">{{ state.error }}</div>{% endif %}
+<div class="stat-grid compact">
+  <div class="stat"><span>Missing</span><strong>{{ state.summary.missing|default(0) }}</strong></div>
+  <div class="stat"><span>Active / queued</span><strong>{{ (state.summary.queued|default(0)) + (state.summary.searching|default(0)) + (state.summary.working|default(0)) }}</strong></div>
+  <div class="stat"><span>Cooldown</span><strong>{{ state.summary.cooldown|default(0) }}</strong></div>
+  <div class="stat"><span>Needs attention</span><strong>{{ state.summary.attention|default(0) }}</strong></div>
+</div>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>Search ownership</h2><span class="muted">Choose who owns the automatic missing-media search cadence.</span></div></div>
+  {% if cfg.neutarr_coexist %}
+  <div class="notice-card good-border"><strong>NeutArr coexistence mode</strong><p>NeutArr owns automatic missing-media searches. ArrNexus still inventories missing media, observes Arr queues and Zurg, tracks retry/attention state, and allows explicit manual searches. This avoids two schedulers repeatedly searching the same missing item.</p></div>
+  {% else %}
+  <div class="notice-card warn-border"><strong>ArrNexus scheduler mode</strong><p>ArrNexus will dispatch missing-media searches at the configured rate. It still refuses to duplicate work already present in an Arr queue or Zurg.</p></div>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>Control</h2><span class="muted">Dry-run is the safe starting mode. Batch size is deliberately capped at five.</span></div><span class="tag">{{ 'DRY RUN' if cfg.dry_run else 'LIVE ACTIONS' }}</span></div>
+  <form id="orchestrator-settings" method="post" action="/missing-media/settings" class="form-grid">
+    <label class="check"><input type="checkbox" name="enabled" {% if cfg.enabled %}checked{% endif %}> Enable ArrNexus automatic scheduler</label>
+    <label class="check"><input type="checkbox" name="dry_run" {% if cfg.dry_run %}checked{% endif %}> Dry-run only</label>
+    <label class="check"><input type="checkbox" name="radarr" {% if cfg.radarr %}checked{% endif %}> Radarr</label>
+    <label class="check"><input type="checkbox" name="sonarr" {% if cfg.sonarr %}checked{% endif %}> Sonarr</label>
+    <label class="check"><input type="checkbox" name="lidarr" {% if cfg.lidarr %}checked{% endif %}> Lidarr</label>
+    <label class="check"><input type="checkbox" name="neutarr_coexist" {% if cfg.neutarr_coexist %}checked{% endif %}> NeutArr owns automatic missing searches</label>
+    <label>Batch size<input type="number" min="1" max="5" name="batch_size" value="{{ cfg.batch_size }}"><span class="field-help">1–5 controlled searches per dispatcher batch.</span></label>
+    <label>Delay between searches (seconds)<input type="number" min="5" name="delay_seconds" value="{{ cfg.delay_seconds }}"></label>
+    <label>Maximum active acquisitions<input type="number" min="1" name="max_active" value="{{ cfg.max_active }}"></label>
+    <label>Daily search limit<input type="number" min="1" name="daily_limit" value="{{ cfg.daily_limit }}"></label>
+    <label>Maximum searches without acquisition<input type="number" min="1" name="max_search_attempts" value="{{ cfg.max_search_attempts }}"></label>
+    <label>Hard failed-release limit<input type="number" min="1" name="max_failures" value="{{ cfg.max_failures }}"><span class="field-help">Shared recovery counters can move an item to Needs Attention.</span></label>
+    <label>Cooldown (hours)<input type="number" min="0.1" step="0.1" name="cooldown_hours" value="{{ cfg.cooldown_hours }}"></label>
+    <label>Observe search before cooldown (minutes)<input type="number" min="2" name="search_observe_minutes" value="{{ cfg.search_observe_minutes }}"></label>
+    <label>Priority<select name="priority"><option value="least_attempts" {% if cfg.priority=='least_attempts' %}selected{% endif %}>Least attempts first</option><option value="oldest" {% if cfg.priority=='oldest' %}selected{% endif %}>Oldest first</option><option value="newest" {% if cfg.priority=='newest' %}selected{% endif %}>Newest first</option><option value="random" {% if cfg.priority=='random' %}selected{% endif %}>Daily shuffle</option></select></label>
+    <div class="span2"><button class="primary" type="submit">Save settings</button></div>
+  </form>
+  <div class="inline-actions">
+    <form method="post" action="/missing-media/scan"><button type="submit">Scan now</button></form>
+    <form method="post" action="/missing-media/dispatch"><button type="submit">{{ 'Preview next search' if cfg.dry_run else 'Dispatch next search' }}</button></form>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>Recovery queue</h2><span class="muted">Sonarr groups multiple missing episodes in one season into a single season search. Existing Arr/Zurg activity is observed instead of duplicated.</span></div><span class="muted">Updated {{ state.updated_at or 'warming up' }}</span></div>
+  <div class="table-wrap"><table><thead><tr><th>Media</th><th>App</th><th>State</th><th>Searches</th><th>Failures</th><th>Detail</th><th>Actions</th></tr></thead><tbody>
+  {% for row in state.rows %}
+  <tr>
+    <td><strong>{{ row.title }}</strong><div class="mono small muted">{{ row.item_key }}</div></td>
+    <td>{{ row.service }}</td>
+    <td><span class="stage stage-{{ row.state }}">{{ row.state|replace('_',' ')|title }}</span></td>
+    <td>{{ row.attempts }}</td><td>{{ row.failures|default(0) }}</td><td>{{ row.detail }}</td>
+    <td><div class="inline-actions no-top">
+      <form method="post" action="/missing-media/item/search"><input type="hidden" name="item_key" value="{{ row.item_key }}"><button type="submit">{{ 'Preview search' if cfg.dry_run else 'Search now' }}</button></form>
+      {% if row.state == 'attention' %}<form method="post" action="/missing-media/item/resume"><input type="hidden" name="item_key" value="{{ row.item_key }}"><button type="submit">Reset &amp; resume</button></form>
+      {% else %}<form method="post" action="/missing-media/item/pause"><input type="hidden" name="item_key" value="{{ row.item_key }}"><button type="submit" class="danger">Pause</button></form>{% endif %}
+    </div></td>
+  </tr>
+  {% else %}<tr><td colspan="7" class="empty">No missing-media state yet. Use Scan now or wait for the background scanner.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+
+<section class="panel"><div class="panel-head"><h2>Recent orchestrator events</h2><span class="muted">{{ state.summary.daily_searches|default(0) }} searches dispatched today</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Item</th><th>State</th><th>Detail</th></tr></thead><tbody>{% for e in state.events %}<tr><td class="small muted">{{ e.created_at }}</td><td class="mono small">{{ e.item_key }}</td><td><span class="stage stage-{{ e.state }}">{{ e.state|replace('_',' ')|title }}</span></td><td>{{ e.detail }}</td></tr>{% else %}<tr><td colspan="4" class="empty">No events yet.</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

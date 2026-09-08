@@ -37,8 +37,10 @@ class Settings:
     app_name: str = env("APP_NAME", "ArrNexus")
     db_path: str = env("DB_PATH", "/data/arrnexus.db")
     session_secret: str = persistent_secret()
+    public_url: str = env("ARRNEXUS_PUBLIC_URL", "")
 
     zurg_root: str = env("ZURG_ROOT", "/zurg_mnt/zurg")
+    zurg_cache_path: str = env("ZURG_CACHE_PATH", "/host/zurg-rclone-cache")
     zurg_url: str = env("ZURG_URL", "http://host.docker.internal:9999")
 
     radarr_url: str = env("RADARR_URL", "http://host.docker.internal:7878")

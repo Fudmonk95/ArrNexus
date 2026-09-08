@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from urllib.parse import urlencode, quote_plus
+from urllib.parse import urlencode, quote_plus, urlparse
 
 import httpx
 
@@ -17,6 +17,33 @@ SPOTIFY_USER_SCOPES = (
     "user-read-private",
 )
 
+
+
+
+def spotify_redirect_uri(public_url: str = "", request_url: str = "") -> str:
+    base = str(public_url or "").strip().rstrip("/")
+    if not base and request_url:
+        parsed = urlparse(str(request_url))
+        base = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    return f"{base}/music/spotify/callback" if base else ""
+
+
+def spotify_redirect_validation(redirect_uri: str) -> tuple[bool, str]:
+    uri = str(redirect_uri or "").strip()
+    if not uri:
+        return False, "Set an ArrNexus public URL before linking Spotify."
+    try:
+        parsed = urlparse(uri)
+    except Exception:
+        return False, "The Spotify redirect URI is invalid."
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme == "https" and host:
+        return True, "Ready"
+    if parsed.scheme == "http" and host in {"127.0.0.1", "localhost", "::1"}:
+        return True, "Ready (loopback HTTP)"
+    if parsed.scheme == "http":
+        return False, "Spotify requires HTTPS for non-loopback callback addresses. Configure an HTTPS ArrNexus public URL."
+    return False, "Spotify requires an HTTPS callback URL (or an HTTP loopback URL)."
 
 def beatport_search_url(query: str) -> str:
     return "https://www.beatport.com/search?q=" + quote_plus(str(query or "").strip())

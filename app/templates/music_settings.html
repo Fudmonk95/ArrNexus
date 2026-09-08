@@ -1,2 +1,19 @@
 {% extends "base.html" %}{% block title %}Music Settings · ArrNexus{% endblock %}
-{% block content %}<div class="page-head"><div><h1>Spotify settings</h1><p>Configure the Spotify application used by Music Hub.</p></div><a class="button" href="/music">Back to Music Hub</a></div><section class="panel narrow"><form method="post" class="stack"><label>Client ID<input name="client_id" value="{{ client_id }}"></label><label>Client secret<input type="password" name="client_secret" placeholder="{{ 'Leave blank to keep current secret' if configured else 'Client secret' }}"></label><label>Market<input name="market" value="{{ market }}" maxlength="2"></label><button class="primary">Save Spotify settings</button></form></section>{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Spotify settings</h1><p>Configure Spotify and the exact OAuth callback ArrNexus will use.</p></div><a class="button" href="/music">Back to Music Hub</a></div>
+<div class="grid two">
+<section class="panel"><h2>Spotify application</h2><form method="post" class="stack">
+<label>Client ID<input name="client_id" value="{{ client_id }}"></label>
+<label>Client secret<input type="password" name="client_secret" placeholder="{{ 'Leave blank to keep current secret' if configured else 'Client secret' }}"></label>
+<label>Market<input name="market" value="{{ market }}" maxlength="2"></label>
+<label>ArrNexus public URL<input name="public_url" value="{{ public_url }}" placeholder="https://arrnexus.example.com"><span class="field-help">Use the HTTPS hostname that your browser can reach through Cloudflare/reverse proxy. Do not include /music/spotify/callback here.</span></label>
+<button class="primary">Save Spotify settings</button>
+</form></section>
+<section class="panel"><div class="panel-head"><h2>Spotify redirect URI</h2><span class="pill {{ 'good' if redirect_ok else 'bad' }}">{{ 'Ready' if redirect_ok else 'Needs attention' }}</span></div>
+<p class="muted">Copy this exact URI into the Redirect URIs section of your Spotify developer application.</p>
+<div class="copy-row"><code id="spotify-redirect-uri" class="code-inline">{{ redirect_uri or 'Set a public URL first' }}</code><button type="button" data-copy="#spotify-redirect-uri">Copy</button></div>
+<p class="{{ 'good-text' if redirect_ok else 'error-text' }}">{{ redirect_message }}</p>
+{% if not redirect_ok %}<p class="muted small">A LAN callback such as <code>http://192.168.x.x:8484/...</code> is intentionally blocked before ArrNexus sends you to Spotify.</p>{% endif %}
+</section>
+</div>
+{% endblock %}

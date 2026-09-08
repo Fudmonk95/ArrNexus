@@ -1,24 +1,67 @@
 {% extends "base.html" %}{% block title %}Dashboard · ArrNexus{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>Dashboard</h1><p>Zurg-first media orchestration at a glance.</p></div><span class="pill {% if zurg.ok %}good{% else %}bad{% endif %}">{{ 'Zurg healthy' if zurg.ok else 'Zurg attention' }}</span></div>
+<div class="page-head">
+  <div><h1>Dashboard</h1><p>Zurg-first media orchestration at a glance.</p></div>
+  <div class="head-status">
+    <span class="pill {% if not zurg.cache_updated_at %}warn{% elif zurg.ok %}good{% else %}bad{% endif %}">{{ 'Zurg warming' if not zurg.cache_updated_at else ('Zurg healthy' if zurg.ok else 'Zurg attention') }}</span>
+    <span class="pill {% if tracker.ready and not live.stale %}good{% else %}warn{% endif %}">{{ 'Tracker live' if tracker.ready and not live.stale else 'Tracker warming' }}</span>
+  </div>
+</div>
 <div class="stat-grid">
   <div class="stat"><span>Movies</span><strong>{{ zurg.counts.movies|default(0) }}</strong></div>
   <div class="stat"><span>Shows</span><strong>{{ zurg.counts.shows|default(0) }}</strong></div>
   <div class="stat"><span>Active requests</span><strong>{{ live.summary.active|default(0) }}</strong></div>
-  <div class="stat"><span>Finished requests</span><strong>{{ live.summary.finished|default(0) }}</strong></div>
+  <div class="stat"><span>Zurg working</span><strong>{{ live.summary.working|default(0) }}</strong></div>
 </div>
+<div class="stat-grid compact">
+  <div class="stat"><span>Missing media</span><strong>{{ orchestrator.summary.missing|default(0) }}</strong><a class="status-line" href="/missing-media">Open orchestrator</a></div>
+  <div class="stat"><span>Recovery active</span><strong>{{ (orchestrator.summary.queued|default(0)) + (orchestrator.summary.searching|default(0)) + (orchestrator.summary.working|default(0)) }}</strong><span class="status-line">{{ 'Dry-run' if orchestrator.settings.dry_run else 'Live actions' }}</span></div>
+  <div class="stat"><span>Queue issues</span><strong>{{ (janitor.summary.warning|default(0)) + (janitor.summary.actionable|default(0)) }}</strong><a class="status-line" href="/queue-janitor">Open Queue Janitor</a></div>
+  <div class="stat"><span>Needs attention</span><strong>{{ janitor.summary.attention|default(0) }}</strong><span class="status-line">Hard retry stops</span></div>
+</div>
+
 <div class="grid two">
 <section class="panel"><div class="panel-head"><h2>Service health</h2><a href="/arr-services">Configure</a></div>
-  <div class="service-list">{% for s in services %}<div class="service-row"><span class="dot {{ 'good' if s.ok else 'bad' }}"></span><strong>{{ s.label }}</strong><span class="grow"></span><span class="muted">{{ s.version or ('online' if s.ok else 'offline') }}</span></div>{% endfor %}</div>
+  <div class="service-list">
+  {% for s in services %}
+    <div class="service-row"><span class="dot {{ 'good' if s.ok else ('warn' if s.checking else 'bad') }}"></span><strong>{{ s.label }}</strong><span class="grow"></span><span class="muted">{{ s.version or ('checking' if s.checking else ('online' if s.ok else 'offline')) }}</span></div>
+  {% endfor %}
+  </div>
+  {% if service_state.error %}<p class="error-text small">{{ service_state.error }}</p>{% endif %}
 </section>
 <section class="panel"><div class="panel-head"><h2>Zurg</h2><a href="/zurg">Open</a></div>
-  <dl class="kv"><dt>Root</dt><dd class="mono">{{ zurg.root or '—' }}</dd><dt>Filesystem</dt><dd>{{ 'Ready' if zurg.readable else 'Unavailable' }}</dd><dt>Endpoint</dt><dd>{{ zurg.endpoint.status if zurg.endpoint else '—' }}</dd><dt>Unplayable</dt><dd>{{ zurg.counts['__unplayable__']|default(0) }}</dd></dl>
+  <dl class="kv">
+    <dt>Root</dt><dd class="mono">{{ zurg.root or '—' }}</dd>
+    <dt>Filesystem</dt><dd><span class="status-inline good-text">{{ 'Ready' if zurg.readable else 'Unavailable' }}</span></dd>
+    <dt>HTTP endpoint</dt><dd>{{ zurg.endpoint.state if zurg.endpoint else 'Warming up' }}{% if zurg.endpoint and zurg.endpoint.status %} · HTTP {{ zurg.endpoint.status }}{% endif %}</dd>
+    <dt>Version</dt><dd>{{ zurg.version_line or '—' }}</dd>
+    <dt>Unplayable</dt><dd>{{ zurg.counts['__unplayable__']|default(0) }}</dd>
+    <dt>Cache</dt><dd>{{ zurg.storage.size_human if zurg.storage else '—' }}</dd>
+    <dt>Cache disk free</dt><dd>{{ zurg.storage.filesystem_free_human if zurg.storage else '—' }}</dd>
+  </dl>
   {% if zurg_error %}<p class="error-text">{{ zurg_error }}</p>{% endif %}
 </section>
 </div>
-<section class="panel"><div class="panel-head"><h2>Latest Seerr requests</h2><a href="/pipeline">Live view</a></div>
-{% if live_error %}<p class="error-text">{{ live_error }}</p>{% endif %}
-<div class="table-wrap"><table><thead><tr><th>Title</th><th>Type</th><th>Stage</th><th>Detail</th></tr></thead><tbody>
-{% for row in live.rows[:10] %}<tr><td><strong>{{ row.title }}</strong>{% if row.year %} <span class="muted">({{ row.year }})</span>{% endif %}</td><td>{{ row.media_type }}</td><td><span class="stage stage-{{ row.stage }}">{{ row.stage_label }}</span></td><td class="muted">{{ row.detail }}</td></tr>{% else %}<tr><td colspan="4" class="empty">No request data yet.</td></tr>{% endfor %}
-</tbody></table></div></section>
+<section class="panel"><div class="panel-head"><div><h2>Active acquisitions</h2><span class="muted">Seerr, Arr queues and Zurg working views combined</span></div><a href="/pipeline">Open Live Requests</a></div>
+{% if live_error %}<p class="error-text small">{{ live_error }}</p>{% endif %}
+<div class="table-wrap"><table><thead><tr><th>Title</th><th>Source</th><th>Service</th><th>Stage</th><th>Detail</th></tr></thead><tbody>
+{% set ns = namespace(count=0) %}
+{% for row in live.rows %}{% if row.stage not in ['available','complete','failed','declined'] and ns.count < 12 %}{% set ns.count = ns.count + 1 %}
+<tr><td><strong>{{ row.title }}</strong>{% if row.year %} <span class="muted">({{ row.year }})</span>{% endif %}</td><td>{{ row.source or '—' }}</td><td>{{ row.service or '—' }}</td><td><span class="stage stage-{{ row.stage }}">{{ row.stage_label }}</span></td><td class="muted">{{ row.detail }}</td></tr>
+{% endif %}{% endfor %}
+{% if ns.count == 0 %}<tr><td colspan="5" class="empty">No active acquisitions right now.</td></tr>{% endif %}
+</tbody></table></div>
+</section>
+<div class="grid two">
+<section class="panel"><div class="panel-head"><div><h2>Missing Media Orchestrator</h2><span class="muted">Controlled search scheduling across Radarr, Sonarr and Lidarr</span></div><a href="/missing-media">Manage</a></div><dl class="kv"><dt>Mode</dt><dd>{{ 'Disabled' if not orchestrator.settings.enabled else ('Dry-run' if orchestrator.settings.dry_run else 'Live') }}</dd><dt>Queued</dt><dd>{{ orchestrator.summary.queued|default(0) }}</dd><dt>Searching</dt><dd>{{ orchestrator.summary.searching|default(0) }}</dd><dt>Cooldown</dt><dd>{{ orchestrator.summary.cooldown|default(0) }}</dd><dt>Attention</dt><dd>{{ orchestrator.summary.attention|default(0) }}</dd></dl></section>
+<section class="panel"><div class="panel-head"><div><h2>Queue Janitor</h2><span class="muted">Auto-import good ID matches before bad-release cleanup</span></div><a href="/queue-janitor">Manage</a></div><dl class="kv"><dt>Mode</dt><dd>{{ 'Disabled' if not janitor.settings.enabled else ('Dry-run' if janitor.settings.dry_run else 'Live') }}</dd><dt>Healthy</dt><dd>{{ janitor.summary.healthy|default(0) }}</dd><dt>Warnings</dt><dd>{{ janitor.summary.warning|default(0) }}</dd><dt>Actionable</dt><dd>{{ janitor.summary.actionable|default(0) }}</dd><dt>Attention</dt><dd>{{ janitor.summary.attention|default(0) }}</dd></dl></section>
+</div>
+<section class="panel compact-panel"><div class="panel-head"><h2>Background state</h2><span class="muted">The UI never waits for provider scans</span></div>
+<div class="runtime-grid">
+  <div><span class="muted">Request tracker</span><strong>{{ 'Ready' if tracker.ready else 'Warming up' }}</strong></div>
+  <div><span class="muted">Zurg index</span><strong>{{ 'Ready' if tracker.index.ready else 'Warming up' }}</strong></div>
+  <div><span class="muted">Last tracker refresh</span><strong>{{ tracker.updated_at or '—' }}</strong></div>
+  <div><span class="muted">Finished requests</span><strong>{{ live.summary.finished|default(0) }}</strong></div>
+</div>
+</section>
 {% endblock %}

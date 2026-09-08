@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""External list/watchlist automation for the Zurg-native ArrNexus v11.
+"""External list/watchlist automation for the Zurg-native ArrNexus v12.
 
 Lists add titles to Radarr or Sonarr and let the Arr stack perform its normal search.
 ArrNexus never stages, extracts, renames or imports media files.
@@ -505,7 +505,7 @@ async def _fetch_imdb(defn: dict[str, Any]) -> list[NormalizedItem]:
         url = ref
     else:
         raise RuntimeError("IMDb source must be an imdb.com list URL or list ID")
-    headers = {"User-Agent": "Mozilla/5.0 ArrNexus/11.0", "Accept-Language": "en-GB,en;q=0.8"}
+    headers = {"User-Agent": "Mozilla/5.0 ArrNexus/12.0", "Accept-Language": "en-GB,en;q=0.8"}
     async with httpx.AsyncClient(timeout=45.0, follow_redirects=True, headers=headers) as client:
         r = await client.get(url)
     if r.status_code >= 400:
@@ -529,7 +529,7 @@ async def _fetch_feed(defn: dict[str, Any]) -> list[NormalizedItem]:
     if parsed.scheme not in {"http", "https"}:
         raise RuntimeError("RSS/Atom source must be an http(s) URL")
     async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
-        r = await client.get(url, headers={"User-Agent": "ArrNexus/11.0"})
+        r = await client.get(url, headers={"User-Agent": "ArrNexus/12.0"})
     if r.status_code >= 400:
         raise RuntimeError(f"Feed: {r.status_code} {r.text[:300]}")
     try:
@@ -557,7 +557,7 @@ async def _fetch_json(defn: dict[str, Any]) -> list[NormalizedItem]:
     if parsed.scheme not in {"http", "https"}:
         raise RuntimeError("Custom JSON source must be an http(s) URL")
     async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
-        r = await client.get(url, headers={"User-Agent": "ArrNexus/11.0", "Accept": "application/json"})
+        r = await client.get(url, headers={"User-Agent": "ArrNexus/12.0", "Accept": "application/json"})
     if r.status_code >= 400:
         raise RuntimeError(f"JSON list: {r.status_code} {r.text[:300]}")
     data = r.json(); rows = data.get("items") if isinstance(data, dict) else data
