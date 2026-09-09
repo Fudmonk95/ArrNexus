@@ -1,10 +1,8 @@
 services:
   arrnexus:
-    image: arrnexus:v12.0.0
+    image: arrnexus:v13.0.0
     container_name: arrnexus
     restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     ports:
       - "8484:8000"
     environment:
@@ -12,24 +10,27 @@ services:
       ARRNEXUS_PUBLIC_URL: ${ARRNEXUS_PUBLIC_URL:-}
       ZURG_ROOT: /zurg_mnt/zurg
       ZURG_CACHE_PATH: /host/zurg-rclone-cache
-      ZURG_URL: ${ZURG_URL:-http://host.docker.internal:9999}
-      RADARR_URL: ${RADARR_URL:-http://host.docker.internal:7878}
+      MAGIC_ROOT: /zurg_magic
+      MAGIC_ARR_PREFIX: /zurg_mnt/zurg/__magic__
+      ZURG_URL: ${ZURG_URL:-http://192.168.137.10:9999}
+      RADARR_URL: ${RADARR_URL:-http://192.168.137.10:7878}
       RADARR_API_KEY: ${RADARR_API_KEY:-}
-      SONARR_URL: ${SONARR_URL:-http://host.docker.internal:8989}
+      SONARR_URL: ${SONARR_URL:-http://192.168.137.10:8989}
       SONARR_API_KEY: ${SONARR_API_KEY:-}
-      LIDARR_URL: ${LIDARR_URL:-http://host.docker.internal:8686}
+      LIDARR_URL: ${LIDARR_URL:-http://192.168.137.10:8686}
       LIDARR_API_KEY: ${LIDARR_API_KEY:-}
-      PROWLARR_URL: ${PROWLARR_URL:-http://host.docker.internal:9696}
+      PROWLARR_URL: ${PROWLARR_URL:-http://192.168.137.10:9696}
       PROWLARR_API_KEY: ${PROWLARR_API_KEY:-}
-      JELLYFIN_URL: ${JELLYFIN_URL:-http://host.docker.internal:8096}
+      JELLYFIN_URL: ${JELLYFIN_URL:-http://192.168.137.10:8096}
       JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:-}
-      SEERR_URL: ${SEERR_URL:-http://host.docker.internal:5055}
+      SEERR_URL: ${SEERR_URL:-http://192.168.137.10:5055}
       SEERR_API_KEY: ${SEERR_API_KEY:-}
       ARRNEXUS_SESSION_SECRET: ${ARRNEXUS_SESSION_SECRET:-}
       ARRNEXUS_HTTPS_ONLY: ${ARRNEXUS_HTTPS_ONLY:-false}
     volumes:
       - /mnt/appdata/arrnexus/data:/data
       - /mnt/appdata/zurg-rclone-cache:/host/zurg-rclone-cache:ro
+      - /zurg_mnt/zurg/__magic__:/zurg_magic:rw
       - type: bind
         source: /zurg_mnt
         target: /zurg_mnt

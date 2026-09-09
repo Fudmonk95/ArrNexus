@@ -1,64 +1,65 @@
-# ArrNexus v12.0.0 validation
+# ArrNexus v13.0.0 validation
 
-Validation performed against the complete v12 release tree before packaging.
+Validation performed against the complete v13 release tree before packaging.
 
 ## Automated source/runtime checks
 
-- Python `compileall` passed for all application and test modules.
-- AST parsing passed for every Python source file.
-- All Jinja templates compiled successfully.
-- `docker-compose.yml` and `portainer-stack.yml` parsed successfully as YAML and contain a `services` definition.
-- All supplied shell scripts passed `bash -n` syntax validation.
-- Runtime source scan found none of the retired low-level integration names that must stay out of the v12 runtime.
-- Package safety scan found no `.env`, SQLite or `.db` runtime files in the release tree.
-- Version scan confirms the release reports exactly `12.0.0`.
+- Python `compileall` passed for the complete application tree.
+- `app.main` imports successfully and reports exactly `13.0.0`.
+- All Jinja templates compile successfully, including the new Magic Intake UI.
+- `docker-compose.yml` and `portainer-stack.yml` are included with the v13 image tag.
+- The main Zurg bind remains read-only.
+- A dedicated writable `/zurg_magic` bind is provided only for Zurg `__magic__` moves.
+- Standalone service defaults point to `192.168.137.10`.
+- Package safety keeps the persistent database outside the release tree.
 
-## v12 test suite
+## Automated test suite
 
-`PYTHONPATH=. python -m unittest -v tests.test_v12`
+Run with:
 
-16 tests passed, covering:
+```bash
+PYTHONPATH=. python -m unittest -v tests.test_v13
+```
 
-1. v12 recovery/orchestration SQLite schema creation;
-2. Sonarr multi-episode season grouping into `SeasonSearch`;
-3. expired Missing Media cooldown becoming eligible again;
-4. NeutArr coexistence deferring automatic Missing Media dispatch;
-5. invalid season/episode mapping taking priority over broad Manual Import wording;
+**19 tests passed.**
+
+Coverage includes:
+
+1. v12 recovery/orchestration SQLite schema remains compatible;
+2. Sonarr season grouping for multiple missing episodes;
+3. expired Missing Media cooldown eligibility;
+4. NeutArr coexistence deferring automatic dispatch;
+5. invalid episode mapping taking priority over unsafe manual import;
 6. ID/grab-history Manual Import classification;
-7. failed-release, uncertain-sample and stalled-download queue classification;
-8. hard failed-release limit entering a paused Needs Attention state;
-9. Reset & resume clearing the active retry counter;
-10. dry-run bad-release cleanup making no destructive state change;
-11. Queue Janitor API/UI state removing raw Arr queue payloads;
-12. safe ID-based ManualImport dry-run requiring the appropriate Arr IDs;
-13. unsafe ManualImport candidates being refused;
-14. Arr queue deletion requesting download-client removal plus blocklisting;
-15. manual Missing Media preview/search remaining available while its automatic scheduler is disabled; and
-16. FastAPI route rendering, v12 health version and valid non-nested forms for the Missing Media and Queue Janitor pages.
+7. failed-release, uncertain-sample and stalled-download classification;
+8. hard retry-limit pause behaviour;
+9. Reset & Resume recovery counter behaviour;
+10. Queue Janitor dry-run safety;
+11. Queue Janitor API state strips raw Arr payloads;
+12. safe ID-based manual import dry-run;
+13. unsafe manual import rejection;
+14. queue removal requests client removal plus blocklisting;
+15. manual Missing Media actions remain available while automatic scheduling is disabled;
+16. Magic Intake groups `SxxExx` releases into one TV title;
+17. Magic Intake ignores already-organised `movies/`, `tv/` and `music/` directories;
+18. Magic Intake Force Match persists the selected metadata identity; and
+19. FastAPI routes render successfully and `/api/health` reports `13.0.0`.
 
-## Behaviour validated
+## Magic Intake behaviour validated
 
-### Missing Media Orchestrator
-
-- Radarr, Sonarr and Lidarr missing-media inventory paths are implemented through the Arr APIs.
-- Search dispatch is constrained by batch, delay, active-acquisition, daily and attempt limits.
-- Batch size is constrained to 1–5.
-- Arr queue and Zurg working/mounted state suppress duplicate searches.
-- NeutArr coexistence is enabled by default, so NeutArr owns automatic missing-search cadence unless the setting is explicitly disabled.
-- Manual search remains available while coexistence is enabled.
-- Items no longer reported missing are moved to `resolved` and their active retry counter is cleared while audit events remain.
-
-### Auto Import + Queue Janitor
-
-- Radarr, Sonarr and Lidarr queues are classified conservatively.
-- Invalid season/episode/album mapping is checked before generic ID/manual-import wording and is never force-imported.
-- Safe ID/grab-history Manual Import requires readable candidate data and the necessary Arr IDs.
-- Uncertain sample/media warnings are probed with `ffprobe` when a readable path is available, including a read-only Zurg correlation fallback.
-- Confirmed bad releases can be removed from the client, blocklisted and followed by a controlled Arr search.
-- Failed-release count defaults to 3 before automatic recovery stops in Needs Attention.
-- Stalled/no-progress items defer to NeutArr/Swaparr by default.
-- Both recovery engines are disabled by default and dry-run is enabled by default.
+- Top-level release-name normalisation removes common quality/source suffixes.
+- Episode markers are preserved while grouping related releases under one title.
+- Already-organised Magic Intake directories are excluded from discovery.
+- Force Match persists title, year, external ID, artwork and 100% confidence.
+- The normal Zurg root is not used for writes by Magic Intake.
+- Magic Intake write operations are constrained to the configured dedicated magic root.
+- Destination paths are restricted to the configured movie/TV/music destination map.
+- Movie groups with multiple candidate releases require explicit release selection.
+- Arr items are resolved/added with automatic searching disabled before the virtual move.
+- The import path attempts explicit Arr ManualImport first, then a targeted Arr rescan/refresh.
+- Completion requires Arr confirmation; otherwise the group is retained as `partial`.
+- Ignore changes only ArrNexus state and does not delete Real-Debrid content.
 
 ## Container-build limitation
 
-Docker is not installed in the packaging environment, so a full `docker build`/live-container smoke test could not be executed here. The Dockerfile, Compose/Portainer YAML, Python application, templates and test suite were validated structurally and at application level. The supplied `scripts/build-local-image.sh` performs the final image build on the Debian/Portainer host.
+Docker is not installed in the packaging environment, so a live `docker build` and Zurg-FUSE move test cannot be executed here. The Debian host performs the final image build with `scripts/pull-build-v13.sh` after the GitHub tag is published.

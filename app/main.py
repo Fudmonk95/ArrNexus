@@ -30,15 +30,16 @@ from . import music
 from . import pipeline
 from . import orchestrator
 from . import queue_janitor
+from . import magic_intake
 from . import zurg
 from . import services
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 try:
-    APP_VERSION = (BASE_DIR.parent / "VERSION").read_text(encoding="utf-8").strip() or "12.0.0"
+    APP_VERSION = (BASE_DIR.parent / "VERSION").read_text(encoding="utf-8").strip() or "13.0.0"
 except OSError:
-    APP_VERSION = "12.0.0"
+    APP_VERSION = "13.0.0"
 
 
 @asynccontextmanager
@@ -53,6 +54,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(orchestrator.scan_loop(), name="missing-media-scan"),
         asyncio.create_task(orchestrator.dispatcher_loop(), name="missing-media-dispatcher"),
         asyncio.create_task(queue_janitor.scan_loop(), name="queue-janitor"),
+        asyncio.create_task(magic_intake.scan_loop(), name="magic-intake"),
         asyncio.create_task(media_lists.scheduler_loop(), name="media-list-scheduler"),
         asyncio.create_task(media_automation.scheduler_loop(), name="media-automation-scheduler"),
     ]
@@ -407,6 +409,66 @@ async def queue_janitor_api(request: Request):
     _require_user(request)
     return queue_janitor.cached_state()
 
+
+
+@app.get("/magic-intake", response_class=HTMLResponse)
+async def magic_intake_page(request: Request, q: str = "", media_type: str = "movie", group_key: str = ""):
+    state = magic_intake.cached_state()
+    results = []
+    if q and group_key:
+        results = await magic_intake.lookup(media_type, q)
+    return _render(request, "magic_intake.html", state=state, groups=state["groups"], cfg=state["settings"], search_results=results, search_q=q, search_type=media_type, search_group=group_key)
+
+
+@app.post("/magic-intake/settings")
+async def magic_intake_settings(request: Request, enabled: bool = Form(False), interval_seconds: int = Form(60), auto_match_threshold: int = Form(95), magic_root: str = Form(""), arr_prefix: str = Form("")):
+    magic_intake.save_settings(locals())
+    _flash(request, "Magic Intake settings saved.", "success")
+    return _go("/magic-intake")
+
+
+@app.post("/magic-intake/scan")
+async def magic_intake_scan(request: Request):
+    try:
+        state = await magic_intake.scan()
+        _flash(request, f"Magic Intake scan complete: {state['summary']['total']} group(s).", "success")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/magic-intake")
+
+
+@app.post("/magic-intake/force-match")
+async def magic_intake_force_match(request: Request, group_key: str = Form(...), media_type: str = Form(...), candidate_json: str = Form(...)):
+    try:
+        candidate = json.loads(candidate_json)
+        magic_intake.force_match(group_key, candidate)
+        _flash(request, f"Force matched to {candidate.get('title') or 'selected item'}.", "success")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/magic-intake")
+
+
+@app.post("/magic-intake/import")
+async def magic_intake_import(request: Request, group_key: str = Form(...), destination_key: str = Form(...), selected_source: str = Form("")):
+    try:
+        result = await magic_intake.import_group(group_key, destination_key, selected_source)
+        _flash(request, result.get("detail") or "Magic Intake import complete.", "success" if result.get("ok") else "info")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/magic-intake")
+
+
+@app.post("/magic-intake/ignore")
+async def magic_intake_ignore(request: Request, group_key: str = Form(...)):
+    magic_intake.ignore(group_key)
+    _flash(request, "Magic Intake group ignored.", "success")
+    return _go("/magic-intake")
+
+
+@app.get("/api/magic-intake")
+async def magic_intake_api(request: Request):
+    _require_user(request)
+    return magic_intake.cached_state()
 
 @app.get("/lists", response_class=HTMLResponse)
 async def lists_page(request: Request):

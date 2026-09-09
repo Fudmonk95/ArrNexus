@@ -41,28 +41,30 @@ class Settings:
 
     zurg_root: str = env("ZURG_ROOT", "/zurg_mnt/zurg")
     zurg_cache_path: str = env("ZURG_CACHE_PATH", "/host/zurg-rclone-cache")
-    zurg_url: str = env("ZURG_URL", "http://host.docker.internal:9999")
+    magic_root: str = env("MAGIC_ROOT", "/zurg_magic")
+    magic_arr_prefix: str = env("MAGIC_ARR_PREFIX", "/zurg_mnt/zurg/__magic__")
+    zurg_url: str = env("ZURG_URL", "http://192.168.137.10:9999")
 
-    radarr_url: str = env("RADARR_URL", "http://host.docker.internal:7878")
+    radarr_url: str = env("RADARR_URL", "http://192.168.137.10:7878")
     radarr_api_key: str = env("RADARR_API_KEY")
     radarr_quality_profile_name: str = env("RADARR_QUALITY_PROFILE_NAME", "Any HD")
 
-    sonarr_url: str = env("SONARR_URL", "http://host.docker.internal:8989")
+    sonarr_url: str = env("SONARR_URL", "http://192.168.137.10:8989")
     sonarr_api_key: str = env("SONARR_API_KEY")
     sonarr_quality_profile_name: str = env("SONARR_QUALITY_PROFILE_NAME", "Any")
 
-    lidarr_url: str = env("LIDARR_URL", "http://host.docker.internal:8686")
+    lidarr_url: str = env("LIDARR_URL", "http://192.168.137.10:8686")
     lidarr_api_key: str = env("LIDARR_API_KEY")
     lidarr_quality_profile_name: str = env("LIDARR_QUALITY_PROFILE_NAME", "Any")
     lidarr_metadata_profile_name: str = env("LIDARR_METADATA_PROFILE_NAME", "Standard")
 
-    prowlarr_url: str = env("PROWLARR_URL", "http://host.docker.internal:9696")
+    prowlarr_url: str = env("PROWLARR_URL", "http://192.168.137.10:9696")
     prowlarr_api_key: str = env("PROWLARR_API_KEY")
 
-    jellyfin_url: str = env("JELLYFIN_URL", "http://host.docker.internal:8096")
+    jellyfin_url: str = env("JELLYFIN_URL", "http://192.168.137.10:8096")
     jellyfin_api_key: str = env("JELLYFIN_API_KEY")
 
-    seerr_url: str = env("SEERR_URL", "http://host.docker.internal:5055")
+    seerr_url: str = env("SEERR_URL", "http://192.168.137.10:5055")
     seerr_api_key: str = env("SEERR_API_KEY")
 
 

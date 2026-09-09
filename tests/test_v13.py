@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-_TEST_ROOT = tempfile.TemporaryDirectory(prefix="arrnexus-v12-test-")
+_TEST_ROOT = tempfile.TemporaryDirectory(prefix="arrnexus-v13-test-")
 BASE = Path(_TEST_ROOT.name)
 DATA = BASE / "data"
 ZURG = BASE / "zurg"
@@ -22,13 +22,16 @@ os.environ["DB_PATH"] = str(DATA / "router.db")
 os.environ["DB_DIR"] = str(DATA)
 os.environ["ZURG_ROOT"] = str(ZURG)
 os.environ["ZURG_CACHE_PATH"] = str(CACHE)
-os.environ["ARRNEXUS_SESSION_SECRET"] = "v12-test-session-secret"
+os.environ["ARRNEXUS_SESSION_SECRET"] = "v13-test-session-secret"
+os.environ["MAGIC_ROOT"] = str(ZURG / "__magic__")
+os.environ["MAGIC_ARR_PREFIX"] = str(ZURG / "__magic__")
 
 from fastapi.testclient import TestClient
 
 from app import db as dbmod
 from app import orchestrator
 from app import queue_janitor
+from app import magic_intake
 from app.main import app
 
 
@@ -42,7 +45,7 @@ def reset_db() -> None:
     dbmod.init_db()
 
 
-class V12CoreTests(unittest.TestCase):
+class V13CoreTests(unittest.TestCase):
     def setUp(self):
         reset_db()
         orchestrator._CACHE.update({
@@ -55,8 +58,16 @@ class V12CoreTests(unittest.TestCase):
             "summary": {"queue": 0, "healthy": 0, "warning": 0, "actionable": 0, "attention": 0},
             "error": "", "refreshing": False,
         })
+        magic_intake._CACHE.update({
+            "last_scan_at": "", "last_error": "", "running": False, "groups": [],
+            "summary": {"total": 0, "matched": 0, "review": 0, "unmatched": 0, "imported": 0, "partial": 0},
+        })
+        magic_root = Path(os.environ["MAGIC_ROOT"])
+        for child in list(magic_root.iterdir()):
+            if child.is_file():
+                child.unlink()
 
-    def test_schema_contains_v12_tables(self):
+    def test_schema_contains_recovery_tables(self):
         conn = sqlite3.connect(os.environ["DB_PATH"])
         try:
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -220,23 +231,58 @@ class V12CoreTests(unittest.TestCase):
         self.assertEqual(result["action"], "dry_run")
         self.assertIn("DRY RUN", result["detail"])
 
-    def test_web_routes_render_and_version_is_stable_v12(self):
+
+    def test_magic_intake_groups_episode_releases(self):
+        magic_root = Path(os.environ["MAGIC_ROOT"])
+        for child in list(magic_root.iterdir()):
+            if child.is_file(): child.unlink()
+        (magic_root / "64.Zoo.Lane.S01E01.1080p.mkv").write_bytes(b"")
+        (magic_root / "64.Zoo.Lane.S01E02.1080p.mkv").write_bytes(b"")
+        async def no_match(media_type, title, year): return {}
+        with patch.object(magic_intake, "_best_match", side_effect=no_match):
+            state = asyncio.run(magic_intake.scan())
+        groups = [g for g in state["groups"] if g["normalized_title"] == "64 Zoo Lane"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["media_type"], "tv")
+        self.assertEqual(groups[0]["release_count"], 2)
+        self.assertEqual(groups[0]["episodes"], ["S01E01", "S01E02"])
+
+    def test_magic_intake_ignores_organised_directories(self):
+        magic_root = Path(os.environ["MAGIC_ROOT"])
+        for name in ("movies", "tv", "music"):
+            (magic_root / name).mkdir(exist_ok=True)
+            (magic_root / name / "should-not-scan.mkv").write_bytes(b"")
+        async def no_match(media_type, title, year): return {}
+        with patch.object(magic_intake, "_best_match", side_effect=no_match):
+            state = asyncio.run(magic_intake.scan())
+        self.assertFalse(any("should-not-scan" in p for g in state["groups"] for p in g["source_paths"]))
+
+    def test_magic_intake_force_match_persists_selected_identity(self):
+        magic_intake.ensure_schema()
+        magic_intake._upsert_group({"group_key":"movie:test:2000","media_type":"movie","normalized_title":"Test","year":2000,"source_paths":["Test.2000.mkv"],"episodes":[],"state":"unmatched"})
+        magic_intake.force_match("movie:test:2000", {"id": None, "external_id":"12345", "title":"Test Movie", "year":2000, "poster_url":"https://example/poster.jpg"})
+        row = magic_intake.get_group("movie:test:2000")
+        self.assertEqual(row["match_title"], "Test Movie")
+        self.assertEqual(row["match_external_id"], "12345")
+        self.assertEqual(row["confidence"], 100)
+
+    def test_web_routes_render_and_version_is_stable_v13(self):
         dbmod.create_user("admin", "admin@example.test", "Admin", "abcdefgh")
         client = TestClient(app)
         login = client.post("/login", data={"identity": "admin", "password": "abcdefgh"}, follow_redirects=False)
         self.assertEqual(login.status_code, 303)
         rendered = {}
-        for path in ("/", "/missing-media", "/queue-janitor", "/pipeline", "/zurg", "/settings", "/music/settings"):
+        for path in ("/", "/missing-media", "/queue-janitor", "/magic-intake", "/pipeline", "/zurg", "/settings", "/music/settings"):
             response = client.get(path)
             self.assertEqual(response.status_code, 200, path)
             rendered[path] = response.text
         from bs4 import BeautifulSoup
-        for path in ("/missing-media", "/queue-janitor"):
+        for path in ("/missing-media", "/queue-janitor", "/magic-intake"):
             soup = BeautifulSoup(rendered[path], "html.parser")
             for form in soup.find_all("form"):
                 self.assertIsNone(form.find_parent("form"), f"nested form in {path}")
         health = client.get("/api/health").json()
-        self.assertEqual(health["version"], "12.0.0")
+        self.assertEqual(health["version"], "13.0.0")
 
 
 if __name__ == "__main__":
