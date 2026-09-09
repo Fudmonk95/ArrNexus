@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
@@ -22,7 +23,7 @@ os.environ["DB_PATH"] = str(DATA / "router.db")
 os.environ["DB_DIR"] = str(DATA)
 os.environ["ZURG_ROOT"] = str(ZURG)
 os.environ["ZURG_CACHE_PATH"] = str(CACHE)
-os.environ["ARRNEXUS_SESSION_SECRET"] = "v13-test-session-secret"
+os.environ["ARRNEXUS_SESSION_SECRET"] = "v13-1-test-session-secret"
 os.environ["MAGIC_ROOT"] = str(ZURG / "__magic__")
 os.environ["MAGIC_ARR_PREFIX"] = str(ZURG / "__magic__")
 
@@ -45,7 +46,7 @@ def reset_db() -> None:
     dbmod.init_db()
 
 
-class V13CoreTests(unittest.TestCase):
+class V131CoreTests(unittest.TestCase):
     def setUp(self):
         reset_db()
         orchestrator._CACHE.update({
@@ -63,8 +64,11 @@ class V13CoreTests(unittest.TestCase):
             "summary": {"total": 0, "matched": 0, "review": 0, "unmatched": 0, "imported": 0, "partial": 0},
         })
         magic_root = Path(os.environ["MAGIC_ROOT"])
+        import shutil
         for child in list(magic_root.iterdir()):
-            if child.is_file():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
                 child.unlink()
 
     def test_schema_contains_recovery_tables(self):
@@ -266,7 +270,7 @@ class V13CoreTests(unittest.TestCase):
         self.assertEqual(row["match_external_id"], "12345")
         self.assertEqual(row["confidence"], 100)
 
-    def test_web_routes_render_and_version_is_stable_v13(self):
+    def test_web_routes_render_and_version_is_stable_v13_1(self):
         dbmod.create_user("admin", "admin@example.test", "Admin", "abcdefgh")
         client = TestClient(app)
         login = client.post("/login", data={"identity": "admin", "password": "abcdefgh"}, follow_redirects=False)
@@ -282,7 +286,190 @@ class V13CoreTests(unittest.TestCase):
             for form in soup.find_all("form"):
                 self.assertIsNone(form.find_parent("form"), f"nested form in {path}")
         health = client.get("/api/health").json()
-        self.assertEqual(health["version"], "13.0.0")
+        self.assertEqual(health["version"], "13.1.0")
+
+    def test_magic_intake_canonical_groups_same_sonarr_series(self):
+        magic_root = Path(os.environ["MAGIC_ROOT"])
+        (magic_root / "SpongeBob.S01E01.1080p.mkv").write_bytes(b"")
+        (magic_root / "SpongeBob.SquarePants.S01E02.1080p.mkv").write_bytes(b"")
+
+        async def same_series(media_type, title, year):
+            self.assertEqual(media_type, "tv")
+            return {
+                "id": None, "external_id": "75886", "title": "SpongeBob SquarePants",
+                "year": 1999, "poster_url": "https://example/sponge.jpg",
+                "genres": ["Animation", "Family"], "confidence": 95,
+            }
+
+        with patch.object(magic_intake, "_best_match", side_effect=same_series):
+            state = asyncio.run(magic_intake.scan())
+        rows = [g for g in state["groups"] if g["match_external_id"] == "75886"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["release_count"], 2)
+        self.assertEqual(rows[0]["episode_count"], 2)
+        self.assertEqual(rows[0]["episodes"], ["S01E01", "S01E02"])
+        self.assertEqual(rows[0]["seasons"], [1])
+        self.assertIn("Animation", rows[0]["genres"])
+        self.assertIn("kids", rows[0]["themes"])
+
+    def test_magic_intake_expands_multi_episode_release_marker(self):
+        markers = magic_intake._episode_markers("64.Zoo.Lane.S01E07-E09.1080p.WEB-DL")
+        self.assertEqual(markers, ["S01E07", "S01E08", "S01E09"])
+
+    def test_magic_intake_canonical_groups_music_by_lidarr_artist(self):
+        magic_root = Path(os.environ["MAGIC_ROOT"])
+        a = magic_root / "2011 - Panic Of Girls"
+        b = magic_root / "1999 - No Exit"
+        a.mkdir(); b.mkdir()
+        (a / "01.flac").write_bytes(b"")
+        (b / "01.flac").write_bytes(b"")
+
+        async def same_artist(media_type, title, year):
+            self.assertEqual(media_type, "music")
+            return {
+                "id": None, "external_id": "blondie-mbid", "title": "Blondie",
+                "year": "", "poster_url": "https://example/blondie.jpg",
+                "genres": ["Rock"], "confidence": 95,
+            }
+
+        with patch.object(magic_intake, "_best_match", side_effect=same_artist):
+            state = asyncio.run(magic_intake.scan())
+        rows = [g for g in state["groups"] if g["match_external_id"] == "blondie-mbid"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["display_title"], "Blondie")
+        self.assertEqual(rows[0]["release_count"], 2)
+        self.assertEqual(set(rows[0]["source_paths"]), {"2011 - Panic Of Girls", "1999 - No Exit"})
+
+    def test_magic_filter_options_include_metadata_genres_and_themes(self):
+        rows = [{"genres": ["Animation", "Family"], "themes": ["kids"], "media_type": "tv"}]
+        filters = magic_intake.filter_options(rows)
+        self.assertEqual(filters["genres"], ["Animation", "Family"])
+        self.assertEqual(filters["themes"], ["kids"])
+
+    def test_magic_force_match_creates_per_source_overrides(self):
+        magic_intake.ensure_schema()
+        magic_intake._upsert_group({
+            "group_key": "raw:tv:odd-show:0", "canonical_key": "raw:tv:odd-show:0", "media_type": "tv",
+            "normalized_title": "Odd Show", "year": None, "source_paths": ["Odd.Show.S01E01.mkv", "Odd.Show.S01E02.mkv"],
+            "episodes": ["S01E01", "S01E02"], "genres": [], "state": "unmatched",
+        })
+        magic_intake.force_match("raw:tv:odd-show:0", {
+            "id": None, "external_id": "tvdb-123", "title": "The Odd Show", "year": 2001,
+            "poster_url": "https://example/odd.jpg", "genres": ["Family"],
+        })
+        with dbmod.db() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM magic_intake_overrides WHERE external_id='tvdb-123'").fetchone()[0]
+        self.assertEqual(count, 2)
+
+    def test_magic_tv_verification_checks_expected_episode_identity_not_whole_library(self):
+        class FakeSonarr:
+            async def episodes(self, series_id):
+                return [
+                    {"seasonNumber": 1, "episodeNumber": 1, "hasFile": True},
+                    {"seasonNumber": 1, "episodeNumber": 2, "hasFile": False},
+                    {"seasonNumber": 9, "episodeNumber": 99, "hasFile": True},
+                ]
+        group = {"episodes": ["S01E01", "S01E02"]}
+        with patch.object(magic_intake.asyncio, "sleep", new=AsyncMock()):
+            ok, detail = asyncio.run(magic_intake._verify(FakeSonarr(), "tv", 7, group, {"count": 99}))
+        self.assertFalse(ok)
+        self.assertIn("1/2 expected", detail)
+
+    def test_lidarr_album_lookup_uses_album_lookup_endpoint(self):
+        from app.arr import LidarrClient
+        client = LidarrClient()
+        client.request = AsyncMock(return_value=[])
+        asyncio.run(client.album_lookup("Panic Of Girls"))
+        method, path = client.request.call_args.args[:2]
+        self.assertEqual((method, path), ("GET", "/api/v1/album/lookup"))
+
+    def test_magic_import_enqueue_returns_without_waiting_for_import(self):
+        magic_intake.ensure_schema()
+        magic_intake._upsert_group({
+            "group_key": "movie:external:55", "canonical_key": "movie:external:55", "media_type": "movie",
+            "normalized_title": "Example", "year": 2020, "source_paths": ["Example.2020.mkv"], "episodes": [], "genres": [],
+            "match_service": "radarr", "match_title": "Example", "match_external_id": "55", "confidence": 95, "state": "matched",
+        })
+        async def fake_import(*args, **kwargs):
+            await asyncio.sleep(0)
+            return {"ok": True}
+
+        async def run_case():
+            with patch.object(magic_intake, "import_group", side_effect=fake_import):
+                result = magic_intake.enqueue_import("movie:external:55", "main", "")
+                self.assertTrue(result["queued"])
+                self.assertTrue(result["job_id"])
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+        asyncio.run(run_case())
+
+
+    def test_magic_schema_migrates_v13_columns_in_place(self):
+        path = Path(os.environ["DB_PATH"])
+        conn = sqlite3.connect(path)
+        try:
+            conn.execute("DROP TABLE IF EXISTS magic_intake_groups")
+            conn.execute("DROP TABLE IF EXISTS magic_intake_overrides")
+            conn.execute("""CREATE TABLE magic_intake_groups (
+                group_key TEXT PRIMARY KEY, media_type TEXT NOT NULL DEFAULT 'unknown', normalized_title TEXT NOT NULL DEFAULT '',
+                year INTEGER, source_paths_json TEXT NOT NULL DEFAULT '[]', release_count INTEGER NOT NULL DEFAULT 0,
+                episodes_json TEXT NOT NULL DEFAULT '[]', match_service TEXT NOT NULL DEFAULT '', match_id INTEGER,
+                match_title TEXT NOT NULL DEFAULT '', match_year INTEGER, match_external_id TEXT NOT NULL DEFAULT '',
+                poster_url TEXT NOT NULL DEFAULT '', confidence INTEGER NOT NULL DEFAULT 0, destination_key TEXT NOT NULL DEFAULT '',
+                state TEXT NOT NULL DEFAULT 'discovered', ignored INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )""")
+            conn.execute("""CREATE TABLE magic_intake_overrides (
+                raw_key TEXT PRIMARY KEY, media_type TEXT NOT NULL, service TEXT NOT NULL, arr_id INTEGER,
+                title TEXT NOT NULL DEFAULT '', year INTEGER, external_id TEXT NOT NULL DEFAULT '', poster_url TEXT NOT NULL DEFAULT '',
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )""")
+            conn.commit()
+        finally:
+            conn.close()
+        magic_intake.ensure_schema()
+        conn = sqlite3.connect(path)
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(magic_intake_groups)")}
+            override_cols = {r[1] for r in conn.execute("PRAGMA table_info(magic_intake_overrides)")}
+        finally:
+            conn.close()
+        for col in ("canonical_key", "genres_json", "progress", "progress_detail", "job_id"):
+            self.assertIn(col, cols)
+        self.assertIn("genres_json", override_cols)
+
+    def test_nested_audio_folder_is_classified_as_music(self):
+        magic_root = Path(os.environ["MAGIC_ROOT"])
+        album = magic_root / "Some Album"
+        disc = album / "Disc 1"
+        disc.mkdir(parents=True)
+        (disc / "01 - Track.flac").write_bytes(b"")
+        self.assertEqual(magic_intake._media_type(album, album.name, []), "music")
+
+    def test_old_style_1x02_episode_marker_is_detected(self):
+        self.assertEqual(magic_intake._episode_markers("Show.Name.1x02.720p"), ["S01E02"])
+
+
+    def test_v13_cached_match_survives_temporary_lookup_failure_during_upgrade(self):
+        magic_root = Path(os.environ["MAGIC_ROOT"])
+        source = "Legacy.Show.S01E01.1080p.mkv"
+        (magic_root / source).write_bytes(b"")
+        magic_intake.ensure_schema()
+        # Simulate a v13.0 row: good external identity but no v13.1 canonical_key yet.
+        with dbmod.db() as conn:
+            conn.execute("""INSERT OR REPLACE INTO magic_intake_groups(
+                group_key,canonical_key,media_type,normalized_title,source_paths_json,release_count,episodes_json,genres_json,
+                match_service,match_title,match_external_id,confidence,state,ignored
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+            ("tv:legacy-show:0", "", "tv", "Legacy Show", json.dumps([source]), 1, json.dumps(["S01E01"]), "[]",
+             "sonarr", "Legacy Show", "tvdb-legacy", 95, "matched"))
+        async def lookup_fails(media_type, title, year): return {}
+        with patch.object(magic_intake, "_best_match", side_effect=lookup_fails):
+            state = asyncio.run(magic_intake.scan())
+        rows = [g for g in state["groups"] if g.get("match_external_id") == "tvdb-legacy"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["match_title"], "Legacy Show")
+
 
 
 if __name__ == "__main__":

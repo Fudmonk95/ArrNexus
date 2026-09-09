@@ -1,8 +1,10 @@
-# ArrNexus v13.0.0
+# ArrNexus v13.1.0
 
 ArrNexus is the Zurg-first control and orchestration layer for my personal media server.
 
-v13 adds **Magic Intake** to the Zurg-first control plane. ArrNexus can now identify, group, visually match and safely import content added directly through DMM/Zurg `__magic__`, while retaining the Missing Media Orchestrator, Queue Janitor, live request tracking and recovery controls introduced in v12.
+v13.1 upgrades **Magic Intake** into a canonical, non-blocking intake workflow. Multiple episode releases that belong to the same Sonarr series now appear as **one series card**, multiple albums from the same Lidarr artist appear as **one artist card**, and duplicate movie releases collapse under one Radarr identity while every original Zurg release remains separate underneath.
+
+The Magic Intake UI now has instant Movie / TV / Music, genre, theme and state filters; Force Match runs in-place without jumping back to the top; and imports are queued in the background with live progress instead of holding the browser request open.
 
 ## Architecture
 
@@ -46,9 +48,9 @@ v13 adds **Magic Intake** to the Zurg-first control plane. ArrNexus can now iden
 
 ArrNexus still does **not** extract archives, split media, repair source files or act as a download client.
 
-## New in v13
+## New in v13.1
 
-### Magic Intake
+### Magic Intake 2.0
 
 Magic Intake is the bridge for media added directly through DMM rather than requested through the normal Seerr → Arr flow.
 
@@ -68,6 +70,15 @@ Top-level __magic__
 
 Key behaviour:
 
+- canonical grouping happens **after** metadata matching, so all releases resolving to the same Sonarr series, Radarr movie or Lidarr artist share one import card;
+- grouping is UI/orchestration only — individual files/releases are never flattened into a single episode or media file;
+- TV cards show release count, detected seasons and exact episode markers, including multi-episode names such as `S01E07-E09` and old `1x02` naming;
+- music uses Lidarr album lookup to resolve the owning artist and groups albums/releases under that artist identity;
+- instant filters are available for Movies / TV / Music, genre, theme (Kids / Christmas / Halloween where metadata/title supports it) and intake state;
+- Force Match opens an in-place modal and applies the result without navigating away or resetting scroll position;
+- imports run as background jobs with visible queued → moving → Arr import → rescan → verifying progress;
+- TV verification checks the specific expected season/episode identities instead of comparing against the total number of files already present in Sonarr;
+- the v13 database is migrated in place and existing 100% Force Matches are preserved as per-release overrides;
 - scans only top-level unorganised `__magic__` entries;
 - ignores organised `movies/`, `tv/` and `music/` trees;
 - groups episode releases such as `S01E01`, `S01E02` into one series card;
@@ -91,7 +102,7 @@ The Zurg library remains read-only in ArrNexus. Only the dedicated `__magic__` b
 /zurg_mnt/zurg/__magic__     -> /zurg_magic read-write
 ```
 
-This keeps v13 from regressing into a general filesystem manager while still allowing the one Zurg-native operation Magic Intake needs.
+This keeps v13.1 from regressing into a general filesystem manager while still allowing the one Zurg-native operation Magic Intake needs.
 
 ## Retained from v12
 
@@ -301,7 +312,7 @@ The only media server targeted by this personal build is **Jellyfin**.
 
 ## Removed architecture stays removed
 
-v12 does not reintroduce the old low-level media-processing layers. Zurg now handles the source-library/acquisition responsibilities that made those layers unnecessary.
+v13.1 does not reintroduce the old low-level media-processing layers. Zurg now handles the source-library/acquisition responsibilities that made those layers unnecessary.
 
 ArrNexus remains an orchestration/control application: **observe, decide, trigger, correlate, retry, stop and report**.
 
@@ -326,14 +337,14 @@ The supplied `portainer-stack.yml` is aligned with the current server.
 ### Build the v13 image on the server
 
 ```bash
-cd ArrNexus-v13.0.0
+cd ArrNexus-v13.1.0
 ./scripts/build-local-image.sh
 ```
 
 This creates:
 
 ```text
-arrnexus:v13.0.0
+arrnexus:v13.1.0
 ```
 
 Then update the existing Portainer ArrNexus stack to use that image.
@@ -346,7 +357,7 @@ Then update the existing Portainer ArrNexus stack to use that image.
 
 v12 extends the existing SQLite database in place with recovery/orchestration tables.
 
-See `docs/PORTAINER_UPDATE_v13.0.0.md` for the exact update sequence.
+See `docs/PORTAINER_UPDATE_v13.1.0.md` for the exact update sequence.
 
 ## Verifying the running container
 
@@ -371,4 +382,4 @@ Official project resources:
 
 ## Release status
 
-**ArrNexus v13.0.0** extends the stable Zurg-first recovery/orchestration architecture with Magic Intake.
+**ArrNexus v13.1.0** extends the stable Zurg-first recovery/orchestration architecture with Magic Intake 2.0.

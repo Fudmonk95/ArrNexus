@@ -290,6 +290,9 @@ class LidarrClient(ArrClient):
     async def artist_lookup(self, term: str):
         return await self.request("GET", "/api/v1/artist/lookup", params={"term": term})
 
+    async def album_lookup(self, term: str):
+        return await self.request("GET", "/api/v1/album/lookup", params={"term": term})
+
     async def albums(self, artist_id: int | None = None):
         return await self.request("GET", "/api/v1/album", params={"artistId": artist_id} if artist_id else None)
 

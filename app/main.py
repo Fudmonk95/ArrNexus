@@ -37,9 +37,9 @@ from . import services
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 try:
-    APP_VERSION = (BASE_DIR.parent / "VERSION").read_text(encoding="utf-8").strip() or "13.0.0"
+    APP_VERSION = (BASE_DIR.parent / "VERSION").read_text(encoding="utf-8").strip() or "13.1.0"
 except OSError:
-    APP_VERSION = "13.0.0"
+    APP_VERSION = "13.1.0"
 
 
 @asynccontextmanager
@@ -412,12 +412,12 @@ async def queue_janitor_api(request: Request):
 
 
 @app.get("/magic-intake", response_class=HTMLResponse)
-async def magic_intake_page(request: Request, q: str = "", media_type: str = "movie", group_key: str = ""):
+async def magic_intake_page(request: Request):
     state = magic_intake.cached_state()
-    results = []
-    if q and group_key:
-        results = await magic_intake.lookup(media_type, q)
-    return _render(request, "magic_intake.html", state=state, groups=state["groups"], cfg=state["settings"], search_results=results, search_q=q, search_type=media_type, search_group=group_key)
+    return _render(
+        request, "magic_intake.html", state=state, groups=state["groups"],
+        cfg=state["settings"], filters=state.get("filters") or {"genres": [], "themes": []},
+    )
 
 
 @app.post("/magic-intake/settings")
@@ -431,17 +431,18 @@ async def magic_intake_settings(request: Request, enabled: bool = Form(False), i
 async def magic_intake_scan(request: Request):
     try:
         state = await magic_intake.scan()
-        _flash(request, f"Magic Intake scan complete: {state['summary']['total']} group(s).", "success")
+        _flash(request, f"Magic Intake scan complete: {state['summary']['total']} canonical group(s).", "success")
     except Exception as exc:
         _flash(request, str(exc), "error")
     return _go("/magic-intake")
 
 
 @app.post("/magic-intake/force-match")
-async def magic_intake_force_match(request: Request, group_key: str = Form(...), media_type: str = Form(...), candidate_json: str = Form(...)):
+async def magic_intake_force_match(request: Request, group_key: str = Form(...), candidate_json: str = Form(...)):
     try:
         candidate = json.loads(candidate_json)
         magic_intake.force_match(group_key, candidate)
+        asyncio.create_task(magic_intake.scan(), name="magic-regroup-after-force-match-form")
         _flash(request, f"Force matched to {candidate.get('title') or 'selected item'}.", "success")
     except Exception as exc:
         _flash(request, str(exc), "error")
@@ -451,8 +452,8 @@ async def magic_intake_force_match(request: Request, group_key: str = Form(...),
 @app.post("/magic-intake/import")
 async def magic_intake_import(request: Request, group_key: str = Form(...), destination_key: str = Form(...), selected_source: str = Form("")):
     try:
-        result = await magic_intake.import_group(group_key, destination_key, selected_source)
-        _flash(request, result.get("detail") or "Magic Intake import complete.", "success" if result.get("ok") else "info")
+        result = magic_intake.enqueue_import(group_key, destination_key, selected_source)
+        _flash(request, result.get("detail") or "Magic Intake import queued.", "success")
     except Exception as exc:
         _flash(request, str(exc), "error")
     return _go("/magic-intake")
@@ -469,6 +470,48 @@ async def magic_intake_ignore(request: Request, group_key: str = Form(...)):
 async def magic_intake_api(request: Request):
     _require_user(request)
     return magic_intake.cached_state()
+
+
+@app.get("/api/magic-intake/lookup")
+async def magic_intake_lookup_api(request: Request, media_type: str, q: str):
+    _require_user(request)
+    if media_type not in {"movie", "tv", "music"}:
+        raise HTTPException(400, "Unknown media type")
+    return {"ok": True, "results": await magic_intake.lookup(media_type, q)}
+
+
+@app.post("/api/magic-intake/force-match")
+async def magic_intake_force_match_api(request: Request):
+    _require_user(request)
+    payload = await request.json()
+    group_key = str(payload.get("group_key") or "")
+    candidate = payload.get("candidate") or {}
+    if not group_key or not isinstance(candidate, dict):
+        raise HTTPException(400, "group_key and candidate are required")
+    try:
+        group = magic_intake.force_match(group_key, candidate)
+        # Regroup in the background so any other raw cards resolving to the
+        # same canonical identity collapse without making Force Match wait.
+        asyncio.create_task(magic_intake.scan(), name="magic-regroup-after-force-match")
+        return {"ok": True, "group": group}
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/magic-intake/import")
+async def magic_intake_import_api(request: Request):
+    _require_user(request)
+    payload = await request.json()
+    try:
+        result = magic_intake.enqueue_import(
+            str(payload.get("group_key") or ""),
+            str(payload.get("destination_key") or ""),
+            str(payload.get("selected_source") or ""),
+        )
+        return result
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
 
 @app.get("/lists", response_class=HTMLResponse)
 async def lists_page(request: Request):
@@ -853,4 +896,5 @@ async def health():
         "services": services.cache_state(),
         "orchestrator": {"summary": orchestrator.cached_state().get("summary"), "ready": orchestrator.cached_state().get("ready")},
         "janitor": {"summary": queue_janitor.cached_state().get("summary"), "ready": queue_janitor.cached_state().get("ready")},
+        "magic_intake": {"summary": magic_intake.cached_state().get("summary"), "running": magic_intake.cached_state().get("running", False)},
     }

@@ -4,15 +4,12 @@ import asyncio
 import json
 import os
 import re
-import shutil
-import time
-from dataclasses import dataclass
+import secrets
 from pathlib import Path
 from typing import Any
 
 from .arr import RadarrClient, SonarrClient, LidarrClient, ArrError
 from .db import db, utcnow, setting_get, setting_set, log_event
-from .config import settings
 
 MAGIC_ROOT_DEFAULT = os.getenv("MAGIC_ROOT", "/zurg_magic").strip() or "/zurg_magic"
 MAGIC_ARR_PREFIX_DEFAULT = os.getenv("MAGIC_ARR_PREFIX", "/zurg_mnt/zurg/__magic__").strip() or "/zurg_mnt/zurg/__magic__"
@@ -49,20 +46,23 @@ _CACHE: dict[str, Any] = {
     "last_error": "",
     "running": False,
     "groups": [],
-    "summary": {"total": 0, "matched": 0, "review": 0, "unmatched": 0, "imported": 0, "partial": 0},
+    "summary": {"total": 0, "matched": 0, "review": 0, "unmatched": 0, "imported": 0, "partial": 0, "importing": 0},
 }
+_IMPORT_TASKS: dict[str, asyncio.Task] = {}
 
 
 def _schema() -> str:
     return """
     CREATE TABLE IF NOT EXISTS magic_intake_groups (
         group_key TEXT PRIMARY KEY,
+        canonical_key TEXT NOT NULL DEFAULT '',
         media_type TEXT NOT NULL DEFAULT 'unknown',
         normalized_title TEXT NOT NULL DEFAULT '',
         year INTEGER,
         source_paths_json TEXT NOT NULL DEFAULT '[]',
         release_count INTEGER NOT NULL DEFAULT 0,
         episodes_json TEXT NOT NULL DEFAULT '[]',
+        genres_json TEXT NOT NULL DEFAULT '[]',
         match_service TEXT NOT NULL DEFAULT '',
         match_id INTEGER,
         match_title TEXT NOT NULL DEFAULT '',
@@ -72,6 +72,9 @@ def _schema() -> str:
         confidence INTEGER NOT NULL DEFAULT 0,
         destination_key TEXT NOT NULL DEFAULT '',
         state TEXT NOT NULL DEFAULT 'discovered',
+        progress INTEGER NOT NULL DEFAULT 0,
+        progress_detail TEXT NOT NULL DEFAULT '',
+        job_id TEXT NOT NULL DEFAULT '',
         ignored INTEGER NOT NULL DEFAULT 0,
         error TEXT NOT NULL DEFAULT '',
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -97,14 +100,55 @@ def _schema() -> str:
         year INTEGER,
         external_id TEXT NOT NULL DEFAULT '',
         poster_url TEXT NOT NULL DEFAULT '',
+        genres_json TEXT NOT NULL DEFAULT '[]',
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     """
 
 
+def _ensure_column(conn, table: str, column: str, ddl: str) -> None:
+    cols = {str(x[1]) for x in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 def ensure_schema() -> None:
     with db() as conn:
         conn.executescript(_schema())
+        # v13.0.0 -> v13.1.0 in-place migration for the user's existing router.db.
+        for col, ddl in (
+            ("canonical_key", "TEXT NOT NULL DEFAULT ''"),
+            ("genres_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("progress", "INTEGER NOT NULL DEFAULT 0"),
+            ("progress_detail", "TEXT NOT NULL DEFAULT ''"),
+            ("job_id", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            _ensure_column(conn, "magic_intake_groups", col, ddl)
+        _ensure_column(conn, "magic_intake_overrides", "genres_json", "TEXT NOT NULL DEFAULT '[]'")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_magic_intake_canonical ON magic_intake_groups(canonical_key)")
+        _migrate_force_matches(conn)
+
+
+def _migrate_force_matches(conn) -> None:
+    """Turn old v13 confidence=100 rows into per-source overrides before regrouping."""
+    rows = conn.execute(
+        "SELECT media_type,match_service,match_id,match_title,match_year,match_external_id,poster_url,genres_json,source_paths_json "
+        "FROM magic_intake_groups WHERE confidence>=100 AND match_title<>''"
+    ).fetchall()
+    for row in rows:
+        try:
+            sources = json.loads(row[8] or "[]")
+        except Exception:
+            sources = []
+        for source in sources:
+            conn.execute(
+                """INSERT INTO magic_intake_overrides(raw_key,media_type,service,arr_id,title,year,external_id,poster_url,genres_json,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(raw_key) DO UPDATE SET media_type=excluded.media_type,service=excluded.service,arr_id=excluded.arr_id,
+                   title=excluded.title,year=excluded.year,external_id=excluded.external_id,poster_url=excluded.poster_url,
+                   genres_json=excluded.genres_json,updated_at=excluded.updated_at""",
+                (str(source), row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7] or "[]", utcnow()),
+            )
 
 
 def root() -> Path:
@@ -135,17 +179,36 @@ def save_settings(values: dict[str, Any]) -> None:
         setting_set("magic.arr_prefix", str(values["arr_prefix"]).strip())
 
 
+def _episode_markers(raw: str) -> list[str]:
+    out: list[str] = []
+    # S01E07, S01E07-E09, S01E07E08 and similar common release forms.
+    pattern = re.compile(r"(?i)S(\d{1,2})E(\d{1,3})(?:\s*[-_.]?\s*E(\d{1,3}))?")
+    for match in pattern.finditer(raw):
+        season, start = int(match.group(1)), int(match.group(2))
+        end = int(match.group(3)) if match.group(3) else start
+        if end >= start and end - start <= 100:
+            for episode in range(start, end + 1):
+                marker = f"S{season:02d}E{episode:02d}"
+                if marker not in out:
+                    out.append(marker)
+    for match in re.finditer(r"(?i)(?<!\d)(\d{1,2})x(\d{1,3})(?!\d)", raw):
+        marker = f"S{int(match.group(1)):02d}E{int(match.group(2)):02d}"
+        if marker not in out:
+            out.append(marker)
+    srange = re.search(r"(?i)\bS(\d{1,2})\s*[-_]\s*S?(\d{1,2})\b", raw)
+    if srange:
+        marker = f"S{int(srange.group(1)):02d}-S{int(srange.group(2)):02d}"
+        if marker not in out:
+            out.append(marker)
+    return out
+
+
 def _clean_release_name(name: str) -> tuple[str, int | None, list[str]]:
     raw = Path(name).stem
     year_match = re.search(r"\b(19\d{2}|20\d{2})\b", raw)
     year = int(year_match.group(1)) if year_match else None
-    eps = []
-    for m in re.finditer(r"(?i)\bS(\d{1,2})E(\d{1,3})\b", raw):
-        eps.append(f"S{int(m.group(1)):02d}E{int(m.group(2)):02d}")
-    srange = re.search(r"(?i)\bS(\d{1,2})\s*[-_]\s*S?(\d{1,2})\b", raw)
-    if srange:
-        eps.append(f"S{int(srange.group(1)):02d}-S{int(srange.group(2)):02d}")
-    text = re.sub(r"(?i)\bS\d{1,2}E\d{1,3}\b", " ", raw)
+    eps = _episode_markers(raw)
+    text = re.sub(r"(?i)\bS\d{1,2}E\d{1,3}(?:\s*[-_.]?\s*E?\d{1,3})?\b", " ", raw)
     text = re.sub(r"(?i)\bS\d{1,2}\s*[-_]\s*S?\d{1,2}\b", " ", text)
     text = re.sub(r"(?i)\bSeason[ ._-]*\d{1,2}\b", " ", text)
     text = re.sub(r"\b(19\d{2}|20\d{2})\b", " ", text)
@@ -163,28 +226,52 @@ def _clean_release_name(name: str) -> tuple[str, int | None, list[str]]:
 
 
 def _media_type(path: Path, name: str, episodes: list[str]) -> str:
-    if episodes or re.search(r"(?i)\b(?:season|complete.series|complete.series|episodes?)\b", name):
+    if episodes or re.search(r"(?i)\b(?:season|complete.*series|episodes?)\b", name):
         return "tv"
     ext = path.suffix.lower()
     if ext in AUDIO_EXTS:
         return "music"
     if path.is_dir():
         try:
-            sample = []
-            for child in path.iterdir():
-                sample.append(child.suffix.lower())
-                if len(sample) >= 30:
-                    break
-            if sample and sum(1 for x in sample if x in AUDIO_EXTS) > sum(1 for x in sample if x in VIDEO_EXTS):
+            audio = video = episodic = seen = 0
+            stack = [(path, 0)]
+            while stack and seen < 60:
+                current, depth = stack.pop(0)
+                for child in current.iterdir():
+                    seen += 1
+                    if _episode_markers(child.name):
+                        episodic += 1
+                    if child.is_dir() and depth < 1:
+                        stack.append((child, depth + 1))
+                    else:
+                        suffix = child.suffix.lower()
+                        audio += int(suffix in AUDIO_EXTS)
+                        video += int(suffix in VIDEO_EXTS)
+                    if seen >= 60:
+                        break
+            if episodic:
+                return "tv"
+            if audio > video and audio > 0:
                 return "music"
         except OSError:
             pass
     return "movie"
 
 
-def _group_key(media_type: str, title: str, year: int | None) -> str:
-    norm = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-    return f"{media_type}:{norm}:{year or 0}"
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(text).lower()).strip("-")
+
+
+def _raw_group_key(media_type: str, title: str, year: int | None) -> str:
+    return f"raw:{media_type}:{_slug(title)}:{year or 0}"
+
+
+def _canonical_key(media_type: str, external_id: str = "", arr_id: int | None = None, title: str = "", year: int | None = None) -> str:
+    if external_id:
+        return f"{media_type}:external:{str(external_id).lower()}"
+    if arr_id:
+        return f"{media_type}:arr:{int(arr_id)}"
+    return f"{media_type}:title:{_slug(title)}:{year or 0}"
 
 
 def _poster(candidate: dict) -> str:
@@ -199,6 +286,13 @@ def _poster(candidate: dict) -> str:
     return ""
 
 
+def _genres(candidate: dict) -> list[str]:
+    values = candidate.get("genres") or []
+    if isinstance(values, str):
+        values = [x.strip() for x in re.split(r"[,/|]", values) if x.strip()]
+    return sorted({str(x).strip() for x in values if str(x).strip()}, key=str.casefold)
+
+
 def _candidate_identity(media_type: str, c: dict) -> tuple[int | None, str]:
     if media_type == "movie":
         return (int(c.get("id") or 0) or None, str(c.get("tmdbId") or c.get("imdbId") or ""))
@@ -210,8 +304,10 @@ def _candidate_identity(media_type: str, c: dict) -> tuple[int | None, str]:
 def _score(title: str, year: int | None, candidate: dict, media_type: str) -> int:
     ct = str(candidate.get("title") or candidate.get("artistName") or candidate.get("name") or "")
     cy = candidate.get("year") or candidate.get("firstAired") or candidate.get("releaseDate") or ""
-    def norm(s: str) -> str:
-        return re.sub(r"[^a-z0-9]+", " ", str(s).lower()).strip()
+
+    def norm(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(value).lower()).strip()
+
     a, b = norm(title), norm(ct)
     if not a or not b:
         return 0
@@ -222,7 +318,7 @@ def _score(title: str, year: int | None, candidate: dict, media_type: str) -> in
     else:
         aset, bset = set(a.split()), set(b.split())
         score = int(100 * len(aset & bset) / max(1, len(aset | bset)))
-    if year and str(year) and str(year) in str(cy):
+    if year and str(year) in str(cy):
         score += 5
     return min(100, score)
 
@@ -252,25 +348,167 @@ async def lookup(media_type: str, term: str) -> list[dict]:
             "year": c.get("year") or "",
             "poster_url": _poster(c),
             "overview": str(c.get("overview") or "")[:500],
+            "genres": _genres(c),
         })
     return rows
 
 
+async def _best_music_match(title: str, year: int | None) -> dict[str, Any]:
+    client = LidarrClient()
+    try:
+        albums = await client.album_lookup(f"{title} {year or ''}".strip())
+    except Exception:
+        albums = []
+    scored: list[tuple[int, dict]] = []
+    for album in list(albums or [])[:20]:
+        album_title = str(album.get("title") or "")
+        pseudo = {"title": album_title, "releaseDate": album.get("releaseDate") or ""}
+        score = _score(title, year, pseudo, "music")
+        artist = album.get("artist") or {}
+        artist_name = artist.get("artistName") or artist.get("name") or album.get("artistName") or ""
+        external = str(artist.get("foreignArtistId") or album.get("foreignArtistId") or "")
+        artist_id = int(artist.get("id") or 0) or None
+        if artist_name and (external or artist_id):
+            scored.append((score, {
+                "raw": artist or album,
+                "id": artist_id,
+                "external_id": external,
+                "title": artist_name,
+                "year": "",
+                "poster_url": _poster(artist) or _poster(album),
+                "overview": str(artist.get("overview") or album.get("overview") or "")[:500],
+                "genres": sorted(set(_genres(artist) + _genres(album)), key=str.casefold),
+                "confidence": score,
+                "album_title": album_title,
+            }))
+    if scored:
+        return max(scored, key=lambda item: item[0])[1]
+    candidates = await lookup("music", title)
+    if not candidates:
+        return {}
+    best = max(candidates, key=lambda x: _score(title, year, x["raw"], "music"))
+    out = dict(best)
+    out["confidence"] = _score(title, year, best["raw"], "music")
+    return out
+
+
 async def _best_match(media_type: str, title: str, year: int | None) -> dict[str, Any]:
+    if media_type == "music":
+        return await _best_music_match(title, year)
     candidates = await lookup(media_type, f"{title} {year or ''}".strip())
     if not candidates:
         return {}
     best = max(candidates, key=lambda x: _score(title, year, x["raw"], media_type))
-    best = dict(best)
-    best["confidence"] = _score(title, year, best["raw"], media_type)
-    return best
+    out = dict(best)
+    out["confidence"] = _score(title, year, best["raw"], media_type)
+    return out
 
 
-def _upsert_group(group: dict[str, Any]) -> None:
+def _override_for_sources(sources: list[str]) -> dict[str, Any]:
+    if not sources:
+        return {}
     ensure_schema()
-    now = utcnow()
+    placeholders = ",".join("?" for _ in sources)
     with db() as conn:
-        old = conn.execute("SELECT state,ignored,match_id,match_title,confidence,destination_key,poster_url FROM magic_intake_groups WHERE group_key=?", (group["group_key"],)).fetchone()
+        rows = conn.execute(
+            f"SELECT * FROM magic_intake_overrides WHERE raw_key IN ({placeholders}) ORDER BY updated_at DESC",
+            tuple(sources),
+        ).fetchall()
+    if not rows:
+        return {}
+    row = dict(rows[0])
+    try:
+        genres = json.loads(row.get("genres_json") or "[]")
+    except Exception:
+        genres = []
+    return {
+        "id": row.get("arr_id"), "external_id": row.get("external_id") or "", "title": row.get("title") or "",
+        "year": row.get("year") or "", "poster_url": row.get("poster_url") or "", "genres": genres,
+        "confidence": 100, "forced": True,
+    }
+
+
+def _known_by_source() -> dict[str, dict[str, Any]]:
+    ensure_schema()
+    result: dict[str, dict[str, Any]] = {}
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM magic_intake_groups WHERE ignored=0 AND match_title<>'' AND confidence>=80"
+        ).fetchall()
+    for raw in rows:
+        row = dict(raw)
+        try:
+            sources = json.loads(row.get("source_paths_json") or "[]")
+            genres = json.loads(row.get("genres_json") or "[]")
+        except Exception:
+            continue
+        candidate = {
+            "id": row.get("match_id"), "external_id": row.get("match_external_id") or "",
+            "title": row.get("match_title") or "", "year": row.get("match_year") or "",
+            "poster_url": row.get("poster_url") or "", "genres": genres,
+            "confidence": int(row.get("confidence") or 0), "cached": True,
+            "canonical_key": row.get("canonical_key") or "",
+        }
+        for source in sources:
+            result[str(source)] = candidate
+    return result
+
+
+def _matching_known_source(sources: list[str], known: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    matches = [known[x] for x in sources if x in known]
+    if not matches:
+        return {}
+    first = matches[0]
+    identity = str(first.get("external_id") or first.get("id") or first.get("title") or "")
+    if identity and all(str(x.get("external_id") or x.get("id") or x.get("title") or "") == identity for x in matches):
+        return dict(first)
+    return {}
+
+
+def _cached_match_for_sources(sources: list[str], known: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    first = _matching_known_source(sources, known)
+    if not first:
+        return {}
+    # Rows created by v13.0 have no canonical_key. Re-look them up once in
+    # v13.1 so canonical identity + genres are refreshed. If that refresh
+    # fails, scan() falls back to this legacy identity rather than discarding
+    # a previously-good match.
+    if not first.get("canonical_key"):
+        return {}
+    return first
+
+
+def _merge_group(target: dict[str, Any], source: dict[str, Any]) -> None:
+    target["source_paths"] = sorted(set(target.get("source_paths", []) + source.get("source_paths", [])), key=str.casefold)
+    target["episodes"] = sorted(set(target.get("episodes", []) + source.get("episodes", [])))
+    target["genres"] = sorted(set(target.get("genres", []) + source.get("genres", [])), key=str.casefold)
+    scores = [x for x in (int(target.get("confidence") or 0), int(source.get("confidence") or 0)) if x > 0]
+    if scores:
+        target["confidence"] = min(scores)
+    if not target.get("poster_url") and source.get("poster_url"):
+        target["poster_url"] = source["poster_url"]
+    if source.get("forced"):
+        target["forced"] = True
+
+
+def _state_for_confidence(confidence: int) -> str:
+    if confidence >= settings_state()["auto_match_threshold"]:
+        return "matched"
+    if confidence >= 80:
+        return "review"
+    return "unmatched"
+
+
+def _upsert_group(group: dict[str, Any], *, schema_ready: bool = False) -> None:
+    if not schema_ready:
+        ensure_schema()
+    now = utcnow()
+    genres_json = json.dumps(sorted(set(group.get("genres") or []), key=str.casefold))
+    with db() as conn:
+        old = conn.execute(
+            "SELECT state,ignored,match_id,match_title,confidence,destination_key,poster_url,progress,progress_detail,job_id "
+            "FROM magic_intake_groups WHERE group_key=?", (group["group_key"],)
+        ).fetchone()
         state = str(group.get("state") or (old["state"] if old else "discovered"))
         ignored = int(old["ignored"] if old else 0)
         match_id = group.get("match_id") if group.get("match_id") is not None else (old["match_id"] if old else None)
@@ -278,13 +516,16 @@ def _upsert_group(group: dict[str, Any]) -> None:
         confidence = int(group.get("confidence") if group.get("confidence") is not None else (old["confidence"] if old else 0))
         destination = group.get("destination_key") or (old["destination_key"] if old else "")
         poster = group.get("poster_url") or (old["poster_url"] if old else "")
+        progress = int(group.get("progress") if group.get("progress") is not None else (old["progress"] if old else 0))
+        progress_detail = group.get("progress_detail") or (old["progress_detail"] if old else "")
+        job_id = group.get("job_id") or (old["job_id"] if old else "")
         conn.execute(
-            """INSERT INTO magic_intake_groups(group_key,media_type,normalized_title,year,source_paths_json,release_count,episodes_json,
-               match_service,match_id,match_title,match_year,match_external_id,poster_url,confidence,destination_key,state,ignored,error,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(group_key) DO UPDATE SET media_type=excluded.media_type,normalized_title=excluded.normalized_title,year=excluded.year,
-               source_paths_json=excluded.source_paths_json,release_count=excluded.release_count,episodes_json=excluded.episodes_json,
-               match_service=CASE WHEN excluded.match_id IS NOT NULL THEN excluded.match_service ELSE magic_intake_groups.match_service END,
+            """INSERT INTO magic_intake_groups(group_key,canonical_key,media_type,normalized_title,year,source_paths_json,release_count,episodes_json,genres_json,
+               match_service,match_id,match_title,match_year,match_external_id,poster_url,confidence,destination_key,state,progress,progress_detail,job_id,ignored,error,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(group_key) DO UPDATE SET canonical_key=excluded.canonical_key,media_type=excluded.media_type,normalized_title=excluded.normalized_title,year=excluded.year,
+               source_paths_json=excluded.source_paths_json,release_count=excluded.release_count,episodes_json=excluded.episodes_json,genres_json=excluded.genres_json,
+               match_service=CASE WHEN excluded.match_id IS NOT NULL OR excluded.match_external_id<>'' THEN excluded.match_service ELSE magic_intake_groups.match_service END,
                match_id=COALESCE(excluded.match_id,magic_intake_groups.match_id),
                match_title=CASE WHEN excluded.match_title<>'' THEN excluded.match_title ELSE magic_intake_groups.match_title END,
                match_year=COALESCE(excluded.match_year,magic_intake_groups.match_year),
@@ -292,15 +533,49 @@ def _upsert_group(group: dict[str, Any]) -> None:
                poster_url=CASE WHEN excluded.poster_url<>'' THEN excluded.poster_url ELSE magic_intake_groups.poster_url END,
                confidence=CASE WHEN excluded.confidence>0 THEN excluded.confidence ELSE magic_intake_groups.confidence END,
                destination_key=CASE WHEN excluded.destination_key<>'' THEN excluded.destination_key ELSE magic_intake_groups.destination_key END,
-               state=CASE WHEN magic_intake_groups.state IN ('imported','ignored') THEN magic_intake_groups.state ELSE excluded.state END,
+               state=CASE WHEN magic_intake_groups.state IN ('imported','queued','importing','verifying','partial') THEN magic_intake_groups.state ELSE excluded.state END,
+               progress=CASE WHEN magic_intake_groups.state IN ('queued','importing','verifying') THEN magic_intake_groups.progress ELSE excluded.progress END,
+               progress_detail=CASE WHEN magic_intake_groups.state IN ('queued','importing','verifying') THEN magic_intake_groups.progress_detail ELSE excluded.progress_detail END,
+               job_id=CASE WHEN magic_intake_groups.state IN ('queued','importing','verifying') THEN magic_intake_groups.job_id ELSE excluded.job_id END,
                error=excluded.error,updated_at=excluded.updated_at""",
-            (group["group_key"], group["media_type"], group["normalized_title"], group.get("year"), json.dumps(group.get("source_paths") or []),
-             len(group.get("source_paths") or []), json.dumps(sorted(set(group.get("episodes") or []))), group.get("match_service") or "",
-             match_id, match_title, group.get("match_year"), group.get("match_external_id") or "", poster, confidence,
-             destination, state, ignored, group.get("error") or "", now),
+            (group["group_key"], group.get("canonical_key") or group["group_key"], group["media_type"], group["normalized_title"], group.get("year"),
+             json.dumps(group.get("source_paths") or []), len(group.get("source_paths") or []), json.dumps(sorted(set(group.get("episodes") or []))), genres_json,
+             group.get("match_service") or "", match_id, match_title, group.get("match_year"), group.get("match_external_id") or "", poster, confidence,
+             destination, state, progress, progress_detail, job_id, ignored, group.get("error") or "", now),
         )
         if not old:
             conn.execute("INSERT INTO magic_intake_events(group_key,state,detail) VALUES(?,?,?)", (group["group_key"], "discovered", "Found in top-level __magic__ intake"))
+
+
+def _season_summary(episodes: list[str]) -> list[int]:
+    seasons: set[int] = set()
+    for marker in episodes:
+        match = re.match(r"S(\d{2})E\d+", marker)
+        if match:
+            seasons.add(int(match.group(1)))
+            continue
+        match = re.match(r"S(\d{2})-S(\d{2})", marker)
+        if match:
+            start, end = int(match.group(1)), int(match.group(2))
+            if end >= start and end - start <= 50:
+                seasons.update(range(start, end + 1))
+    return sorted(seasons)
+
+
+def _themes(row: dict[str, Any]) -> list[str]:
+    text = " ".join([
+        str(row.get("match_title") or row.get("normalized_title") or ""),
+        " ".join(row.get("genres") or []),
+    ]).casefold()
+    out: set[str] = set()
+    genres = {str(x).casefold() for x in row.get("genres") or []}
+    if genres & {"family", "animation", "children", "kids"}:
+        out.add("kids")
+    if any(word in text for word in ("christmas", "xmas", "santa", "holiday")):
+        out.add("christmas")
+    if "horror" in genres or any(word in text for word in ("halloween", "haunted", "horror")):
+        out.add("halloween")
+    return sorted(out)
 
 
 def list_groups(include_imported: bool = True) -> list[dict[str, Any]]:
@@ -308,13 +583,28 @@ def list_groups(include_imported: bool = True) -> list[dict[str, Any]]:
     sql = "SELECT * FROM magic_intake_groups WHERE ignored=0"
     if not include_imported:
         sql += " AND state NOT IN ('imported','ignored')"
-    sql += " ORDER BY CASE state WHEN 'importing' THEN 0 WHEN 'partial' THEN 1 WHEN 'matched' THEN 2 WHEN 'review' THEN 3 WHEN 'discovered' THEN 4 WHEN 'unmatched' THEN 5 ELSE 6 END, confidence DESC, updated_at DESC"
+    sql += " ORDER BY CASE state WHEN 'importing' THEN 0 WHEN 'verifying' THEN 1 WHEN 'partial' THEN 2 WHEN 'matched' THEN 3 WHEN 'review' THEN 4 WHEN 'discovered' THEN 5 WHEN 'unmatched' THEN 6 ELSE 7 END, confidence DESC, updated_at DESC"
     with db() as conn:
         rows = [dict(x) for x in conn.execute(sql).fetchall()]
     for row in rows:
-        row["source_paths"] = json.loads(row.pop("source_paths_json") or "[]")
-        row["episodes"] = json.loads(row.pop("episodes_json") or "[]")
+        try:
+            row["source_paths"] = json.loads(row.pop("source_paths_json") or "[]")
+        except Exception:
+            row["source_paths"] = []
+        try:
+            row["episodes"] = json.loads(row.pop("episodes_json") or "[]")
+        except Exception:
+            row["episodes"] = []
+        try:
+            row["genres"] = json.loads(row.pop("genres_json") or "[]")
+        except Exception:
+            row["genres"] = []
         row["destination_options"] = DESTINATIONS.get(row["media_type"], {})
+        row["seasons"] = _season_summary(row["episodes"])
+        row["episode_count"] = len(_episode_pairs(row["episodes"]))
+        row["themes"] = _themes(row)
+        row["display_title"] = row.get("match_title") or row.get("normalized_title") or "Unknown"
+        row["dom_id"] = "magic-" + _slug(row["group_key"])[-90:]
     return rows
 
 
@@ -333,57 +623,94 @@ def _summary(groups: list[dict]) -> dict[str, int]:
         "unmatched": sum(1 for x in groups if x["state"] in {"discovered", "unmatched"}),
         "imported": sum(1 for x in groups if x["state"] == "imported"),
         "partial": sum(1 for x in groups if x["state"] == "partial"),
+        "importing": sum(1 for x in groups if x["state"] in {"queued", "importing", "verifying"}),
     }
+
+
+def filter_options(groups: list[dict[str, Any]] | None = None) -> dict[str, list[str]]:
+    groups = groups if groups is not None else list_groups(True)
+    genres = sorted({g for row in groups for g in row.get("genres", [])}, key=str.casefold)
+    themes = sorted({t for row in groups for t in row.get("themes", [])})
+    return {"genres": genres, "themes": themes}
 
 
 async def scan() -> dict[str, Any]:
     ensure_schema()
+    if _CACHE.get("running"):
+        return cached_state()
     _CACHE["running"] = True
     try:
         base = root()
         if not base.exists():
             raise RuntimeError(f"Magic Intake path does not exist: {base}")
-        entries = []
-        for p in base.iterdir():
-            if p.name.startswith(".") or p.name.lower() in ORGANIZED:
-                continue
-            entries.append(p)
-        buckets: dict[str, dict[str, Any]] = {}
-        for p in entries:
-            title, year, episodes = _clean_release_name(p.name)
-            media_type = _media_type(p, p.name, episodes)
-            key = _group_key(media_type, title, year)
-            g = buckets.setdefault(key, {
-                "group_key": key, "media_type": media_type, "normalized_title": title, "year": year,
-                "source_paths": [], "episodes": [], "state": "discovered", "error": "",
+        entries = [p for p in base.iterdir() if not p.name.startswith(".") and p.name.lower() not in ORGANIZED]
+        known = _known_by_source()
+
+        provisional: dict[str, dict[str, Any]] = {}
+        for path in entries:
+            title, year, episodes = _clean_release_name(path.name)
+            media_type = _media_type(path, path.name, episodes)
+            key = _raw_group_key(media_type, title, year)
+            group = provisional.setdefault(key, {
+                "raw_group_key": key, "media_type": media_type, "normalized_title": title, "year": year,
+                "source_paths": [], "episodes": [], "genres": [], "state": "discovered", "error": "",
             })
-            g["source_paths"].append(p.name)
-            g["episodes"].extend(episodes)
+            group["source_paths"].append(path.name)
+            group["episodes"].extend(episodes)
 
-        sem = asyncio.Semaphore(4)
-        async def enrich(g: dict[str, Any]):
-            existing = None
-            with db() as conn:
-                existing = conn.execute("SELECT match_id,match_title,confidence,state FROM magic_intake_groups WHERE group_key=?", (g["group_key"],)).fetchone()
-            if existing and existing["match_title"] and int(existing["confidence"] or 0) >= 100:
-                _upsert_group(g)
-                return
-            async with sem:
-                match = await _best_match(g["media_type"], g["normalized_title"], g.get("year"))
+        sem = asyncio.Semaphore(6)
+
+        async def enrich(group: dict[str, Any]) -> dict[str, Any]:
+            match = _override_for_sources(group["source_paths"])
+            if not match:
+                match = _cached_match_for_sources(group["source_paths"], known)
+            if not match:
+                async with sem:
+                    match = await _best_match(group["media_type"], group["normalized_title"], group.get("year"))
+            if not match:
+                # Preserve a v13.0 match if the local Arr lookup is temporarily
+                # unavailable during the first v13.1 canonicalisation scan.
+                match = _matching_known_source(group["source_paths"], known)
             if match:
-                threshold = settings_state()["auto_match_threshold"]
-                g.update({
-                    "match_service": {"movie": "radarr", "tv": "sonarr", "music": "lidarr"}[g["media_type"]],
-                    "match_id": match.get("id"), "match_title": match.get("title") or "", "match_year": match.get("year") or None,
-                    "match_external_id": match.get("external_id") or "", "poster_url": match.get("poster_url") or "",
-                    "confidence": int(match.get("confidence") or 0),
-                    "state": "matched" if int(match.get("confidence") or 0) >= threshold else "review",
+                confidence = int(match.get("confidence") or 0)
+                group.update({
+                    "match_service": {"movie": "radarr", "tv": "sonarr", "music": "lidarr"}[group["media_type"]],
+                    "match_id": match.get("id"), "match_title": match.get("title") or "",
+                    "match_year": match.get("year") or None, "match_external_id": match.get("external_id") or "",
+                    "poster_url": match.get("poster_url") or "", "genres": match.get("genres") or [],
+                    "confidence": confidence, "state": _state_for_confidence(confidence), "forced": bool(match.get("forced")),
                 })
+                group["canonical_key"] = _canonical_key(
+                    group["media_type"], group.get("match_external_id") or "", group.get("match_id"),
+                    group.get("match_title") or group["normalized_title"], group.get("match_year") or group.get("year"),
+                )
             else:
-                g["state"] = "unmatched"
-            _upsert_group(g)
+                group.update({"confidence": 0, "state": "unmatched", "canonical_key": group["raw_group_key"]})
+            return group
 
-        await asyncio.gather(*(enrich(g) for g in buckets.values()))
+        enriched = await asyncio.gather(*(enrich(group) for group in provisional.values()))
+
+        canonical: dict[str, dict[str, Any]] = {}
+        for group in enriched:
+            key = group.get("canonical_key") or group["raw_group_key"]
+            if key not in canonical:
+                canonical[key] = dict(group)
+                canonical[key]["group_key"] = key
+                if canonical[key].get("match_title"):
+                    canonical[key]["normalized_title"] = canonical[key]["match_title"]
+            else:
+                _merge_group(canonical[key], group)
+                canonical[key]["state"] = _state_for_confidence(int(canonical[key].get("confidence") or 0))
+
+        # Remove v13.0 provisional display rows so the UI contains exactly one
+        # active card per canonical Arr identity. Preserve imported/partial/running history.
+        with db() as conn:
+            conn.execute(
+                "DELETE FROM magic_intake_groups WHERE ignored=0 AND state IN ('discovered','matched','review','unmatched','ready')"
+            )
+        for group in canonical.values():
+            _upsert_group(group, schema_ready=True)
+
         groups = list_groups(True)
         _CACHE.update({"last_scan_at": utcnow(), "last_error": "", "groups": groups, "summary": _summary(groups)})
         return cached_state()
@@ -399,7 +726,7 @@ def cached_state() -> dict[str, Any]:
         groups = list_groups(True)
         _CACHE["groups"] = groups
         _CACHE["summary"] = _summary(groups)
-    return {**_CACHE, "settings": settings_state(), "destinations": DESTINATIONS}
+    return {**_CACHE, "settings": settings_state(), "destinations": DESTINATIONS, "filters": filter_options(_CACHE["groups"])}
 
 
 async def scan_loop() -> None:
@@ -417,20 +744,34 @@ async def scan_loop() -> None:
             await asyncio.sleep(30)
 
 
-def force_match(group_key: str, candidate: dict[str, Any]) -> None:
+def force_match(group_key: str, candidate: dict[str, Any]) -> dict[str, Any]:
     ensure_schema()
     group = get_group(group_key)
     if not group:
         raise ValueError("Magic Intake group not found")
     service = {"movie": "radarr", "tv": "sonarr", "music": "lidarr"}[group["media_type"]]
+    genres = candidate.get("genres") or []
+    external_id = str(candidate.get("external_id") or "")
+    canonical = _canonical_key(group["media_type"], external_id, candidate.get("id"), candidate.get("title") or "", candidate.get("year") or group.get("year"))
     with db() as conn:
+        for source in group.get("source_paths") or []:
+            conn.execute(
+                """INSERT INTO magic_intake_overrides(raw_key,media_type,service,arr_id,title,year,external_id,poster_url,genres_json,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(raw_key) DO UPDATE SET media_type=excluded.media_type,service=excluded.service,arr_id=excluded.arr_id,title=excluded.title,
+                   year=excluded.year,external_id=excluded.external_id,poster_url=excluded.poster_url,genres_json=excluded.genres_json,updated_at=excluded.updated_at""",
+                (source, group["media_type"], service, candidate.get("id"), candidate.get("title") or "", candidate.get("year") or None,
+                 external_id, candidate.get("poster_url") or "", json.dumps(genres), utcnow()),
+            )
         conn.execute(
-            """UPDATE magic_intake_groups SET match_service=?,match_id=?,match_title=?,match_year=?,match_external_id=?,poster_url=?,confidence=100,state='matched',error='',updated_at=? WHERE group_key=?""",
-            (service, candidate.get("id"), candidate.get("title") or "", candidate.get("year") or None,
-             candidate.get("external_id") or "", candidate.get("poster_url") or "", utcnow(), group_key),
+            """UPDATE magic_intake_groups SET canonical_key=?,match_service=?,match_id=?,match_title=?,match_year=?,match_external_id=?,poster_url=?,genres_json=?,
+               confidence=100,state='matched',error='',updated_at=? WHERE group_key=?""",
+            (canonical, service, candidate.get("id"), candidate.get("title") or "", candidate.get("year") or None,
+             external_id, candidate.get("poster_url") or "", json.dumps(genres), utcnow(), group_key),
         )
         conn.execute("INSERT INTO magic_intake_events(group_key,state,detail) VALUES(?,?,?)", (group_key, "matched", f"Force matched to {candidate.get('title') or 'selected item'}"))
     _CACHE["groups"] = []
+    return get_group(group_key) or {"group_key": group_key, "match_title": candidate.get("title") or "", "confidence": 100}
 
 
 def ignore(group_key: str) -> None:
@@ -443,10 +784,10 @@ def ignore(group_key: str) -> None:
 
 def _safe_source(name: str) -> Path:
     base = root().resolve()
-    p = (base / name).resolve()
-    if p.parent != base:
+    path = (base / name).resolve()
+    if path.parent != base:
         raise ValueError("Magic Intake only accepts top-level __magic__ entries")
-    return p
+    return path
 
 
 def _safe_destination(media_type: str, destination_key: str, title: str, year: int | None) -> tuple[Path, Path]:
@@ -487,7 +828,8 @@ async def _ensure_arr_item(group: dict, target_parent_arr: Path) -> tuple[Any, i
             return client, int(existing["id"]), existing
         lookups = await client.lookup(term)
         candidate = next((x for x in lookups if str(x.get("tmdbId") or x.get("imdbId") or "") == str(group.get("match_external_id") or "")), lookups[0] if lookups else None)
-        if not candidate: raise ArrError("Radarr lookup no longer returns the selected movie")
+        if not candidate:
+            raise ArrError("Radarr lookup no longer returns the selected movie")
         added = await client.add_movie(candidate, str(target_parent_arr), search=False, monitored=True)
         return client, int(added["id"]), added
     if media_type == "tv":
@@ -496,7 +838,8 @@ async def _ensure_arr_item(group: dict, target_parent_arr: Path) -> tuple[Any, i
             return client, int(existing["id"]), existing
         lookups = await client.lookup(term)
         candidate = next((x for x in lookups if str(x.get("tvdbId") or x.get("tmdbId") or "") == str(group.get("match_external_id") or "")), lookups[0] if lookups else None)
-        if not candidate: raise ArrError("Sonarr lookup no longer returns the selected series")
+        if not candidate:
+            raise ArrError("Sonarr lookup no longer returns the selected series")
         added = await client.add_series(candidate, str(target_parent_arr), search=False, monitored=True)
         return client, int(added["id"]), added
     client = LidarrClient(); items = await client.artists(); existing = _existing_by_match(media_type, items, group)
@@ -504,7 +847,8 @@ async def _ensure_arr_item(group: dict, target_parent_arr: Path) -> tuple[Any, i
         return client, int(existing["id"]), existing
     lookups = await client.artist_lookup(term)
     candidate = next((x for x in lookups if str(x.get("foreignArtistId") or "") == str(group.get("match_external_id") or "")), lookups[0] if lookups else None)
-    if not candidate: raise ArrError("Lidarr lookup no longer returns the selected artist")
+    if not candidate:
+        raise ArrError("Lidarr lookup no longer returns the selected artist")
     added = await client.add_artist(candidate, str(target_parent_arr), search=False)
     return client, int(added["id"]), added
 
@@ -544,8 +888,35 @@ async def _rescan(client: Any, media_type: str, arr_id: int) -> None:
             continue
 
 
-async def _verify(client: Any, media_type: str, arr_id: int, expected_episodes: int = 0) -> tuple[bool, str]:
-    for _ in range(12):
+def _episode_pairs(markers: list[str]) -> set[tuple[int, int]]:
+    pairs: set[tuple[int, int]] = set()
+    for marker in markers:
+        match = re.fullmatch(r"S(\d{2})E(\d{2,3})", marker)
+        if match:
+            pairs.add((int(match.group(1)), int(match.group(2))))
+    return pairs
+
+
+async def _verification_snapshot(client: Any, media_type: str, arr_id: int) -> dict[str, Any]:
+    try:
+        if media_type == "movie":
+            item = await client.movie(arr_id)
+            return {"has_file": bool(item.get("hasFile"))}
+        if media_type == "tv":
+            episodes = await client.episodes(arr_id)
+            present = {(int(x.get("seasonNumber") or 0), int(x.get("episodeNumber") or 0)) for x in episodes if x.get("hasFile")}
+            return {"present": present, "count": len(present)}
+        albums = await client.albums(arr_id)
+        count = sum(int((x.get("statistics") or {}).get("trackFileCount") or 0) for x in albums)
+        return {"track_count": count}
+    except Exception:
+        return {}
+
+
+async def _verify(client: Any, media_type: str, arr_id: int, group: dict[str, Any], before: dict[str, Any]) -> tuple[bool, str]:
+    expected = _episode_pairs(group.get("episodes") or [])
+    best_detail = "Arr did not confirm imported files before verification timeout"
+    for _ in range(15):
         await asyncio.sleep(2)
         try:
             if media_type == "movie":
@@ -553,20 +924,47 @@ async def _verify(client: Any, media_type: str, arr_id: int, expected_episodes: 
                 if item.get("hasFile"):
                     return True, "Radarr confirms movie file present"
             elif media_type == "tv":
-                eps = await client.episodes(arr_id)
-                have = sum(1 for x in eps if x.get("hasFile"))
-                if have and (not expected_episodes or have >= expected_episodes):
-                    return True, f"Sonarr confirms {have} episode file(s)"
-                if have:
-                    return False, f"Partial: Sonarr currently confirms {have}/{expected_episodes or '?'} episode file(s)"
+                episodes = await client.episodes(arr_id)
+                present = {(int(x.get("seasonNumber") or 0), int(x.get("episodeNumber") or 0)) for x in episodes if x.get("hasFile")}
+                if expected:
+                    confirmed = len(expected & present)
+                    if confirmed == len(expected):
+                        return True, f"Sonarr confirms all {confirmed} expected episode file(s)"
+                    best_detail = f"Partial: Sonarr confirms {confirmed}/{len(expected)} expected episode file(s)"
+                else:
+                    before_count = int(before.get("count") or 0)
+                    if len(present) > before_count:
+                        return True, f"Sonarr confirms {len(present) - before_count} new episode file(s)"
+                    best_detail = f"Waiting for Sonarr to register new episode files (currently {len(present)})"
             else:
                 albums = await client.albums(arr_id)
-                have = sum(int((x.get("statistics") or {}).get("trackFileCount") or 0) for x in albums)
-                if have:
-                    return True, f"Lidarr confirms {have} track file(s)"
+                count = sum(int((x.get("statistics") or {}).get("trackFileCount") or 0) for x in albums)
+                before_count = int(before.get("track_count") or 0)
+                if count > before_count:
+                    return True, f"Lidarr confirms {count - before_count} new track file(s)"
+                if before_count == 0 and count > 0:
+                    return True, f"Lidarr confirms {count} track file(s)"
+                best_detail = f"Waiting for Lidarr to register new tracks (currently {count})"
         except Exception:
             pass
-    return False, "Arr did not confirm imported files before verification timeout"
+    return False, best_detail
+
+
+def _set_progress(group_key: str, state: str, progress: int, detail: str, *, error: str = "", arr_id: int | None = None) -> None:
+    ensure_schema()
+    with db() as conn:
+        if arr_id is None:
+            conn.execute(
+                "UPDATE magic_intake_groups SET state=?,progress=?,progress_detail=?,error=?,updated_at=? WHERE group_key=?",
+                (state, max(0, min(100, int(progress))), detail, error, utcnow(), group_key),
+            )
+        else:
+            conn.execute(
+                "UPDATE magic_intake_groups SET match_id=?,state=?,progress=?,progress_detail=?,error=?,updated_at=? WHERE group_key=?",
+                (arr_id, state, max(0, min(100, int(progress))), detail, error, utcnow(), group_key),
+            )
+        conn.execute("INSERT INTO magic_intake_events(group_key,state,detail) VALUES(?,?,?)", (group_key, state, detail))
+    _CACHE["groups"] = []
 
 
 async def import_group(group_key: str, destination_key: str, selected_source: str = "") -> dict[str, Any]:
@@ -581,21 +979,24 @@ async def import_group(group_key: str, destination_key: str, selected_source: st
         if not selected_source or selected_source not in sources:
             raise ValueError("Select which movie release to import")
         sources = [selected_source]
+    missing = [source for source in sources if not _safe_source(source).exists()]
+    if missing:
+        raise FileNotFoundError(f"Source release no longer exists in top-level __magic__: {missing[0]}")
+
     dest_write, dest_arr = _safe_destination(group["media_type"], destination_key, group["match_title"], group.get("match_year") or group.get("year"))
     dest_parent_arr = dest_arr.parent
-    with db() as conn:
-        conn.execute("UPDATE magic_intake_groups SET state='importing',destination_key=?,error='',updated_at=? WHERE group_key=?", (destination_key, utcnow(), group_key))
-        conn.execute("INSERT INTO magic_intake_events(group_key,state,detail) VALUES(?,?,?)", (group_key, "moving", f"Virtual move into {dest_arr}"))
-    moved = []
+    moved: list[str] = []
     try:
-        # Resolve/add the Arr item first, with searching disabled. This prevents a
-        # failed metadata/API operation from leaving a successfully moved release
-        # stranded before ArrNexus knows which Arr entity owns it.
-        client, arr_id, arr_item = await _ensure_arr_item(group, dest_parent_arr)
+        _set_progress(group_key, "importing", 10, "Resolving target in Arr")
+        client, arr_id, _ = await _ensure_arr_item(group, dest_parent_arr)
+        before = await _verification_snapshot(client, group["media_type"], arr_id)
 
+        _set_progress(group_key, "importing", 25, f"Moving {len(sources)} release entr{'y' if len(sources) == 1 else 'ies'} inside __magic__", arr_id=arr_id)
         dest_write.parent.mkdir(parents=True, exist_ok=True)
         if len(sources) == 1 and _safe_source(sources[0]).is_dir() and not dest_write.exists():
-            src = _safe_source(sources[0]); src.rename(dest_write); moved.append(str(dest_arr))
+            src = _safe_source(sources[0])
+            src.rename(dest_write)
+            moved.append(str(dest_arr))
         else:
             dest_write.mkdir(parents=True, exist_ok=True)
             for source in sources:
@@ -603,27 +1004,56 @@ async def import_group(group_key: str, destination_key: str, selected_source: st
                 target = dest_write / src.name
                 if target.exists():
                     raise FileExistsError(f"Destination already exists: {target}")
-                src.rename(target); moved.append(str(dest_arr / src.name))
+                src.rename(target)
+                moved.append(str(dest_arr / src.name))
 
-        with db() as conn:
-            conn.execute("UPDATE magic_intake_groups SET match_id=?,state='verifying',updated_at=? WHERE group_key=?", (arr_id, utcnow(), group_key))
-            conn.execute("INSERT INTO magic_intake_events(group_key,state,detail) VALUES(?,?,?)", (group_key, "arr_rescan", f"Targeted {group.get('match_service') or group['media_type']} rescan/import for ID {arr_id}"))
+        _set_progress(group_key, "importing", 50, "Asking Arr for eligible Manual Import candidates", arr_id=arr_id)
         imported_candidates = await _try_manual_import(client, group["media_type"], str(dest_arr), arr_id)
+        _set_progress(group_key, "importing", 65, "Targeted Arr rescan requested", arr_id=arr_id)
         await _rescan(client, group["media_type"], arr_id)
-        ok, detail = await _verify(client, group["media_type"], arr_id, len(group.get("episodes") or []))
+        _set_progress(group_key, "verifying", 75, "Waiting for Arr to confirm the imported media", arr_id=arr_id)
+        ok, detail = await _verify(client, group["media_type"], arr_id, group, before)
         state = "imported" if ok else "partial"
-        with db() as conn:
-            conn.execute("UPDATE magic_intake_groups SET state=?,error=?,updated_at=? WHERE group_key=?", (state, "" if ok else detail, utcnow(), group_key))
-            conn.execute("INSERT INTO magic_intake_events(group_key,state,detail) VALUES(?,?,?)", (group_key, state, detail))
+        _set_progress(group_key, state, 100, detail, error="" if ok else detail, arr_id=arr_id)
         log_event("info" if ok else "warning", "magic_intake", state, detail, {"group": group_key, "paths": moved, "manual_candidates": imported_candidates})
-        _CACHE["groups"] = []
         return {"ok": ok, "state": state, "detail": detail, "moved": moved, "manual_candidates": imported_candidates, "arr_id": arr_id}
     except Exception as exc:
-        with db() as conn:
-            conn.execute("UPDATE magic_intake_groups SET state='partial',error=?,updated_at=? WHERE group_key=?", (str(exc), utcnow(), group_key))
-            conn.execute("INSERT INTO magic_intake_events(group_key,state,detail) VALUES(?,?,?)", (group_key, "partial", str(exc)))
-        _CACHE["groups"] = []
+        _set_progress(group_key, "partial", 100, str(exc), error=str(exc))
+        log_event("error", "magic_intake", "partial", str(exc), {"group": group_key, "paths": moved})
         raise
+
+
+async def _run_import_job(job_id: str, group_key: str, destination_key: str, selected_source: str) -> None:
+    try:
+        await import_group(group_key, destination_key, selected_source)
+    except asyncio.CancelledError:
+        _set_progress(group_key, "partial", 100, "Import task was cancelled", error="Import task was cancelled")
+        raise
+    except Exception:
+        pass
+    finally:
+        _IMPORT_TASKS.pop(group_key, None)
+
+
+def enqueue_import(group_key: str, destination_key: str, selected_source: str = "") -> dict[str, Any]:
+    ensure_schema()
+    group = get_group(group_key)
+    if not group:
+        raise ValueError("Magic Intake group not found")
+    current = _IMPORT_TASKS.get(group_key)
+    if current and not current.done():
+        return {"ok": True, "queued": False, "job_id": group.get("job_id") or "", "detail": "Import is already running"}
+    job_id = secrets.token_hex(8)
+    with db() as conn:
+        conn.execute(
+            "UPDATE magic_intake_groups SET state='queued',destination_key=?,progress=2,progress_detail='Queued for background import',job_id=?,error='',updated_at=? WHERE group_key=?",
+            (destination_key, job_id, utcnow(), group_key),
+        )
+        conn.execute("INSERT INTO magic_intake_events(group_key,state,detail) VALUES(?,?,?)", (group_key, "queued", "Queued for background import"))
+    task = asyncio.create_task(_run_import_job(job_id, group_key, destination_key, selected_source), name=f"magic-import-{job_id}")
+    _IMPORT_TASKS[group_key] = task
+    _CACHE["groups"] = []
+    return {"ok": True, "queued": True, "job_id": job_id, "detail": "Import queued and running in the background"}
 
 
 def events(group_key: str, limit: int = 80) -> list[dict]:

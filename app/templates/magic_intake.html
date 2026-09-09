@@ -2,78 +2,95 @@
 {% block title %}Magic Intake · ArrNexus{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div><h1>Magic Intake</h1><p>Match and import content added directly through DMM/Zurg <span class="mono">__magic__</span>.</p></div>
+  <div>
+    <h1>Magic Intake</h1>
+    <p>One import card per matched movie, Sonarr series or Lidarr artist. Individual Zurg releases stay separate underneath.</p>
+  </div>
   <form method="post" action="/magic-intake/scan"><button type="submit">Scan Now</button></form>
 </div>
 
-<div class="stat-grid compact">
-  <div class="stat"><span>Intake groups</span><strong>{{ state.summary.total }}</strong></div>
-  <div class="stat"><span>Matched</span><strong>{{ state.summary.matched }}</strong></div>
-  <div class="stat"><span>Needs review</span><strong>{{ state.summary.review }}</strong></div>
-  <div class="stat"><span>Unmatched</span><strong>{{ state.summary.unmatched }}</strong></div>
-  <div class="stat"><span>Partial</span><strong>{{ state.summary.partial }}</strong></div>
-  <div class="stat"><span>Imported</span><strong>{{ state.summary.imported }}</strong></div>
+<div class="stat-grid compact" id="magic-stats">
+  <div class="stat"><span>Canonical groups</span><strong data-magic-stat="total">{{ state.summary.total }}</strong></div>
+  <div class="stat"><span>Matched</span><strong data-magic-stat="matched">{{ state.summary.matched }}</strong></div>
+  <div class="stat"><span>Needs review</span><strong data-magic-stat="review">{{ state.summary.review }}</strong></div>
+  <div class="stat"><span>Importing</span><strong data-magic-stat="importing">{{ state.summary.importing|default(0) }}</strong></div>
+  <div class="stat"><span>Partial</span><strong data-magic-stat="partial">{{ state.summary.partial }}</strong></div>
+  <div class="stat"><span>Imported</span><strong data-magic-stat="imported">{{ state.summary.imported }}</strong></div>
 </div>
 
 {% if state.last_error %}<div class="flash error">{{ state.last_error }}</div>{% endif %}
 
-<section class="panel">
-  <div class="panel-head"><h2>Scanner</h2><span class="muted">Last scan {{ state.last_scan_at or 'not yet run' }}</span></div>
-  <form method="post" action="/magic-intake/settings" class="form-grid">
-    <label><span>Enabled</span><input type="checkbox" name="enabled" {% if cfg.enabled %}checked{% endif %}></label>
-    <label><span>Scan every (seconds)</span><input type="number" min="20" name="interval_seconds" value="{{ cfg.interval_seconds }}"></label>
-    <label><span>Auto-match threshold</span><input type="number" min="80" max="100" name="auto_match_threshold" value="{{ cfg.auto_match_threshold }}"></label>
-    <label><span>Writable Magic mount</span><input class="mono" name="magic_root" value="{{ cfg.root }}"></label>
-    <label><span>Path seen by Arr apps</span><input class="mono" name="arr_prefix" value="{{ cfg.arr_prefix }}"></label>
-    <div class="form-actions"><button type="submit">Save</button></div>
-  </form>
-</section>
-
-{% if search_group %}
-<section class="panel">
-  <div class="panel-head"><h2>Force Match</h2><a href="/magic-intake">Close</a></div>
-  <form method="get" action="/magic-intake" class="inline-form">
-    <input type="hidden" name="group_key" value="{{ search_group }}">
-    <input type="hidden" name="media_type" value="{{ search_type }}">
-    <input name="q" value="{{ search_q }}" placeholder="Search title">
-    <button type="submit">Search {{ search_type|title }}</button>
-  </form>
-  <div class="magic-match-grid">
-  {% for r in search_results %}
-    <article class="magic-result">
-      {% if r.poster_url %}<img src="{{ r.poster_url }}" alt="" loading="lazy">{% else %}<div class="magic-poster-empty">?</div>{% endif %}
-      <div><strong>{{ r.title }}</strong>{% if r.year %}<span class="muted"> ({{ r.year }})</span>{% endif %}</div>
-      <div class="muted small">ID {{ r.external_id or r.id or '—' }}</div>
-      <form method="post" action="/magic-intake/force-match">
-        <input type="hidden" name="group_key" value="{{ search_group }}">
-        <input type="hidden" name="media_type" value="{{ search_type }}">
-        <input type="hidden" name="candidate_json" value='{{ r|tojson|forceescape }}'>
-        <button type="submit">Use this match</button>
-      </form>
-    </article>
-  {% else %}
-    {% if search_q %}<p class="empty">No Arr lookup results found.</p>{% endif %}
-  {% endfor %}
+<section class="panel magic-filter-panel">
+  <div class="panel-head">
+    <div><h2>Filter intake</h2><span class="muted"><span id="magic-visible-count">0</span> visible</span></div>
+    <span class="muted">Filters are instant — no rescan required</span>
+  </div>
+  <div class="magic-type-tabs" role="group" aria-label="Media type filter">
+    <button type="button" class="magic-type-tab active" data-magic-type="all">All</button>
+    <button type="button" class="magic-type-tab" data-magic-type="movie">Movies</button>
+    <button type="button" class="magic-type-tab" data-magic-type="tv">TV</button>
+    <button type="button" class="magic-type-tab" data-magic-type="music">Music</button>
+  </div>
+  <div class="magic-filters">
+    <label><span>Search</span><input id="magic-filter-search" type="search" placeholder="Title or source release"></label>
+    <label><span>Genre</span><select id="magic-filter-genre"><option value="all">All genres</option>{% for genre in filters.genres %}<option value="{{ genre|lower }}">{{ genre }}</option>{% endfor %}</select></label>
+    <label><span>Theme</span><select id="magic-filter-theme"><option value="all">All themes</option>{% for theme in filters.themes %}<option value="{{ theme }}">{{ theme|title }}</option>{% endfor %}</select></label>
+    <label><span>State</span><select id="magic-filter-state">
+      <option value="all">All states</option>
+      <option value="matched">Matched</option><option value="review">Needs review</option><option value="unmatched">Unmatched</option>
+      <option value="importing">Importing</option><option value="partial">Partial</option>
+    </select></label>
   </div>
 </section>
-{% endif %}
+
+<details class="panel magic-scanner-settings">
+  <summary><div><strong>Scanner settings</strong><span class="muted">Last scan {{ state.last_scan_at or 'not yet run' }}</span></div><span class="muted">{{ 'Enabled' if cfg.enabled else 'Disabled' }}</span></summary>
+  <div class="details-body">
+    <form method="post" action="/magic-intake/settings" class="form-grid">
+      <label class="check"><input type="checkbox" name="enabled" {% if cfg.enabled %}checked{% endif %}><span>Background scan enabled</span></label>
+      <label><span>Scan every (seconds)</span><input type="number" min="20" name="interval_seconds" value="{{ cfg.interval_seconds }}"></label>
+      <label><span>Auto-match threshold</span><input type="number" min="80" max="100" name="auto_match_threshold" value="{{ cfg.auto_match_threshold }}"></label>
+      <label><span>Writable Magic mount</span><input class="mono" name="magic_root" value="{{ cfg.root }}"></label>
+      <label class="span2"><span>Path seen by Arr apps</span><input class="mono" name="arr_prefix" value="{{ cfg.arr_prefix }}"></label>
+      <div class="form-actions"><button type="submit">Save</button></div>
+    </form>
+  </div>
+</details>
 
 <section class="panel">
-  <div class="panel-head"><h2>Inbox</h2><span class="muted">Top-level entries under <span class="mono">__magic__</span> only</span></div>
-  <div class="magic-grid">
+  <div class="panel-head">
+    <div><h2>Inbox</h2><span class="muted">Top-level <span class="mono">__magic__</span> entries, grouped by canonical Arr identity</span></div>
+    <span class="muted">Series/artist grouping never merges the actual media files</span>
+  </div>
+  <div class="magic-grid" id="magic-grid">
   {% for g in groups if g.state != 'imported' %}
-    <article class="magic-card">
+    <article class="magic-card" id="{{ g.dom_id }}"
+      data-group-key="{{ g.group_key }}"
+      data-media-type="{{ g.media_type }}"
+      data-state="{{ g.state }}"
+      data-genres="{{ g.genres|join('|')|lower }}"
+      data-themes="{{ g.themes|join('|')|lower }}"
+      data-search="{{ (g.display_title ~ ' ' ~ (g.source_paths|join(' ')))|lower }}">
       <div class="magic-poster">
         {% if g.poster_url %}<img src="{{ g.poster_url }}" alt="" loading="lazy">{% else %}<div class="magic-poster-empty">?</div>{% endif %}
       </div>
       <div class="magic-card-body">
-        <div class="magic-card-title"><strong>{{ g.match_title or g.normalized_title }}</strong>{% if g.match_year or g.year %} <span class="muted">({{ g.match_year or g.year }})</span>{% endif %}</div>
-        <div class="magic-tags"><span class="pill">{{ g.media_type|upper }}</span><span class="pill {% if g.confidence >= cfg.auto_match_threshold %}good{% elif g.confidence >= 80 %}warn{% else %}bad{% endif %}">{{ g.confidence }}%</span><span class="pill">{{ g.state }}</span></div>
-        <p class="muted">{{ g.release_count }} release entr{{ 'y' if g.release_count == 1 else 'ies' }}{% if g.episodes %} · {{ g.episodes|length }} episode marker(s){% endif %}</p>
-        <details><summary>Source releases</summary><div class="mono small">{% for p in g.source_paths %}<div>{{ p }}</div>{% endfor %}</div></details>
+        <div class="magic-card-title"><strong data-magic-title>{{ g.display_title }}</strong>{% if g.match_year or g.year %} <span class="muted" data-magic-year>({{ g.match_year or g.year }})</span>{% endif %}</div>
+        <div class="magic-tags">
+          <span class="pill">{{ g.media_type|upper }}</span>
+          <span class="pill {% if g.confidence >= cfg.auto_match_threshold %}good{% elif g.confidence >= 80 %}warn{% else %}bad{% endif %}" data-magic-confidence>{{ g.confidence }}%</span>
+          <span class="pill" data-magic-state>{{ g.state }}</span>
+        </div>
+        <p class="muted magic-summary">
+          <strong>{{ g.release_count }}</strong> release entr{{ 'y' if g.release_count == 1 else 'ies' }}
+          {% if g.media_type == 'tv' and g.seasons %} · Season{{ '' if g.seasons|length == 1 else 's' }} {{ g.seasons|join(', ') }}{% endif %}
+          {% if g.media_type == 'tv' and g.episode_count %} · {{ g.episode_count }} episode marker(s){% endif %}
+        </p>
+        {% if g.genres %}<div class="magic-genres">{% for genre in g.genres[:6] %}<span class="tag">{{ genre }}</span>{% endfor %}</div>{% endif %}
+        <details class="magic-release-details"><summary>Source releases</summary><div class="mono small">{% for p in g.source_paths %}<div>{{ p }}</div>{% endfor %}</div></details>
 
         {% if g.match_title %}
-        <form method="post" action="/magic-intake/import" class="magic-import-form">
+        <form method="post" action="/magic-intake/import" class="magic-import-form" data-magic-import-form>
           <input type="hidden" name="group_key" value="{{ g.group_key }}">
           <label><span>Destination</span><select name="destination_key" required>
             {% for key,path in g.destination_options.items() %}<option value="{{ key }}" {% if g.destination_key == key %}selected{% endif %}>{{ key|replace('plus','+')|title }} · {{ path }}</option>{% endfor %}
@@ -81,27 +98,46 @@
           {% if g.media_type == 'movie' and g.source_paths|length > 1 %}
           <label><span>Movie release</span><select name="selected_source" required>{% for p in g.source_paths %}<option value="{{ p }}">{{ p }}</option>{% endfor %}</select></label>
           {% else %}<input type="hidden" name="selected_source" value="">{% endif %}
-          <button type="submit">Import</button>
+          <button type="submit" class="primary" data-magic-import-button {% if g.state in ['queued','importing','verifying'] %}disabled{% endif %}>{{ 'Working…' if g.state in ['queued','importing','verifying'] else ('Import Series' if g.media_type == 'tv' else ('Import Artist' if g.media_type == 'music' else 'Import')) }}</button>
         </form>
         {% endif %}
 
+        <div class="magic-progress" data-magic-progress-wrap {% if not g.progress and g.state not in ['queued','importing','verifying','partial'] %}hidden{% endif %}>
+          <div class="magic-progress-track"><span data-magic-progress-bar style="width:{{ g.progress|default(0) }}%"></span></div>
+          <div class="muted small" data-magic-progress-text>{{ g.progress_detail or g.state }}</div>
+        </div>
+
         <div class="magic-actions">
-          <a class="button secondary" href="/magic-intake?group_key={{ g.group_key|urlencode }}&media_type={{ g.media_type }}&q={{ g.normalized_title|urlencode }}">Force Match</a>
+          <button type="button" class="secondary" data-force-match data-group-key="{{ g.group_key }}" data-media-type="{{ g.media_type }}" data-title="{{ g.normalized_title }}">Force Match</button>
           <form method="post" action="/magic-intake/ignore"><input type="hidden" name="group_key" value="{{ g.group_key }}"><button class="secondary" type="submit">Ignore</button></form>
         </div>
-        {% if g.error %}<p class="error-text">{{ g.error }}</p>{% endif %}
+        {% if g.error %}<p class="error-text" data-magic-error>{{ g.error }}</p>{% else %}<p class="error-text" data-magic-error hidden></p>{% endif %}
       </div>
     </article>
   {% else %}
     <p class="empty">No unorganised Magic Intake content found.</p>
   {% endfor %}
   </div>
+  <p class="empty" id="magic-filter-empty" hidden>No intake groups match the selected filters.</p>
 </section>
 
 <section class="panel">
   <div class="panel-head"><h2>Imported</h2><span class="muted">Arr-confirmed completions</span></div>
-  <div class="table-wrap"><table><thead><tr><th>Title</th><th>Type</th><th>Destination</th><th>Confidence</th></tr></thead><tbody>
-  {% for g in groups if g.state == 'imported' %}<tr><td>{{ g.match_title or g.normalized_title }}</td><td>{{ g.media_type }}</td><td>{{ g.destination_key }}</td><td>{{ g.confidence }}%</td></tr>{% else %}<tr><td colspan="4" class="empty">Nothing imported yet.</td></tr>{% endfor %}
+  <div class="table-wrap"><table><thead><tr><th>Title</th><th>Type</th><th>Destination</th><th>Releases</th><th>Confidence</th></tr></thead><tbody>
+  {% for g in groups if g.state == 'imported' %}<tr><td>{{ g.display_title }}</td><td>{{ g.media_type }}</td><td>{{ g.destination_key }}</td><td>{{ g.release_count }}</td><td>{{ g.confidence }}%</td></tr>{% else %}<tr><td colspan="5" class="empty">Nothing imported yet.</td></tr>{% endfor %}
   </tbody></table></div>
 </section>
+
+<div class="magic-modal" id="magic-match-modal" hidden aria-hidden="true">
+  <div class="magic-modal-backdrop" data-magic-modal-close></div>
+  <section class="magic-modal-card" role="dialog" aria-modal="true" aria-labelledby="magic-match-title">
+    <div class="panel-head"><div><h2 id="magic-match-title">Force Match</h2><span class="muted">Search the matching Arr metadata source without leaving your place in the inbox.</span></div><button type="button" class="secondary" data-magic-modal-close>Close</button></div>
+    <form id="magic-match-search" class="searchbar">
+      <input id="magic-match-query" placeholder="Search title or artist" autocomplete="off">
+      <button type="submit">Search</button>
+    </form>
+    <div id="magic-match-results" class="magic-match-grid"><p class="empty">Search for the correct title.</p></div>
+  </section>
+</div>
 {% endblock %}
+{% block scripts %}<script>window.ArrNexusMagicIntake=true;</script>{% endblock %}

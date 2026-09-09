@@ -1,6 +1,6 @@
 services:
   arrnexus:
-    image: arrnexus:v13.0.0
+    image: arrnexus:v13.1.0
     build: .
     container_name: arrnexus
     restart: unless-stopped
@@ -31,7 +31,12 @@ services:
     volumes:
       - ${ARRNEXUS_DATA_DIR:-/mnt/appdata/arrnexus/data}:/data
       - ${ZURG_CACHE_DIR:-/mnt/appdata/zurg-rclone-cache}:/host/zurg-rclone-cache:ro
-      - ${ZURG_MAGIC_DIR:-/zurg_mnt/zurg/__magic__}:/zurg_magic:rw
+      - type: bind
+        source: ${ZURG_MAGIC_DIR:-/zurg_mnt/zurg/__magic__}
+        target: /zurg_magic
+        read_only: false
+        bind:
+          propagation: rslave
       - type: bind
         source: /zurg_mnt
         target: /zurg_mnt

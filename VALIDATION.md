@@ -1,65 +1,67 @@
-# ArrNexus v13.0.0 validation
+# ArrNexus v13.1.0 validation
 
-Validation performed against the complete v13 release tree before packaging.
+Validation performed against the v13.1.0 release tree before packaging.
 
-## Automated source/runtime checks
+## Automated tests
 
-- Python `compileall` passed for the complete application tree.
-- `app.main` imports successfully and reports exactly `13.0.0`.
-- All Jinja templates compile successfully, including the new Magic Intake UI.
-- `docker-compose.yml` and `portainer-stack.yml` are included with the v13 image tag.
-- The main Zurg bind remains read-only.
-- A dedicated writable `/zurg_magic` bind is provided only for Zurg `__magic__` moves.
-- Standalone service defaults point to `192.168.137.10`.
-- Package safety keeps the persistent database outside the release tree.
+`python -m unittest -v tests/test_v13.py`
 
-## Automated test suite
+**31 tests passed.** Coverage includes:
 
-Run with:
+- existing Missing Media Orchestrator behaviour;
+- Queue Janitor classifications, dry-run safety and retry limits;
+- safe ID/manual-import handling;
+- NeutArr coexistence;
+- canonical TV grouping by Sonarr/TVDB identity;
+- canonical music grouping by Lidarr artist identity;
+- multi-episode `S01E07-E09` parsing;
+- legacy `1x02` episode parsing;
+- nested audio folder classification;
+- Magic Intake genre/theme filter metadata;
+- per-release Force Match override persistence;
+- v13.0.0 -> v13.1.0 SQLite schema migration;
+- preservation of an existing v13 match if the first upgrade metadata lookup temporarily fails;
+- exact expected-episode Sonarr verification rather than whole-library counts;
+- Lidarr album lookup endpoint use;
+- non-blocking background import queueing; and
+- FastAPI page rendering + `/api/health` version reporting.
 
-```bash
-PYTHONPATH=. python -m unittest -v tests.test_v13
+## Static/runtime validation
+
+Passed:
+
+- Python `compileall` for `app/` and `tests/`;
+- all Jinja templates compile;
+- `node --check app/static/app.js`;
+- `docker-compose.yml` YAML parse;
+- `portainer-stack.yml` YAML parse;
+- both Compose files point to `arrnexus:v13.1.0`;
+- Bash syntax checks for release/build helper scripts;
+- `VERSION` is exactly `13.1.0`;
+- runtime scan found no stale `arrnexus:v13.0.0` image reference or `APP_VERSION = "13.0.0"` fallback.
+
+## Upgrade behaviour specifically checked
+
+v13.1.0 adds Magic Intake columns to an existing v13 database in place:
+
+```text
+canonical_key
+genres_json
+progress
+progress_detail
+job_id
 ```
 
-**19 tests passed.**
+Existing confidence-100 Force Matches are migrated to per-source overrides before canonical regrouping.
 
-Coverage includes:
+The first v13.1 scan re-resolves old v13 cards so genres/canonical IDs can be refreshed, but falls back to the existing match identity if the Arr metadata lookup is temporarily unavailable.
 
-1. v12 recovery/orchestration SQLite schema remains compatible;
-2. Sonarr season grouping for multiple missing episodes;
-3. expired Missing Media cooldown eligibility;
-4. NeutArr coexistence deferring automatic dispatch;
-5. invalid episode mapping taking priority over unsafe manual import;
-6. ID/grab-history Manual Import classification;
-7. failed-release, uncertain-sample and stalled-download classification;
-8. hard retry-limit pause behaviour;
-9. Reset & Resume recovery counter behaviour;
-10. Queue Janitor dry-run safety;
-11. Queue Janitor API state strips raw Arr payloads;
-12. safe ID-based manual import dry-run;
-13. unsafe manual import rejection;
-14. queue removal requests client removal plus blocklisting;
-15. manual Missing Media actions remain available while automatic scheduling is disabled;
-16. Magic Intake groups `SxxExx` releases into one TV title;
-17. Magic Intake ignores already-organised `movies/`, `tv/` and `music/` directories;
-18. Magic Intake Force Match persists the selected metadata identity; and
-19. FastAPI routes render successfully and `/api/health` reports `13.0.0`.
+## Packaging limitation
 
-## Magic Intake behaviour validated
+Docker is not installed in this packaging environment, so the actual `docker build` and live Zurg-FUSE move cannot be executed here. The final image build is performed on the Debian host using:
 
-- Top-level release-name normalisation removes common quality/source suffixes.
-- Episode markers are preserved while grouping related releases under one title.
-- Already-organised Magic Intake directories are excluded from discovery.
-- Force Match persists title, year, external ID, artwork and 100% confidence.
-- The normal Zurg root is not used for writes by Magic Intake.
-- Magic Intake write operations are constrained to the configured dedicated magic root.
-- Destination paths are restricted to the configured movie/TV/music destination map.
-- Movie groups with multiple candidate releases require explicit release selection.
-- Arr items are resolved/added with automatic searching disabled before the virtual move.
-- The import path attempts explicit Arr ManualImport first, then a targeted Arr rescan/refresh.
-- Completion requires Arr confirmation; otherwise the group is retained as `partial`.
-- Ignore changes only ArrNexus state and does not delete Real-Debrid content.
+```bash
+./scripts/pull-build-v13.1.sh
+```
 
-## Container-build limitation
-
-Docker is not installed in the packaging environment, so a live `docker build` and Zurg-FUSE move test cannot be executed here. The Debian host performs the final image build with `scripts/pull-build-v13.sh` after the GitHub tag is published.
+The release package preserves the same v13 writable Magic mount and read-only main Zurg mount.
