@@ -14,7 +14,8 @@
   <div class="stat"><span>Matched</span><strong data-magic-stat="matched">{{ state.summary.matched }}</strong></div>
   <div class="stat"><span>Needs review</span><strong data-magic-stat="review">{{ state.summary.review }}</strong></div>
   <div class="stat"><span>Importing</span><strong data-magic-stat="importing">{{ state.summary.importing|default(0) }}</strong></div>
-  <div class="stat"><span>Partial</span><strong data-magic-stat="partial">{{ state.summary.partial }}</strong></div>
+  <div class="stat"><span>Awaiting Arr</span><strong data-magic-stat="awaiting">{{ state.summary.awaiting|default(0) }}</strong></div>
+  <div class="stat"><span>Needs attention</span><strong data-magic-stat="attention">{{ state.summary.attention|default(0) }}</strong></div>
   <div class="stat"><span>Imported</span><strong data-magic-stat="imported">{{ state.summary.imported }}</strong></div>
 </div>
 
@@ -22,8 +23,8 @@
 
 <section class="panel magic-filter-panel">
   <div class="panel-head">
-    <div><h2>Filter intake</h2><span class="muted"><span id="magic-visible-count">0</span> visible</span></div>
-    <span class="muted">Filters are instant — no rescan required</span>
+    <div><h2>Filter intake</h2><span class="muted"><span id="magic-visible-count">{{ total_visible }}</span> matches · <span id="magic-loaded-count">{{ groups|length }}</span> loaded</span></div>
+    <span class="muted">Filters are instant and paged — no rescan required</span>
   </div>
   <div class="magic-type-tabs" role="group" aria-label="Media type filter">
     <button type="button" class="magic-type-tab active" data-magic-type="all">All</button>
@@ -38,7 +39,10 @@
     <label><span>State</span><select id="magic-filter-state">
       <option value="all">All states</option>
       <option value="matched">Matched</option><option value="review">Needs review</option><option value="unmatched">Unmatched</option>
-      <option value="importing">Importing</option><option value="partial">Partial</option>
+      <option value="importing">Importing</option><option value="awaiting_arr">Moved - awaiting Arr</option>
+      <option value="attention">Needs attention</option><option value="partially_verified">Partially verified</option>
+      <option value="numbering_mismatch">Numbering mismatch</option><option value="verification_timeout">Verification timeout</option>
+      <option value="source_missing">Source missing</option><option value="failed">Import failed</option>
     </select></label>
   </div>
 </section>
@@ -50,6 +54,8 @@
       <label class="check"><input type="checkbox" name="enabled" {% if cfg.enabled %}checked{% endif %}><span>Background scan enabled</span></label>
       <label><span>Scan every (seconds)</span><input type="number" min="20" name="interval_seconds" value="{{ cfg.interval_seconds }}"></label>
       <label><span>Auto-match threshold</span><input type="number" min="80" max="100" name="auto_match_threshold" value="{{ cfg.auto_match_threshold }}"></label>
+      <label><span>Verify for (minutes)</span><input type="number" min="2" max="60" name="verify_window_minutes" value="{{ cfg.verify_window_minutes|default(10) }}"></label>
+      <label><span>Recheck every (seconds)</span><input type="number" min="15" max="300" name="verify_interval_seconds" value="{{ cfg.verify_interval_seconds|default(30) }}"></label>
       <label><span>Writable Magic mount</span><input class="mono" name="magic_root" value="{{ cfg.root }}"></label>
       <label class="span2"><span>Path seen by Arr apps</span><input class="mono" name="arr_prefix" value="{{ cfg.arr_prefix }}"></label>
       <div class="form-actions"><button type="submit">Save</button></div>
@@ -79,7 +85,7 @@
         <div class="magic-tags">
           <span class="pill">{{ g.media_type|upper }}</span>
           <span class="pill {% if g.confidence >= cfg.auto_match_threshold %}good{% elif g.confidence >= 80 %}warn{% else %}bad{% endif %}" data-magic-confidence>{{ g.confidence }}%</span>
-          <span class="pill" data-magic-state>{{ g.state }}</span>
+          <span class="pill" data-magic-state>{{ g.status_label or g.state }}</span>
         </div>
         <p class="muted magic-summary">
           <strong>{{ g.release_count }}</strong> release entr{{ 'y' if g.release_count == 1 else 'ies' }}
@@ -98,16 +104,22 @@
           {% if g.media_type == 'movie' and g.source_paths|length > 1 %}
           <label><span>Movie release</span><select name="selected_source" required>{% for p in g.source_paths %}<option value="{{ p }}">{{ p }}</option>{% endfor %}</select></label>
           {% else %}<input type="hidden" name="selected_source" value="">{% endif %}
-          <button type="submit" class="primary" data-magic-import-button {% if g.state in ['queued','importing','verifying'] %}disabled{% endif %}>{{ 'Working…' if g.state in ['queued','importing','verifying'] else ('Import Series' if g.media_type == 'tv' else ('Import Artist' if g.media_type == 'music' else 'Import')) }}</button>
+          {% set moved_states = ['awaiting_arr','partially_verified','numbering_mismatch','verification_timeout','source_missing','partial'] %}
+          <button type="submit" class="primary" data-magic-import-button {% if g.state in ['queued','importing','verifying'] or g.state in moved_states %}disabled{% endif %}>
+            {% if g.state in ['queued','importing','verifying'] %}Working…
+            {% elif g.state in moved_states %}Moved — recheck
+            {% else %}{{ 'Import Series' if g.media_type == 'tv' else ('Import Artist' if g.media_type == 'music' else 'Import') }}{% endif %}
+          </button>
         </form>
         {% endif %}
 
-        <div class="magic-progress" data-magic-progress-wrap {% if not g.progress and g.state not in ['queued','importing','verifying','partial'] %}hidden{% endif %}>
+        <div class="magic-progress" data-magic-progress-wrap {% if not g.progress and g.state not in ['queued','importing','verifying','awaiting_arr','partially_verified','numbering_mismatch','verification_timeout','source_missing','failed','partial'] %}hidden{% endif %}>
           <div class="magic-progress-track"><span data-magic-progress-bar style="width:{{ g.progress|default(0) }}%"></span></div>
           <div class="muted small" data-magic-progress-text>{{ g.progress_detail or g.state }}</div>
         </div>
 
         <div class="magic-actions">
+          {% if g.recheckable %}<button type="button" class="secondary" data-magic-recheck data-group-key="{{ g.group_key }}">Recheck now</button>{% endif %}
           <button type="button" class="secondary" data-force-match data-group-key="{{ g.group_key }}" data-media-type="{{ g.media_type }}" data-title="{{ g.normalized_title }}">Force Match</button>
           <form method="post" action="/magic-intake/ignore"><input type="hidden" name="group_key" value="{{ g.group_key }}"><button class="secondary" type="submit">Ignore</button></form>
         </div>
@@ -118,13 +130,16 @@
     <p class="empty">No unorganised Magic Intake content found.</p>
   {% endfor %}
   </div>
-  <p class="empty" id="magic-filter-empty" hidden>No intake groups match the selected filters.</p>
+  <p class="empty" id="magic-filter-empty" {% if total_visible %}hidden{% endif %}>No intake groups match the selected filters.</p>
+  <div class="form-actions" style="justify-content:center;margin-top:16px">
+    <button type="button" id="magic-load-more" class="secondary" {% if not has_more %}hidden{% endif %}>Load more</button>
+  </div>
 </section>
 
 <section class="panel">
   <div class="panel-head"><h2>Imported</h2><span class="muted">Arr-confirmed completions</span></div>
   <div class="table-wrap"><table><thead><tr><th>Title</th><th>Type</th><th>Destination</th><th>Releases</th><th>Confidence</th></tr></thead><tbody>
-  {% for g in groups if g.state == 'imported' %}<tr><td>{{ g.display_title }}</td><td>{{ g.media_type }}</td><td>{{ g.destination_key }}</td><td>{{ g.release_count }}</td><td>{{ g.confidence }}%</td></tr>{% else %}<tr><td colspan="5" class="empty">Nothing imported yet.</td></tr>{% endfor %}
+  {% for g in recent_imported %}<tr><td>{{ g.display_title }}</td><td>{{ g.media_type }}</td><td>{{ g.destination_key }}</td><td>{{ g.release_count }}</td><td>{{ g.confidence }}%</td></tr>{% else %}<tr><td colspan="5" class="empty">Nothing imported yet.</td></tr>{% endfor %}
   </tbody></table></div>
 </section>
 
@@ -140,4 +155,4 @@
   </section>
 </div>
 {% endblock %}
-{% block scripts %}<script>window.ArrNexusMagicIntake=true;</script>{% endblock %}
+{% block scripts %}<script>window.ArrNexusMagicIntake=true;window.ArrNexusMagicTotal={{ total_visible|int }};window.ArrNexusMagicLimit={{ page_limit|int }};window.ArrNexusMagicRevision={{ (state.last_scan_at or "")|tojson }};</script>{% endblock %}

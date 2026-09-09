@@ -54,39 +54,40 @@
   // ------------------------------------------------------------------
   // Magic Intake 2.0 (v13.1)
   // ------------------------------------------------------------------
-  const magic={type:'all',groupKey:'',mediaType:'movie',results:[]};
+  const magic={type:'all',groupKey:'',mediaType:'movie',results:[],offset:0,limit:72,total:0,revision:'',reloadTimer:null};
+  const magicMovedStates=new Set(['awaiting_arr','partially_verified','numbering_mismatch','verification_timeout','source_missing','partial']);
+  const magicWorkingStates=new Set(['queued','importing','verifying']);
 
   function magicCards(){return Array.from(document.querySelectorAll('#magic-grid .magic-card'))}
 
+  function magicFilterValues(){
+    return {
+      media_type:magic.type||'all',
+      q:(document.querySelector('#magic-filter-search')?.value||'').trim(),
+      genre:document.querySelector('#magic-filter-genre')?.value||'all',
+      theme:document.querySelector('#magic-filter-theme')?.value||'all',
+      state:document.querySelector('#magic-filter-state')?.value||'all',
+    };
+  }
+
+  function updateMagicCounts(total){
+    magic.total=Number(total||0);
+    const count=document.querySelector('#magic-visible-count');if(count)count.textContent=magic.total;
+    const loaded=document.querySelector('#magic-loaded-count');if(loaded)loaded.textContent=magicCards().length;
+    const empty=document.querySelector('#magic-filter-empty');if(empty)empty.hidden=magic.total!==0;
+    const more=document.querySelector('#magic-load-more');if(more)more.hidden=magicCards().length>=magic.total;
+  }
+
   function applyMagicFilters(){
-    if(!window.ArrNexusMagicIntake)return;
-    const search=(document.querySelector('#magic-filter-search')?.value||'').trim().toLowerCase();
-    const genre=(document.querySelector('#magic-filter-genre')?.value||'all').toLowerCase();
-    const theme=(document.querySelector('#magic-filter-theme')?.value||'all').toLowerCase();
-    const state=(document.querySelector('#magic-filter-state')?.value||'all').toLowerCase();
-    let visible=0;
-    for(const card of magicCards()){
-      const type=(card.dataset.mediaType||'').toLowerCase();
-      const genres=(card.dataset.genres||'').split('|').filter(Boolean);
-      const themes=(card.dataset.themes||'').split('|').filter(Boolean);
-      const cardState=(card.dataset.state||'').toLowerCase();
-      const stateBucket=['queued','importing','verifying'].includes(cardState)?'importing':cardState;
-      const okType=magic.type==='all'||type===magic.type;
-      const okSearch=!search||(card.dataset.search||'').includes(search);
-      const okGenre=genre==='all'||genres.includes(genre);
-      const okTheme=theme==='all'||themes.includes(theme);
-      const okState=state==='all'||stateBucket===state;
-      const show=okType&&okSearch&&okGenre&&okTheme&&okState&&!card.classList.contains('magic-stale');
-      card.hidden=!show;if(show)visible++;
-    }
-    const count=document.querySelector('#magic-visible-count');if(count)count.textContent=visible;
-    const empty=document.querySelector('#magic-filter-empty');if(empty)empty.hidden=visible!==0;
+    // v13.1.2 filters are server-side/paginated. Keep this function as a
+    // lightweight counter/update hook for existing callers.
+    updateMagicCounts(magic.total||Number(window.ArrNexusMagicTotal||0));
   }
 
   function setMagicType(type,button){
     magic.type=type;
     document.querySelectorAll('[data-magic-type]').forEach(x=>x.classList.toggle('active',x===button));
-    applyMagicFilters();
+    scheduleMagicReload(0);
   }
 
   function modal(open){
@@ -135,7 +136,7 @@
         if(candidate.poster_url&&poster)poster.innerHTML=`<img src="${esc(candidate.poster_url)}" alt="" loading="lazy">`;
         card.dataset.search=`${candidate.title||''} ${card.dataset.search||''}`.toLowerCase();
       }
-      modal(false);applyMagicFilters();
+      modal(false);scheduleMagicReload(900);
     }catch(e){button.disabled=false;button.textContent='Use this match';alert(e.message)}
   }
 
@@ -156,27 +157,46 @@
         const bar=card.querySelector('[data-magic-progress-bar]');if(bar)bar.style.width='2%';
       }
       if(button)button.textContent='Working…';
-      applyMagicFilters();
+      updateMagicCounts(magic.total);
     }catch(e){if(button){button.disabled=false;button.textContent='Import'}alert(e.message)}
+  }
+
+  function ensureMagicRecheckButton(card,row){
+    const actions=card.querySelector('.magic-actions');if(!actions)return;
+    let button=actions.querySelector('[data-magic-recheck]');
+    if(row.recheckable){
+      if(!button){
+        button=document.createElement('button');button.type='button';button.className='secondary';button.setAttribute('data-magic-recheck','');
+        actions.insertBefore(button,actions.firstChild);
+      }
+      button.dataset.groupKey=row.group_key||card.dataset.groupKey||'';button.textContent='Recheck now';button.disabled=false;
+    }else if(button){button.remove()}
   }
 
   function updateMagicCard(card,row){
     card.dataset.state=row.state||'';
     card.dataset.genres=(row.genres||[]).join('|').toLowerCase();
     card.dataset.themes=(row.themes||[]).join('|').toLowerCase();
-    const state=card.querySelector('[data-magic-state]');if(state)state.textContent=row.state||'';
+    const state=card.querySelector('[data-magic-state]');if(state)state.textContent=row.status_label||row.state||'';
     const wrap=card.querySelector('[data-magic-progress-wrap]');
-    if(wrap)wrap.hidden=!(row.progress||['queued','importing','verifying','partial','imported'].includes(row.state));
+    if(wrap)wrap.hidden=!(row.progress||magicWorkingStates.has(row.state)||magicMovedStates.has(row.state)||['failed','imported'].includes(row.state));
     const bar=card.querySelector('[data-magic-progress-bar]');if(bar)bar.style.width=`${Math.max(0,Math.min(100,Number(row.progress||0)))}%`;
-    const text=card.querySelector('[data-magic-progress-text]');if(text)text.textContent=row.progress_detail||row.state||'';
+    const text=card.querySelector('[data-magic-progress-text]');if(text)text.textContent=row.progress_detail||row.status_label||row.state||'';
     const err=card.querySelector('[data-magic-error]');if(err){err.textContent=row.error||'';err.hidden=!row.error}
     const button=card.querySelector('[data-magic-import-button]');
     if(button){
-      const working=['queued','importing','verifying'].includes(row.state);button.disabled=working||row.state==='imported';
-      if(row.state==='imported')button.textContent='Imported';else if(working)button.textContent='Working…';
+      const working=magicWorkingStates.has(row.state);
+      const moved=magicMovedStates.has(row.state);
+      button.disabled=working||moved||row.state==='imported';
+      if(row.state==='imported')button.textContent='Imported';
+      else if(working)button.textContent='Working…';
+      else if(moved)button.textContent='Moved — recheck';
+      else if(row.state==='failed')button.textContent='Retry Import';
     }
+    ensureMagicRecheckButton(card,row);
     card.classList.toggle('magic-card-imported',row.state==='imported');
   }
+
 
   function magicCardHtml(row,cfg){
     const year=row.match_year||row.year||'';
@@ -194,23 +214,27 @@
       sourceField=`<label><span>Movie release</span><select name="selected_source" required>${(row.source_paths||[]).map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}</select></label>`;
     }
     const importLabel=row.media_type==='tv'?'Import Series':(row.media_type==='music'?'Import Artist':'Import');
-    const working=['queued','importing','verifying'].includes(row.state);
-    const importForm=row.match_title?`<form method="post" action="/magic-intake/import" class="magic-import-form" data-magic-import-form><input type="hidden" name="group_key" value="${esc(row.group_key)}"><label><span>Destination</span><select name="destination_key" required>${destinations}</select></label>${sourceField}<button type="submit" class="primary" data-magic-import-button ${working?'disabled':''}>${working?'Working…':importLabel}</button></form>`:'';
+    const working=magicWorkingStates.has(row.state);
+    const moved=magicMovedStates.has(row.state);
+    let buttonLabel=working?'Working…':(moved?'Moved — recheck':(row.state==='failed'?'Retry Import':importLabel));
+    const importForm=row.match_title?`<form method="post" action="/magic-intake/import" class="magic-import-form" data-magic-import-form><input type="hidden" name="group_key" value="${esc(row.group_key)}"><label><span>Destination</span><select name="destination_key" required>${destinations}</select></label>${sourceField}<button type="submit" class="primary" data-magic-import-button ${(working||moved)?'disabled':''}>${esc(buttonLabel)}</button></form>`:'';
     const poster=row.poster_url?`<img src="${esc(row.poster_url)}" alt="" loading="lazy">`:'<div class="magic-poster-empty">?</div>';
-    const progressVisible=Number(row.progress||0)||['queued','importing','verifying','partial'].includes(row.state);
+    const progressVisible=Number(row.progress||0)||working||moved||['failed'].includes(row.state);
     const searchText=`${row.display_title||''} ${(row.source_paths||[]).join(' ')}`.toLowerCase();
+    const recheck=row.recheckable?`<button type="button" class="secondary" data-magic-recheck data-group-key="${esc(row.group_key)}">Recheck now</button>`:'';
     return `<article class="magic-card" id="${esc(row.dom_id||'')}" data-group-key="${esc(row.group_key)}" data-media-type="${esc(row.media_type)}" data-state="${esc(row.state)}" data-genres="${esc((row.genres||[]).join('|').toLowerCase())}" data-themes="${esc((row.themes||[]).join('|').toLowerCase())}" data-search="${esc(searchText)}">
       <div class="magic-poster">${poster}</div><div class="magic-card-body">
       <div class="magic-card-title"><strong data-magic-title>${esc(row.display_title||row.match_title||row.normalized_title||'Unknown')}</strong>${year?` <span class="muted" data-magic-year>(${esc(year)})</span>`:''}</div>
-      <div class="magic-tags"><span class="pill">${esc(String(row.media_type||'').toUpperCase())}</span><span class="pill ${confClass}" data-magic-confidence>${conf}%</span><span class="pill" data-magic-state>${esc(row.state||'')}</span></div>
+      <div class="magic-tags"><span class="pill">${esc(String(row.media_type||'').toUpperCase())}</span><span class="pill ${confClass}" data-magic-confidence>${conf}%</span><span class="pill" data-magic-state>${esc(row.status_label||row.state||'')}</span></div>
       <p class="muted magic-summary"><strong>${esc(row.release_count||0)}</strong> release entr${Number(row.release_count||0)===1?'y':'ies'}${seasonText}${episodeText}</p>
       ${genres?`<div class="magic-genres">${genres}</div>`:''}
       <details class="magic-release-details"><summary>Source releases</summary><div class="mono small">${releases}</div></details>
       ${importForm}
-      <div class="magic-progress" data-magic-progress-wrap ${progressVisible?'':'hidden'}><div class="magic-progress-track"><span data-magic-progress-bar style="width:${Math.max(0,Math.min(100,Number(row.progress||0)))}%"></span></div><div class="muted small" data-magic-progress-text>${esc(row.progress_detail||row.state||'')}</div></div>
-      <div class="magic-actions"><button type="button" class="secondary" data-force-match data-group-key="${esc(row.group_key)}" data-media-type="${esc(row.media_type)}" data-title="${esc(row.normalized_title||row.display_title||'')}">Force Match</button><form method="post" action="/magic-intake/ignore"><input type="hidden" name="group_key" value="${esc(row.group_key)}"><button class="secondary" type="submit">Ignore</button></form></div>
+      <div class="magic-progress" data-magic-progress-wrap ${progressVisible?'':'hidden'}><div class="magic-progress-track"><span data-magic-progress-bar style="width:${Math.max(0,Math.min(100,Number(row.progress||0)))}%"></span></div><div class="muted small" data-magic-progress-text>${esc(row.progress_detail||row.status_label||row.state||'')}</div></div>
+      <div class="magic-actions">${recheck}<button type="button" class="secondary" data-force-match data-group-key="${esc(row.group_key)}" data-media-type="${esc(row.media_type)}" data-title="${esc(row.normalized_title||row.display_title||'')}">Force Match</button><form method="post" action="/magic-intake/ignore"><input type="hidden" name="group_key" value="${esc(row.group_key)}"><button class="secondary" type="submit">Ignore</button></form></div>
       <p class="error-text" data-magic-error ${row.error?'':'hidden'}>${esc(row.error||'')}</p></div></article>`;
   }
+
 
   function syncMagicFilterOptions(filters){
     const update=(selector,values,allLabel)=>{
@@ -226,6 +250,42 @@
     update('#magic-filter-theme',(filters||{}).themes||[],'All themes');
   }
 
+  async function requestMagicRecheck(button){
+    const groupKey=button.dataset.groupKey||'';if(!groupKey)return;
+    const before=button.textContent;button.disabled=true;button.textContent='Rechecking…';
+    try{
+      const r=await fetch('/api/magic-intake/recheck',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({group_key:groupKey})});
+      const data=await r.json();if(!r.ok)throw new Error(data.detail||`HTTP ${r.status}`);
+      button.textContent=data.queued?'Rechecking…':'Recheck queued';
+      setTimeout(()=>{if(button.isConnected){button.disabled=false;button.textContent='Recheck now'}},2500);
+    }catch(e){button.disabled=false;button.textContent=before;alert(e.message)}
+  }
+
+  async function fetchMagicGroups({append=false}={}){
+    if(!window.ArrNexusMagicIntake)return;
+    const grid=document.querySelector('#magic-grid');if(!grid)return;
+    const filters=magicFilterValues();
+    const offset=append?magicCards().length:0;
+    const params=new URLSearchParams({...filters,offset:String(offset),limit:String(magic.limit)});
+    try{
+      const r=await fetch(`/api/magic-intake/groups?${params.toString()}`,{cache:'no-store',headers:{'Accept':'application/json'}});
+      const data=await r.json();if(!r.ok)throw new Error(data.detail||`HTTP ${r.status}`);
+      magic.revision=data.revision||magic.revision;
+      if(!append)grid.innerHTML='';
+      for(const row of data.rows||[])grid.insertAdjacentHTML('beforeend',magicCardHtml(row,data.settings||{}));
+      syncMagicFilterOptions(data.filters||{});
+      updateMagicCounts(data.total||0);
+    }catch(e){
+      console.debug('magic groups:',e.message);
+      const empty=document.querySelector('#magic-filter-empty');if(empty){empty.hidden=false;empty.textContent=`Could not load intake: ${e.message}`}
+    }
+  }
+
+  function scheduleMagicReload(delay=180){
+    if(magic.reloadTimer)clearTimeout(magic.reloadTimer);
+    magic.reloadTimer=setTimeout(()=>{magic.reloadTimer=null;fetchMagicGroups({append:false})},delay);
+  }
+
   async function pollMagic(){
     if(!window.ArrNexusMagicIntake)return;
     try{
@@ -235,31 +295,38 @@
         const el=document.querySelector(`[data-magic-stat="${key}"]`);if(el)el.textContent=value;
       }
       syncMagicFilterOptions(data.filters||{});
-      const rows=new Map((data.groups||[]).map(x=>[x.group_key,x]));
       const existing=new Map(magicCards().map(x=>[x.dataset.groupKey,x]));
-      for(const [key,row] of rows){
-        let card=existing.get(key);
-        if(!card&&row.state!=='imported'){
-          const grid=document.querySelector('#magic-grid');
-          if(grid){grid.insertAdjacentHTML('beforeend',magicCardHtml(row,data.settings||{}));card=magicCards().find(x=>x.dataset.groupKey===key)}
+      for(const row of data.updates||[]){
+        const card=existing.get(row.group_key);
+        if(card){
+          updateMagicCard(card,row);
+          if(row.state==='imported')card.remove();
         }
-        if(card)updateMagicCard(card,row);
       }
-      for(const [key,card] of existing){if(!rows.has(key))card.classList.add('magic-stale')}
-      applyMagicFilters();
+      if(data.revision&&magic.revision&&data.revision!==magic.revision){
+        magic.revision=data.revision;scheduleMagicReload(80);
+      }else if(data.revision&&!magic.revision){magic.revision=data.revision}
+      updateMagicCounts(magic.total||Number(window.ArrNexusMagicTotal||0));
     }catch(e){console.debug('magic poll:',e.message)}
-    setTimeout(pollMagic,2000);
+    setTimeout(pollMagic,3000);
   }
 
   function initMagic(){
     if(!window.ArrNexusMagicIntake)return;
+    magic.total=Number(window.ArrNexusMagicTotal||0);
+    magic.limit=Number(window.ArrNexusMagicLimit||72);
+    magic.revision=String(window.ArrNexusMagicRevision||'');
     document.querySelectorAll('[data-magic-type]').forEach(button=>button.addEventListener('click',()=>setMagicType(button.dataset.magicType||'all',button)));
-    ['#magic-filter-search','#magic-filter-genre','#magic-filter-theme','#magic-filter-state'].forEach(selector=>{
-      const el=document.querySelector(selector);if(el){el.addEventListener('input',applyMagicFilters);el.addEventListener('change',applyMagicFilters)}
+    const search=document.querySelector('#magic-filter-search');if(search)search.addEventListener('input',()=>scheduleMagicReload(250));
+    ['#magic-filter-genre','#magic-filter-theme','#magic-filter-state'].forEach(selector=>{
+      const el=document.querySelector(selector);if(el)el.addEventListener('change',()=>scheduleMagicReload(0));
     });
+    document.querySelector('#magic-load-more')?.addEventListener('click',()=>fetchMagicGroups({append:true}));
     document.querySelectorAll('[data-magic-modal-close]').forEach(x=>x.addEventListener('click',()=>modal(false)));
     document.querySelector('#magic-match-search')?.addEventListener('submit',e=>{e.preventDefault();searchMagicMatch()});
     document.addEventListener('click',e=>{
+      const recheck=e.target.closest('[data-magic-recheck]');
+      if(recheck){e.preventDefault();requestMagicRecheck(recheck);return}
       const button=e.target.closest('[data-force-match]');
       if(!button)return;
       e.preventDefault();magic.groupKey=button.dataset.groupKey||'';magic.mediaType=button.dataset.mediaType||'movie';
@@ -272,7 +339,7 @@
       e.preventDefault();queueMagicImport(form);
     });
     document.addEventListener('keydown',e=>{if(e.key==='Escape')modal(false)});
-    applyMagicFilters();pollMagic();
+    updateMagicCounts(magic.total);pollMagic();
   }
 
 

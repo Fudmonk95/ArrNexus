@@ -37,9 +37,9 @@ from . import services
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 try:
-    APP_VERSION = (BASE_DIR.parent / "VERSION").read_text(encoding="utf-8").strip() or "13.1.0"
+    APP_VERSION = (BASE_DIR.parent / "VERSION").read_text(encoding="utf-8").strip() or "13.1.2"
 except OSError:
-    APP_VERSION = "13.1.0"
+    APP_VERSION = "13.1.2"
 
 
 @asynccontextmanager
@@ -55,6 +55,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(orchestrator.dispatcher_loop(), name="missing-media-dispatcher"),
         asyncio.create_task(queue_janitor.scan_loop(), name="queue-janitor"),
         asyncio.create_task(magic_intake.scan_loop(), name="magic-intake"),
+        asyncio.create_task(magic_intake.verification_loop(), name="magic-intake-verifier"),
         asyncio.create_task(media_lists.scheduler_loop(), name="media-list-scheduler"),
         asyncio.create_task(media_automation.scheduler_loop(), name="media-automation-scheduler"),
     ]
@@ -414,14 +415,21 @@ async def queue_janitor_api(request: Request):
 @app.get("/magic-intake", response_class=HTMLResponse)
 async def magic_intake_page(request: Request):
     state = magic_intake.cached_state()
+    page = magic_intake.query_groups(limit=magic_intake.DEFAULT_PAGE_SIZE)
     return _render(
-        request, "magic_intake.html", state=state, groups=state["groups"],
+        request, "magic_intake.html", state=state, groups=page["rows"],
+        recent_imported=[g for g in (state.get("groups") or []) if g.get("state") == "imported"][:20],
+        total_visible=page["total"], has_more=page["has_more"], page_limit=page["limit"],
         cfg=state["settings"], filters=state.get("filters") or {"genres": [], "themes": []},
     )
 
 
 @app.post("/magic-intake/settings")
-async def magic_intake_settings(request: Request, enabled: bool = Form(False), interval_seconds: int = Form(60), auto_match_threshold: int = Form(95), magic_root: str = Form(""), arr_prefix: str = Form("")):
+async def magic_intake_settings(
+    request: Request, enabled: bool = Form(False), interval_seconds: int = Form(60), auto_match_threshold: int = Form(95),
+    verify_window_minutes: int = Form(10), verify_interval_seconds: int = Form(30),
+    magic_root: str = Form(""), arr_prefix: str = Form(""),
+):
     magic_intake.save_settings(locals())
     _flash(request, "Magic Intake settings saved.", "success")
     return _go("/magic-intake")
@@ -430,8 +438,8 @@ async def magic_intake_settings(request: Request, enabled: bool = Form(False), i
 @app.post("/magic-intake/scan")
 async def magic_intake_scan(request: Request):
     try:
-        state = await magic_intake.scan()
-        _flash(request, f"Magic Intake scan complete: {state['summary']['total']} canonical group(s).", "success")
+        result = magic_intake.request_scan()
+        _flash(request, result.get("detail") or "Magic Intake scan queued.", "success")
     except Exception as exc:
         _flash(request, str(exc), "error")
     return _go("/magic-intake")
@@ -469,7 +477,24 @@ async def magic_intake_ignore(request: Request, group_key: str = Form(...)):
 @app.get("/api/magic-intake")
 async def magic_intake_api(request: Request):
     _require_user(request)
-    return magic_intake.cached_state()
+    return magic_intake.lightweight_state()
+
+
+@app.get("/api/magic-intake/groups")
+async def magic_intake_groups_api(
+    request: Request, media_type: str = "all", genre: str = "all", theme: str = "all",
+    state: str = "all", q: str = "", offset: int = 0, limit: int = 72,
+):
+    _require_user(request)
+    return magic_intake.query_groups(
+        media_type=media_type, genre=genre, theme=theme, state=state, q=q, offset=offset, limit=limit,
+    )
+
+
+@app.post("/api/magic-intake/scan")
+async def magic_intake_scan_api(request: Request):
+    _require_user(request)
+    return magic_intake.request_scan()
 
 
 @app.get("/api/magic-intake/lookup")
@@ -509,6 +534,21 @@ async def magic_intake_import_api(request: Request):
             str(payload.get("selected_source") or ""),
         )
         return result
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+
+
+@app.post("/api/magic-intake/recheck")
+async def magic_intake_recheck_api(request: Request):
+    _require_user(request)
+    payload = await request.json()
+    group_key = str(payload.get("group_key") or "")
+    if not group_key:
+        raise HTTPException(400, "group_key is required")
+    try:
+        return magic_intake.request_recheck(group_key)
     except Exception as exc:
         raise HTTPException(400, str(exc))
 

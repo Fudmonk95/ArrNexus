@@ -1,10 +1,12 @@
-# ArrNexus v13.1.0
+# ArrNexus v13.1.2
 
 ArrNexus is the Zurg-first control and orchestration layer for my personal media server.
 
 v13.1 upgrades **Magic Intake** into a canonical, non-blocking intake workflow. Multiple episode releases that belong to the same Sonarr series now appear as **one series card**, multiple albums from the same Lidarr artist appear as **one artist card**, and duplicate movie releases collapse under one Radarr identity while every original Zurg release remains separate underneath.
 
 The Magic Intake UI now has instant Movie / TV / Music, genre, theme and state filters; Force Match runs in-place without jumping back to the top; and imports are queued in the background with live progress instead of holding the browser request open.
+
+**v13.1.2 verification hotfix:** Magic Intake no longer uses one vague `partial` result for every uncertain import. Moved media is now tracked as **Moved - awaiting Arr**, **Partially verified**, **Numbering mismatch**, **Verification timeout**, **Source missing**, **Import failed**, or **Imported**. ArrNexus keeps rechecking slow Arr imports in the background, can promote a late Radarr/Sonarr/Lidarr confirmation to Imported automatically, and provides **Recheck now** without attempting to move the release twice. This release also includes the v13.1.1 large-library/pagination/FUSE fixes.
 
 ## Architecture
 
@@ -324,6 +326,7 @@ ArrNexus remains an orchestration/control application: **observe, decide, trigge
 /mnt/appdata/arrnexus/data       -> /data
 /zurg_mnt                        -> /zurg_mnt (read-only, rslave)
 /mnt/appdata/zurg-rclone-cache   -> /host/zurg-rclone-cache (read-only)
+/zurg_mnt/zurg/__magic__          -> /zurg_magic (read-write, rslave)
 ```
 
 Database:
@@ -337,14 +340,14 @@ The supplied `portainer-stack.yml` is aligned with the current server.
 ### Build the v13 image on the server
 
 ```bash
-cd ArrNexus-v13.1.0
+cd ArrNexus-v13.1.2
 ./scripts/build-local-image.sh
 ```
 
 This creates:
 
 ```text
-arrnexus:v13.1.0
+arrnexus:v13.1.2
 ```
 
 Then update the existing Portainer ArrNexus stack to use that image.
@@ -355,9 +358,9 @@ Then update the existing Portainer ArrNexus stack to use that image.
 /mnt/appdata/arrnexus/data:/data
 ```
 
-v12 extends the existing SQLite database in place with recovery/orchestration tables.
+v13.1.2 extends the existing SQLite database in place; existing users, connections, recovery state and Magic Intake matches are retained.
 
-See `docs/PORTAINER_UPDATE_v13.1.0.md` for the exact update sequence.
+See `docs/PORTAINER_UPDATE_v13.1.2.md` for the exact update sequence.
 
 ## Verifying the running container
 
@@ -382,4 +385,4 @@ Official project resources:
 
 ## Release status
 
-**ArrNexus v13.1.0** extends the stable Zurg-first recovery/orchestration architecture with Magic Intake 2.0.
+**ArrNexus v13.1.2** extends the stable Zurg-first recovery/orchestration architecture with Magic Intake 2.0.

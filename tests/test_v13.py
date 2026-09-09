@@ -270,6 +270,37 @@ class V131CoreTests(unittest.TestCase):
         self.assertEqual(row["match_external_id"], "12345")
         self.assertEqual(row["confidence"], 100)
 
+
+    def test_magic_media_type_prefers_video_when_audio_is_also_present(self):
+        magic_root = Path(os.environ["MAGIC_ROOT"])
+        folder = magic_root / "Movie.With.Commentary.2020"
+        folder.mkdir()
+        (folder / "Movie.With.Commentary.2020.mkv").write_bytes(b"")
+        (folder / "commentary.mp3").write_bytes(b"")
+        (folder / "soundtrack.flac").write_bytes(b"")
+        title, year, episodes = magic_intake._clean_release_name(folder.name)
+        self.assertEqual(magic_intake._media_type(folder, folder.name, episodes), "movie")
+
+    def test_magic_query_groups_paginates_and_filters_server_side(self):
+        magic_intake.ensure_schema()
+        for idx in range(90):
+            media_type = "tv" if idx % 2 == 0 else "movie"
+            magic_intake._upsert_group({
+                "group_key": f"{media_type}:external:{idx}", "canonical_key": f"{media_type}:external:{idx}",
+                "media_type": media_type, "normalized_title": f"Title {idx}", "year": 2000 + (idx % 20),
+                "source_paths": [f"Title.{idx}"], "episodes": ["S01E01"] if media_type == "tv" else [],
+                "genres": ["Family"] if media_type == "tv" else ["Drama"], "match_service": "sonarr" if media_type == "tv" else "radarr",
+                "match_external_id": str(idx), "match_title": f"Title {idx}", "confidence": 95, "state": "matched",
+            })
+        magic_intake._CACHE["groups"] = []
+        first = magic_intake.query_groups(media_type="tv", genre="family", limit=20)
+        self.assertEqual(first["total"], 45)
+        self.assertEqual(len(first["rows"]), 20)
+        self.assertTrue(first["has_more"])
+        second = magic_intake.query_groups(media_type="tv", genre="family", offset=20, limit=20)
+        self.assertEqual(len(second["rows"]), 20)
+        self.assertNotEqual(first["rows"][0]["group_key"], second["rows"][0]["group_key"])
+
     def test_web_routes_render_and_version_is_stable_v13_1(self):
         dbmod.create_user("admin", "admin@example.test", "Admin", "abcdefgh")
         client = TestClient(app)
@@ -286,7 +317,7 @@ class V131CoreTests(unittest.TestCase):
             for form in soup.find_all("form"):
                 self.assertIsNone(form.find_parent("form"), f"nested form in {path}")
         health = client.get("/api/health").json()
-        self.assertEqual(health["version"], "13.1.0")
+        self.assertEqual(health["version"], "13.1.2")
 
     def test_magic_intake_canonical_groups_same_sonarr_series(self):
         magic_root = Path(os.environ["MAGIC_ROOT"])
@@ -434,7 +465,7 @@ class V131CoreTests(unittest.TestCase):
             override_cols = {r[1] for r in conn.execute("PRAGMA table_info(magic_intake_overrides)")}
         finally:
             conn.close()
-        for col in ("canonical_key", "genres_json", "progress", "progress_detail", "job_id"):
+        for col in ("canonical_key", "genres_json", "progress", "progress_detail", "job_id", "verify_baseline_json", "verify_started_at", "verify_checks", "destination_arr_path", "moved_paths_json"):
             self.assertIn(col, cols)
         self.assertIn("genres_json", override_cols)
 
@@ -469,6 +500,99 @@ class V131CoreTests(unittest.TestCase):
         rows = [g for g in state["groups"] if g.get("match_external_id") == "tvdb-legacy"]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["match_title"], "Legacy Show")
+
+
+
+    def test_magic_verification_classifies_numbering_mismatch(self):
+        class FakeSonarr:
+            async def episodes(self, series_id):
+                return [
+                    {"seasonNumber": 1, "episodeNumber": 101, "hasFile": True},
+                    {"seasonNumber": 1, "episodeNumber": 102, "hasFile": True},
+                ]
+        group = {"episodes": ["S01E01", "S01E02"]}
+        state, detail = asyncio.run(magic_intake._verification_status(FakeSonarr(), "tv", 7, group, {"count": 0}))
+        self.assertEqual(state, "numbering_mismatch")
+        self.assertIn("0/2 exact", detail)
+        self.assertIn("numbering mismatch", detail.lower())
+
+    def test_magic_verification_classifies_partial_exact_match(self):
+        class FakeSonarr:
+            async def episodes(self, series_id):
+                return [
+                    {"seasonNumber": 1, "episodeNumber": 1, "hasFile": True},
+                    {"seasonNumber": 1, "episodeNumber": 2, "hasFile": False},
+                ]
+        group = {"episodes": ["S01E01", "S01E02"]}
+        state, detail = asyncio.run(magic_intake._verification_status(FakeSonarr(), "tv", 7, group, {"count": 0}))
+        self.assertEqual(state, "partially_verified")
+        self.assertIn("1/2 expected", detail)
+
+    def test_magic_movie_verification_waits_then_confirms(self):
+        class FakeRadarr:
+            def __init__(self): self.calls = 0
+            async def movie(self, movie_id):
+                self.calls += 1
+                return {"hasFile": self.calls > 1}
+        fake = FakeRadarr()
+        first_state, _ = asyncio.run(magic_intake._verification_status(fake, "movie", 1, {}, {}))
+        second_state, detail = asyncio.run(magic_intake._verification_status(fake, "movie", 1, {}, {}))
+        self.assertEqual(first_state, "awaiting_arr")
+        self.assertEqual(second_state, "imported")
+        self.assertIn("Radarr confirms", detail)
+
+    def test_magic_enqueue_refuses_second_move_after_post_move_state(self):
+        magic_intake.ensure_schema()
+        magic_intake._upsert_group({
+            "group_key": "movie:external:postmove", "canonical_key": "movie:external:postmove", "media_type": "movie",
+            "normalized_title": "Moved Movie", "year": 2020, "source_paths": ["Moved.Movie.2020.mkv"], "episodes": [], "genres": [],
+            "match_service": "radarr", "match_id": 12, "match_title": "Moved Movie", "match_external_id": "postmove",
+            "confidence": 95, "state": "matched",
+        })
+        magic_intake._set_progress("movie:external:postmove", "awaiting_arr", 82, "Moved successfully", arr_id=12)
+        with self.assertRaisesRegex(ValueError, "Recheck now"):
+            magic_intake.enqueue_import("movie:external:postmove", "main", "")
+
+
+
+    def test_magic_background_recheck_promotes_to_imported(self):
+        magic_intake.ensure_schema()
+        magic_intake._upsert_group({
+            "group_key": "tv:external:recheck", "canonical_key": "tv:external:recheck", "media_type": "tv",
+            "normalized_title": "Recheck Show", "year": 2020, "source_paths": ["Recheck.Show.S01E01.mkv"],
+            "episodes": ["S01E01"], "genres": [], "match_service": "sonarr", "match_id": 77,
+            "match_title": "Recheck Show", "match_external_id": "recheck", "confidence": 95, "state": "matched",
+        })
+        magic_intake._save_verification_context("tv:external:recheck", {"count": 0}, "/zurg/tv/shows/Recheck Show", [])
+        magic_intake._set_progress("tv:external:recheck", "awaiting_arr", 82, "Waiting", arr_id=77)
+        class FakeSonarr:
+            async def episodes(self, series_id):
+                return [{"seasonNumber": 1, "episodeNumber": 1, "hasFile": True}]
+        with patch.object(magic_intake, "_client_for_media", return_value=FakeSonarr()):
+            result = asyncio.run(magic_intake._recheck_group("tv:external:recheck"))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["state"], "imported")
+        self.assertEqual(magic_intake.get_group("tv:external:recheck")["state"], "imported")
+
+    def test_magic_awaiting_arr_becomes_timeout_after_window(self):
+        magic_intake.ensure_schema()
+        magic_intake._upsert_group({
+            "group_key": "movie:external:timeout", "canonical_key": "movie:external:timeout", "media_type": "movie",
+            "normalized_title": "Slow Movie", "year": 2020, "source_paths": ["Slow.Movie.2020.mkv"], "episodes": [], "genres": [],
+            "match_service": "radarr", "match_id": 88, "match_title": "Slow Movie", "match_external_id": "timeout",
+            "confidence": 95, "state": "matched",
+        })
+        old = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+        with dbmod.db() as conn:
+            conn.execute("UPDATE magic_intake_groups SET state='awaiting_arr',verify_started_at=?,verify_baseline_json='{}' WHERE group_key=?", (old, "movie:external:timeout"))
+        magic_intake._CACHE["groups"] = []
+        class FakeRadarr:
+            async def movie(self, movie_id): return {"hasFile": False}
+        cfg = dict(magic_intake.settings_state()); cfg["verify_window_minutes"] = 10
+        with patch.object(magic_intake, "_client_for_media", return_value=FakeRadarr()), patch.object(magic_intake, "settings_state", return_value=cfg):
+            result = asyncio.run(magic_intake._recheck_group("movie:external:timeout"))
+        self.assertEqual(result["state"], "verification_timeout")
+        self.assertIn("10 minute", result["detail"])
 
 
 

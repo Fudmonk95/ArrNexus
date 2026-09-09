@@ -14,7 +14,7 @@
 .runtime-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.runtime-grid>div{display:flex;flex-direction:column;gap:4px;padding:12px;background:rgba(8,17,31,.5);border:1px solid rgba(36,51,76,.65);border-radius:9px}.runtime-grid strong{overflow-wrap:anywhere}.field-help{display:block;color:var(--muted);font-weight:400;font-size:11px;line-height:1.4}.head-status{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.status-inline{font-weight:700}.compact-panel{padding-bottom:16px}.path-cell{max-width:420px;overflow-wrap:anywhere}.milestones{display:flex;flex-wrap:wrap;gap:5px}.milestone{display:inline-flex;border-radius:999px;padding:3px 7px;font-size:10px;font-weight:800;background:#1c2a40;color:#c6d5e8}.tag{border:1px solid #354764;background:#132039;color:#b7c4d7}.stage-attention{font-weight:900}
 @media(max-width:1100px){.runtime-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
-/* v13.1.0 */
+/* v13.1.2 */
 .notice-card{padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:rgba(8,17,31,.45)}.notice-card strong{display:block;margin-bottom:4px}.notice-card p{margin:0;color:var(--muted);max-width:95ch}.notice-card.good-border{border-color:rgba(66,211,146,.28)}.notice-card.warn-border{border-color:rgba(255,191,90,.3)}.flow-strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:16px}.flow-strip span{padding:7px 9px;border-radius:8px;background:#0b1626;border:1px solid rgba(36,51,76,.7);font-size:12px}.flow-strip b{color:var(--muted)}.rules-table{min-width:850px}.inline-actions.no-top{margin-top:0}
 
 /* v13 Magic Intake */
@@ -45,3 +45,8 @@
 .magic-result .magic-poster-empty{height:250px}.pill.warn{color:#ffd176;background:rgba(255,191,90,.13);border:1px solid rgba(255,191,90,.26)}
 @media(max-width:980px){.magic-filter-panel{position:static}.magic-filters{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:650px){.magic-filters{grid-template-columns:1fr}.magic-grid{grid-template-columns:1fr}.magic-card{grid-template-columns:96px 1fr}.magic-modal{padding:8px}.magic-modal-card{width:100%;max-height:96vh}}
+
+/* v13.1.2 verification-state clarity */
+.magic-card[data-state="awaiting_arr"]{border-color:rgba(106,167,255,.5)}
+.magic-card[data-state="partially_verified"],.magic-card[data-state="numbering_mismatch"],.magic-card[data-state="verification_timeout"]{border-color:rgba(255,191,90,.55)}
+.magic-card[data-state="source_missing"],.magic-card[data-state="failed"]{border-color:rgba(255,101,119,.58)}

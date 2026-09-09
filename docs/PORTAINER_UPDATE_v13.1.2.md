@@ -1,6 +1,6 @@
-# Portainer update — ArrNexus v13.1.0
+# Portainer update — ArrNexus v13.1.2
 
-v13.1.0 is an in-place application update from v13.0.0.
+v13.1.2 is an in-place application update from v13.0.0.
 
 ## Existing persistent data
 
@@ -33,16 +33,16 @@ The main Zurg tree remains read-only. Magic Intake only receives write access to
 Build the new image on Debian:
 
 ```bash
-./scripts/pull-build-v13.1.sh
+./scripts/pull-build-v13.1.2.sh
 ```
 
 Then change the Portainer stack image to:
 
 ```yaml
-image: arrnexus:v13.1.0
+image: arrnexus:v13.1.2
 ```
 
-No database reset is required. v13.1.0 migrates the v13 Magic Intake tables in place and preserves existing Force Matches as per-release overrides.
+No database reset is required. v13.1.2 migrates the v13 Magic Intake tables in place and preserves existing Force Matches as per-release overrides.
 
 ## Verify
 
@@ -55,5 +55,5 @@ curl -s http://127.0.0.1:8484/api/health | python3 -m json.tool
 Expected version:
 
 ```json
-"version": "13.1.0"
+"version": "13.1.2"
 ```

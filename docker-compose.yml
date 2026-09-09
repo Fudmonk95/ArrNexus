@@ -1,6 +1,6 @@
 services:
   arrnexus:
-    image: arrnexus:v13.1.0
+    image: arrnexus:v13.1.2
     build: .
     container_name: arrnexus
     restart: unless-stopped
