@@ -95,6 +95,15 @@
         {% if g.genres %}<div class="magic-genres">{% for genre in g.genres[:6] %}<span class="tag">{{ genre }}</span>{% endfor %}</div>{% endif %}
         <details class="magic-release-details"><summary>Source releases</summary><div class="mono small">{% for p in g.source_paths %}<div>{{ p }}</div>{% endfor %}</div></details>
 
+        {% set locked_type_states = ['queued','importing','verifying','awaiting_arr','partially_verified','numbering_mismatch','verification_timeout','source_missing','partial','imported'] %}
+        <label class="magic-type-control"><span>Media type</span>
+          <select data-magic-type-override data-group-key="{{ g.group_key }}" {% if g.state in locked_type_states %}disabled title="Media type is locked after the move stage"{% endif %}>
+            <option value="movie" {% if g.media_type == 'movie' %}selected{% endif %}>Movie</option>
+            <option value="tv" {% if g.media_type == 'tv' %}selected{% endif %}>TV Series</option>
+            <option value="music" {% if g.media_type == 'music' %}selected{% endif %}>Music</option>
+          </select>
+        </label>
+
         {% if g.match_title %}
         <form method="post" action="/magic-intake/import" class="magic-import-form" data-magic-import-form>
           <input type="hidden" name="group_key" value="{{ g.group_key }}">

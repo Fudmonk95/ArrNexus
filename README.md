@@ -1,4 +1,4 @@
-# ArrNexus v13.1.2
+# ArrNexus v13.1.3
 
 ArrNexus is the Zurg-first control and orchestration layer for my personal media server.
 
@@ -6,7 +6,9 @@ v13.1 upgrades **Magic Intake** into a canonical, non-blocking intake workflow. 
 
 The Magic Intake UI now has instant Movie / TV / Music, genre, theme and state filters; Force Match runs in-place without jumping back to the top; and imports are queued in the background with live progress instead of holding the browser request open.
 
-**v13.1.2 verification hotfix:** Magic Intake no longer uses one vague `partial` result for every uncertain import. Moved media is now tracked as **Moved - awaiting Arr**, **Partially verified**, **Numbering mismatch**, **Verification timeout**, **Source missing**, **Import failed**, or **Imported**. ArrNexus keeps rechecking slow Arr imports in the background, can promote a late Radarr/Sonarr/Lidarr confirmation to Imported automatically, and provides **Recheck now** without attempting to move the release twice. This release also includes the v13.1.1 large-library/pagination/FUSE fixes.
+**v13.1.3 intake reliability hotfix:** Magic Intake now limits active imports to **3 at a time by default**, so clicking many cards no longer launches an Arr API storm. Failed imports keep the exact stage and exception class instead of collapsing to a blank `Import failed`, new-media adds validate the selected Arr root before any Zurg move, and blank pre-move failures left by v13.1.2 are restored to a safe retryable state. Cards also have a persistent **Movie / TV Series / Music** override so a wrongly-classified release can be corrected and rematched against the right Arr service.
+
+The explicit post-move verification states from v13.1.2 remain: **Moved - awaiting Arr**, **Partially verified**, **Numbering mismatch**, **Verification timeout**, **Source missing**, **Import failed**, and **Imported**.
 
 ## Architecture
 
@@ -340,14 +342,14 @@ The supplied `portainer-stack.yml` is aligned with the current server.
 ### Build the v13 image on the server
 
 ```bash
-cd ArrNexus-v13.1.2
+cd ArrNexus-v13.1.3
 ./scripts/build-local-image.sh
 ```
 
 This creates:
 
 ```text
-arrnexus:v13.1.2
+arrnexus:v13.1.3
 ```
 
 Then update the existing Portainer ArrNexus stack to use that image.
@@ -358,9 +360,9 @@ Then update the existing Portainer ArrNexus stack to use that image.
 /mnt/appdata/arrnexus/data:/data
 ```
 
-v13.1.2 extends the existing SQLite database in place; existing users, connections, recovery state and Magic Intake matches are retained.
+v13.1.3 extends the existing SQLite database in place; existing users, connections, recovery state and Magic Intake matches are retained.
 
-See `docs/PORTAINER_UPDATE_v13.1.2.md` for the exact update sequence.
+See `docs/PORTAINER_UPDATE_v13.1.3.md` for the exact update sequence.
 
 ## Verifying the running container
 
@@ -385,4 +387,4 @@ Official project resources:
 
 ## Release status
 
-**ArrNexus v13.1.2** extends the stable Zurg-first recovery/orchestration architecture with Magic Intake 2.0.
+**ArrNexus v13.1.3** extends the stable Zurg-first recovery/orchestration architecture with Magic Intake 2.0.

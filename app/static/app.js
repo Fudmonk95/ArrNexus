@@ -229,6 +229,7 @@
       <p class="muted magic-summary"><strong>${esc(row.release_count||0)}</strong> release entr${Number(row.release_count||0)===1?'y':'ies'}${seasonText}${episodeText}</p>
       ${genres?`<div class="magic-genres">${genres}</div>`:''}
       <details class="magic-release-details"><summary>Source releases</summary><div class="mono small">${releases}</div></details>
+      <label class="magic-type-control"><span>Media type</span><select data-magic-type-override data-group-key="${esc(row.group_key)}" ${[...magicWorkingStates,...magicMovedStates,'imported'].includes(row.state)?'disabled title="Media type is locked after the move stage"':''}><option value="movie" ${row.media_type==='movie'?'selected':''}>Movie</option><option value="tv" ${row.media_type==='tv'?'selected':''}>TV Series</option><option value="music" ${row.media_type==='music'?'selected':''}>Music</option></select></label>
       ${importForm}
       <div class="magic-progress" data-magic-progress-wrap ${progressVisible?'':'hidden'}><div class="magic-progress-track"><span data-magic-progress-bar style="width:${Math.max(0,Math.min(100,Number(row.progress||0)))}%"></span></div><div class="muted small" data-magic-progress-text>${esc(row.progress_detail||row.status_label||row.state||'')}</div></div>
       <div class="magic-actions">${recheck}<button type="button" class="secondary" data-force-match data-group-key="${esc(row.group_key)}" data-media-type="${esc(row.media_type)}" data-title="${esc(row.normalized_title||row.display_title||'')}">Force Match</button><form method="post" action="/magic-intake/ignore"><input type="hidden" name="group_key" value="${esc(row.group_key)}"><button class="secondary" type="submit">Ignore</button></form></div>
@@ -248,6 +249,23 @@
     };
     update('#magic-filter-genre',(filters||{}).genres||[],'All genres');
     update('#magic-filter-theme',(filters||{}).themes||[],'All themes');
+  }
+
+  async function changeMagicType(select){
+    const groupKey=select.dataset.groupKey||'';
+    const mediaType=select.value||'';
+    if(!groupKey||!['movie','tv','music'].includes(mediaType))return;
+    const before=select.dataset.previous||select.querySelector('option[selected]')?.value||'';
+    select.disabled=true;
+    try{
+      const r=await fetch('/api/magic-intake/type',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({group_key:groupKey,media_type:mediaType})});
+      const data=await r.json();if(!r.ok)throw new Error(data.detail||`HTTP ${r.status}`);
+      scheduleMagicReload(250);
+    }catch(e){
+      if(before)select.value=before;
+      select.disabled=false;
+      alert(e.message);
+    }
   }
 
   async function requestMagicRecheck(button){
@@ -322,6 +340,8 @@
       const el=document.querySelector(selector);if(el)el.addEventListener('change',()=>scheduleMagicReload(0));
     });
     document.querySelector('#magic-load-more')?.addEventListener('click',()=>fetchMagicGroups({append:true}));
+    document.addEventListener('focusin',e=>{const sel=e.target.closest?.('[data-magic-type-override]');if(sel)sel.dataset.previous=sel.value});
+    document.addEventListener('change',e=>{const sel=e.target.closest?.('[data-magic-type-override]');if(sel){changeMagicType(sel)}});
     document.querySelectorAll('[data-magic-modal-close]').forEach(x=>x.addEventListener('click',()=>modal(false)));
     document.querySelector('#magic-match-search')?.addEventListener('submit',e=>{e.preventDefault();searchMagicMatch()});
     document.addEventListener('click',e=>{

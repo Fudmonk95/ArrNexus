@@ -317,7 +317,44 @@ class V131CoreTests(unittest.TestCase):
             for form in soup.find_all("form"):
                 self.assertIsNone(form.find_parent("form"), f"nested form in {path}")
         health = client.get("/api/health").json()
-        self.assertEqual(health["version"], "13.1.2")
+        self.assertEqual(health["version"], "13.1.3")
+
+
+    def test_magic_type_override_persists_and_reclassifies(self):
+        magic_root = Path(os.environ["MAGIC_ROOT"])
+        source = magic_root / "Odd.Movie.S01E01.2024.mkv"
+        source.write_bytes(b"")
+        async def no_match(media_type, title, year): return {}
+        with patch.object(magic_intake, "_best_match", side_effect=no_match):
+            first = asyncio.run(magic_intake.scan())
+        row = next(g for g in first["groups"] if source.name in g["source_paths"])
+        self.assertEqual(row["media_type"], "tv")
+        magic_intake.set_media_type(row["group_key"], "movie")
+        with patch.object(magic_intake, "_best_match", side_effect=no_match):
+            second = asyncio.run(magic_intake.scan())
+        row2 = next(g for g in second["groups"] if source.name in g["source_paths"])
+        self.assertEqual(row2["media_type"], "movie")
+
+    def test_magic_exception_detail_never_blank_for_timeout(self):
+        detail = magic_intake._exception_detail(TimeoutError(), "Resolving target in Arr")
+        self.assertIn("Resolving target in Arr", detail)
+        self.assertIn("TimeoutError", detail)
+        self.assertTrue(detail.strip())
+
+    def test_magic_failed_blank_pre_move_row_becomes_retryable(self):
+        magic_intake.ensure_schema()
+        magic_intake._upsert_group({
+            "group_key": "tv:external:retry", "canonical_key": "tv:external:retry",
+            "media_type": "tv", "normalized_title": "Retry Show", "source_paths": ["Retry.Show.S01E01.mkv"],
+            "episodes": ["S01E01"], "match_title": "Retry Show", "match_external_id": "retry",
+            "confidence": 95, "state": "failed", "error": "", "progress_detail": "",
+        })
+        with dbmod.db() as conn:
+            conn.execute("UPDATE magic_intake_groups SET state='failed',error='',progress_detail='',destination_arr_path='' WHERE group_key='tv:external:retry'")
+        magic_intake.ensure_schema()
+        row = magic_intake.get_group("tv:external:retry")
+        self.assertEqual(row["state"], "matched")
+        self.assertIn("ready to retry", row["progress_detail"])
 
     def test_magic_intake_canonical_groups_same_sonarr_series(self):
         magic_root = Path(os.environ["MAGIC_ROOT"])

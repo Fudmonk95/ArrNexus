@@ -54,6 +54,8 @@ _IMPORT_CANONICAL_TASKS: dict[str, asyncio.Task] = {}
 _SCAN_TASK: asyncio.Task | None = None
 _STARTUP_RECOVERY_DONE = False
 DEFAULT_PAGE_SIZE = 72
+IMPORT_CONCURRENCY = max(1, min(6, int(os.getenv("MAGIC_IMPORT_CONCURRENCY", "3") or 3)))
+_IMPORT_SEMAPHORE = asyncio.Semaphore(IMPORT_CONCURRENCY)
 
 POST_MOVE_STATES = {
     "awaiting_arr", "partially_verified", "numbering_mismatch",
@@ -137,6 +139,12 @@ def _schema() -> str:
         genres_json TEXT NOT NULL DEFAULT '[]',
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS magic_intake_type_overrides (
+        raw_key TEXT PRIMARY KEY,
+        media_type TEXT NOT NULL,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
     """
 
 
@@ -196,6 +204,17 @@ def ensure_schema() -> None:
             "WHERE state='partial' AND error LIKE '%No such file or directory%'"
         )
 
+        # v13.1.2 could lose the text of timeout/pool failures during a later
+        # canonical scan. Rows with no destination path never reached the Zurg
+        # move, so they are safe to return to a retryable matched/review state.
+        conn.execute(
+            "UPDATE magic_intake_groups SET state=CASE WHEN confidence>=95 THEN 'matched' ELSE 'review' END,"
+            "progress=0,progress_detail='Previous pre-move attempt failed before any Zurg move; ready to retry with controlled import concurrency',"
+            "error='',job_id='',updated_at=? "
+            "WHERE state='failed' AND COALESCE(error,'')='' AND COALESCE(destination_arr_path,'')=''",
+            (utcnow(),),
+        )
+
 
 def _migrate_force_matches(conn) -> None:
     """Turn old v13 confidence=100 rows into per-source overrides before regrouping."""
@@ -236,6 +255,7 @@ def settings_state() -> dict[str, Any]:
         "auto_match_threshold": max(80, min(100, int(setting_get("magic.auto_match_threshold", "95") or 95))),
         "verify_window_minutes": max(2, min(60, int(setting_get("magic.verify_window_minutes", "10") or 10))),
         "verify_interval_seconds": max(15, min(300, int(setting_get("magic.verify_interval_seconds", "30") or 30))),
+        "import_concurrency": IMPORT_CONCURRENCY,
     }
 
 
@@ -483,6 +503,53 @@ async def _best_match(media_type: str, title: str, year: int | None) -> dict[str
     return out
 
 
+def _type_overrides() -> dict[str, str]:
+    ensure_schema()
+    with db() as conn:
+        rows = conn.execute("SELECT raw_key,media_type FROM magic_intake_type_overrides").fetchall()
+    return {str(row[0]): str(row[1]) for row in rows if str(row[1]) in {"movie", "tv", "music"}}
+
+
+def set_media_type(group_key: str, media_type: str) -> dict[str, Any]:
+    """Persist a source-level Movie/TV/Music override and clear stale Arr identity."""
+    ensure_schema()
+    media_type = str(media_type or "").strip().lower()
+    if media_type not in {"movie", "tv", "music"}:
+        raise ValueError("Media type must be movie, tv or music")
+    group = get_group(group_key)
+    if not group:
+        raise ValueError("Magic Intake group not found")
+    sources = list(group.get("source_paths") or [])
+    if not sources:
+        raise ValueError("This intake card no longer has top-level source releases")
+    missing = [source for source in sources if not _safe_source(source).exists()]
+    if missing:
+        raise ValueError("Media type can only be changed while the source still exists at top-level __magic__")
+    with db() as conn:
+        for source in sources:
+            conn.execute(
+                """INSERT INTO magic_intake_type_overrides(raw_key,media_type,updated_at) VALUES(?,?,?)
+                   ON CONFLICT(raw_key) DO UPDATE SET media_type=excluded.media_type,updated_at=excluded.updated_at""",
+                (source, media_type, utcnow()),
+            )
+            # A Force Match against the old service must not survive a type change.
+            conn.execute("DELETE FROM magic_intake_overrides WHERE raw_key=?", (source,))
+        conn.execute(
+            """UPDATE magic_intake_groups SET media_type=?,canonical_key='',match_service='',match_id=NULL,match_title='',
+               match_year=NULL,match_external_id='',poster_url='',genres_json='[]',confidence=0,destination_key='',
+               state='discovered',progress=0,progress_detail='Media type changed; metadata will be rematched',job_id='',
+               error='',verify_baseline_json='{}',verify_started_at='',verify_checks=0,destination_arr_path='',moved_paths_json='[]',updated_at=?
+               WHERE group_key=?""",
+            (media_type, utcnow(), group_key),
+        )
+        conn.execute(
+            "INSERT INTO magic_intake_events(group_key,state,detail) VALUES(?,?,?)",
+            (group_key, "discovered", f"Media type manually changed to {media_type}"),
+        )
+    _CACHE["groups"] = []
+    return {"ok": True, "media_type": media_type, "detail": f"Media type changed to {media_type}; rematch scan queued"}
+
+
 def _override_for_sources(sources: list[str]) -> dict[str, Any]:
     if not sources:
         return {}
@@ -526,7 +593,7 @@ def _known_by_source() -> dict[str, dict[str, Any]]:
             "title": row.get("match_title") or "", "year": row.get("match_year") or "",
             "poster_url": row.get("poster_url") or "", "genres": genres,
             "confidence": int(row.get("confidence") or 0), "cached": True,
-            "canonical_key": row.get("canonical_key") or "",
+            "canonical_key": row.get("canonical_key") or "", "media_type": row.get("media_type") or "",
         }
         for source in sources:
             result[str(source)] = candidate
@@ -585,7 +652,7 @@ def _upsert_group(group: dict[str, Any], *, schema_ready: bool = False) -> None:
     genres_json = json.dumps(sorted(set(group.get("genres") or []), key=str.casefold))
     with db() as conn:
         old = conn.execute(
-            "SELECT state,ignored,match_id,match_title,confidence,destination_key,poster_url,progress,progress_detail,job_id "
+            "SELECT state,ignored,match_id,match_title,confidence,destination_key,poster_url,progress,progress_detail,job_id,error "
             "FROM magic_intake_groups WHERE group_key=?", (group["group_key"],)
         ).fetchone()
         state = str(group.get("state") or (old["state"] if old else "discovered"))
@@ -616,7 +683,8 @@ def _upsert_group(group: dict[str, Any], *, schema_ready: bool = False) -> None:
                progress=CASE WHEN magic_intake_groups.state IN ('queued','importing','verifying','awaiting_arr','partially_verified','numbering_mismatch','verification_timeout','source_missing','failed') THEN magic_intake_groups.progress ELSE excluded.progress END,
                progress_detail=CASE WHEN magic_intake_groups.state IN ('queued','importing','verifying','awaiting_arr','partially_verified','numbering_mismatch','verification_timeout','source_missing','failed') THEN magic_intake_groups.progress_detail ELSE excluded.progress_detail END,
                job_id=CASE WHEN magic_intake_groups.state IN ('queued','importing','verifying','awaiting_arr','partially_verified','numbering_mismatch','verification_timeout','source_missing','failed') THEN magic_intake_groups.job_id ELSE excluded.job_id END,
-               error=excluded.error,updated_at=excluded.updated_at""",
+               error=CASE WHEN magic_intake_groups.state IN ('failed','source_missing') AND excluded.error='' THEN magic_intake_groups.error ELSE excluded.error END,
+               updated_at=excluded.updated_at""",
             (group["group_key"], group.get("canonical_key") or group["group_key"], group["media_type"], group["normalized_title"], group.get("year"),
              json.dumps(group.get("source_paths") or []), len(group.get("source_paths") or []), json.dumps(sorted(set(group.get("episodes") or []))), genres_json,
              group.get("match_service") or "", match_id, match_title, group.get("match_year"), group.get("match_external_id") or "", poster, confidence,
@@ -726,15 +794,16 @@ def filter_options(groups: list[dict[str, Any]] | None = None) -> dict[str, list
     return {"genres": genres, "themes": themes}
 
 
-def _discover_provisional(base: Path) -> dict[str, dict[str, Any]]:
+def _discover_provisional(base: Path, type_overrides: dict[str, str] | None = None) -> dict[str, dict[str, Any]]:
     # FUSE directory walking/classification is deliberately synchronous here
     # because scan() runs this helper in a worker thread. It must never block
     # the FastAPI event loop while thousands of __magic__ entries are examined.
     entries = [p for p in base.iterdir() if not p.name.startswith(".") and p.name.lower() not in ORGANIZED]
+    type_overrides = type_overrides or {}
     provisional: dict[str, dict[str, Any]] = {}
     for path in entries:
         title, year, episodes = _clean_release_name(path.name)
-        media_type = _media_type(path, path.name, episodes)
+        media_type = type_overrides.get(path.name) or _media_type(path, path.name, episodes)
         key = _raw_group_key(media_type, title, year)
         group = provisional.setdefault(key, {
             "raw_group_key": key, "media_type": media_type, "normalized_title": title, "year": year,
@@ -759,7 +828,8 @@ async def scan() -> dict[str, Any]:
         base = root()
         if not base.exists():
             raise RuntimeError(f"Magic Intake path does not exist: {base}")
-        provisional = await asyncio.to_thread(_discover_provisional, base)
+        type_overrides = _type_overrides()
+        provisional = await asyncio.to_thread(_discover_provisional, base, type_overrides)
         known = _known_by_source()
 
         sem = asyncio.Semaphore(6)
@@ -768,6 +838,8 @@ async def scan() -> dict[str, Any]:
             match = _override_for_sources(group["source_paths"])
             if not match:
                 match = _cached_match_for_sources(group["source_paths"], known)
+                if match and match.get("media_type") and match.get("media_type") != group["media_type"]:
+                    match = {}
             if not match:
                 async with sem:
                     match = await _best_match(group["media_type"], group["normalized_title"], group.get("year"))
@@ -775,6 +847,8 @@ async def scan() -> dict[str, Any]:
                 # Preserve a v13.0 match if the local Arr lookup is temporarily
                 # unavailable during the first v13.1 canonicalisation scan.
                 match = _matching_known_source(group["source_paths"], known)
+                if match and match.get("media_type") and match.get("media_type") != group["media_type"]:
+                    match = {}
             if match:
                 confidence = int(match.get("confidence") or 0)
                 group.update({
@@ -1022,6 +1096,26 @@ def _existing_by_match(media_type: str, items: list[dict], group: dict) -> dict 
     return None
 
 
+def _exception_detail(exc: BaseException, stage: str = "Import failed") -> str:
+    text = str(exc).strip()
+    if not text:
+        text = repr(exc)
+    return f"{stage}: {type(exc).__name__}: {text}"
+
+
+async def _validate_arr_root(client: Any, desired: Path) -> str:
+    desired_text = str(desired).rstrip("/")
+    roots = await client.roots()
+    configured = [str(row.get("path") or "").rstrip("/") for row in (roots or []) if row.get("path")]
+    if desired_text in configured:
+        return desired_text
+    shown = ", ".join(configured[:12]) or "none"
+    raise ArrError(
+        f"{client.name}: Magic destination root '{desired_text}' is not configured as an Arr root folder. "
+        f"Configured root folder(s): {shown}"
+    )
+
+
 async def _ensure_arr_item(group: dict, target_parent_arr: Path) -> tuple[Any, int, dict]:
     media_type = group["media_type"]
     term = group.get("match_title") or group["normalized_title"]
@@ -1033,7 +1127,8 @@ async def _ensure_arr_item(group: dict, target_parent_arr: Path) -> tuple[Any, i
         candidate = next((x for x in lookups if str(x.get("tmdbId") or x.get("imdbId") or "") == str(group.get("match_external_id") or "")), lookups[0] if lookups else None)
         if not candidate:
             raise ArrError("Radarr lookup no longer returns the selected movie")
-        added = await client.add_movie(candidate, str(target_parent_arr), search=False, monitored=True)
+        root_path = await _validate_arr_root(client, target_parent_arr)
+        added = await client.add_movie(candidate, root_path, search=False, monitored=True)
         return client, int(added["id"]), added
     if media_type == "tv":
         client = SonarrClient(); items = await client.series(); existing = _existing_by_match(media_type, items, group)
@@ -1043,7 +1138,8 @@ async def _ensure_arr_item(group: dict, target_parent_arr: Path) -> tuple[Any, i
         candidate = next((x for x in lookups if str(x.get("tvdbId") or x.get("tmdbId") or "") == str(group.get("match_external_id") or "")), lookups[0] if lookups else None)
         if not candidate:
             raise ArrError("Sonarr lookup no longer returns the selected series")
-        added = await client.add_series(candidate, str(target_parent_arr), search=False, monitored=True)
+        root_path = await _validate_arr_root(client, target_parent_arr)
+        added = await client.add_series(candidate, root_path, search=False, monitored=True)
         return client, int(added["id"]), added
     client = LidarrClient(); items = await client.artists(); existing = _existing_by_match(media_type, items, group)
     if existing:
@@ -1052,7 +1148,8 @@ async def _ensure_arr_item(group: dict, target_parent_arr: Path) -> tuple[Any, i
     candidate = next((x for x in lookups if str(x.get("foreignArtistId") or "") == str(group.get("match_external_id") or "")), lookups[0] if lookups else None)
     if not candidate:
         raise ArrError("Lidarr lookup no longer returns the selected artist")
-    added = await client.add_artist(candidate, str(target_parent_arr), search=False)
+    root_path = await _validate_arr_root(client, target_parent_arr)
+    added = await client.add_artist(candidate, root_path, search=False)
     return client, int(added["id"]), added
 
 
@@ -1282,14 +1379,17 @@ async def import_group(group_key: str, destination_key: str, selected_source: st
     moved: list[str] = []
     imported_candidates = 0
 
+    stage = "Resolving target in Arr"
     try:
-        _set_progress(group_key, "importing", 10, "Resolving target in Arr")
+        _set_progress(group_key, "importing", 10, stage)
         client, arr_id, _ = await _ensure_arr_item(group, dest_parent_arr)
+        stage = "Taking Arr verification baseline"
         before = _verification_baseline(group)
         if not before:
             before = await _verification_snapshot(client, group["media_type"], arr_id)
         _save_verification_context(group_key, before, str(dest_arr), moved)
 
+        stage = "Checking top-level __magic__ sources"
         missing = [source for source in sources if not _safe_source(source).exists()]
         if missing:
             # A previous attempt may already have completed the Zurg virtual move.
@@ -1314,6 +1414,7 @@ async def import_group(group_key: str, destination_key: str, selected_source: st
             log_event("error", "magic_intake", "source_missing", detail, {"group": group_key, "missing": missing})
             return {"ok": False, "state": "source_missing", "detail": detail, "moved": [], "manual_candidates": 0, "arr_id": arr_id}
 
+        stage = "Moving release entries inside __magic__"
         _set_progress(group_key, "importing", 25, f"Moving {len(sources)} release entr{'y' if len(sources) == 1 else 'ies'} inside __magic__", arr_id=arr_id)
         dest_write.parent.mkdir(parents=True, exist_ok=True)
         if len(sources) == 1 and _safe_source(sources[0]).is_dir() and not dest_write.exists():
@@ -1331,12 +1432,15 @@ async def import_group(group_key: str, destination_key: str, selected_source: st
                 moved.append(str(dest_arr / src.name))
         _update_moved_paths(group_key, moved)
 
+        stage = "Requesting Manual Import candidates from Arr"
         _set_progress(group_key, "importing", 50, "Asking Arr for eligible Manual Import candidates", arr_id=arr_id)
         imported_candidates = await _try_manual_import(client, group["media_type"], str(dest_arr), arr_id)
+        stage = "Requesting targeted Arr rescan"
         _set_progress(group_key, "importing", 65, "Targeted Arr rescan requested", arr_id=arr_id)
         await _rescan(client, group["media_type"], arr_id)
         _set_progress(group_key, "verifying", 75, "Waiting for Arr to confirm the imported media", arr_id=arr_id)
 
+        stage = "Verifying imported media in Arr"
         state, detail = await _verify_with_state(client, group["media_type"], arr_id, group, before, polls=6)
         if state == "imported":
             progress = 100
@@ -1351,9 +1455,9 @@ async def import_group(group_key: str, destination_key: str, selected_source: st
         )
         return {"ok": state == "imported", "state": state, "detail": detail, "moved": moved, "manual_candidates": imported_candidates, "arr_id": arr_id}
     except Exception as exc:
-        detail = str(exc)
+        detail = _exception_detail(exc, stage)
         _set_progress(group_key, "failed", 100, detail, error=detail)
-        log_event("error", "magic_intake", "failed", detail, {"group": group_key, "paths": moved})
+        log_event("error", "magic_intake", "failed", detail, {"group": group_key, "paths": moved, "exception": type(exc).__name__})
         return {"ok": False, "state": "failed", "detail": detail, "moved": moved, "manual_candidates": imported_candidates}
 
 
@@ -1463,12 +1567,17 @@ async def verification_loop() -> None:
 
 async def _run_import_job(job_id: str, group_key: str, canonical_key: str, destination_key: str, selected_source: str) -> None:
     try:
-        await import_group(group_key, destination_key, selected_source)
+        _set_progress(group_key, "queued", 3, f"Waiting for an import slot (max {IMPORT_CONCURRENCY} concurrent)")
+        async with _IMPORT_SEMAPHORE:
+            _set_progress(group_key, "queued", 5, "Import slot acquired; starting")
+            await import_group(group_key, destination_key, selected_source)
     except asyncio.CancelledError:
         _set_progress(group_key, "failed", 100, "Import task was cancelled", error="Import task was cancelled")
         raise
-    except Exception:
-        pass
+    except Exception as exc:
+        detail = _exception_detail(exc, "Background import task")
+        _set_progress(group_key, "failed", 100, detail, error=detail)
+        log_event("error", "magic_intake", "failed", detail, {"group": group_key, "exception": type(exc).__name__})
     finally:
         _IMPORT_TASKS.pop(group_key, None)
         if _IMPORT_CANONICAL_TASKS.get(canonical_key) is asyncio.current_task():
@@ -1500,7 +1609,8 @@ def enqueue_import(group_key: str, destination_key: str, selected_source: str = 
     _IMPORT_TASKS[group_key] = task
     _IMPORT_CANONICAL_TASKS[canonical_key] = task
     _CACHE["groups"] = []
-    return {"ok": True, "queued": True, "job_id": job_id, "detail": "Import queued and running in the background"}
+    queued_count = sum(1 for task in _IMPORT_TASKS.values() if task and not task.done())
+    return {"ok": True, "queued": True, "job_id": job_id, "detail": f"Import queued ({queued_count} active/queued; max {IMPORT_CONCURRENCY} running at once)"}
 
 
 def events(group_key: str, limit: int = 80) -> list[dict]:

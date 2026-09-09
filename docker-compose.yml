@@ -1,6 +1,6 @@
 services:
   arrnexus:
-    image: arrnexus:v13.1.2
+    image: arrnexus:v13.1.3
     build: .
     container_name: arrnexus
     restart: unless-stopped
@@ -13,6 +13,7 @@ services:
       ZURG_CACHE_PATH: ${ZURG_CACHE_PATH:-/host/zurg-rclone-cache}
       MAGIC_ROOT: ${MAGIC_ROOT:-/zurg_magic}
       MAGIC_ARR_PREFIX: ${MAGIC_ARR_PREFIX:-/zurg_mnt/zurg/__magic__}
+      MAGIC_IMPORT_CONCURRENCY: ${MAGIC_IMPORT_CONCURRENCY:-3}
       ZURG_URL: ${ZURG_URL:-http://192.168.137.10:9999}
       RADARR_URL: ${RADARR_URL:-http://192.168.137.10:7878}
       RADARR_API_KEY: ${RADARR_API_KEY:-}

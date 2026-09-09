@@ -37,9 +37,9 @@ from . import services
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 try:
-    APP_VERSION = (BASE_DIR.parent / "VERSION").read_text(encoding="utf-8").strip() or "13.1.2"
+    APP_VERSION = (BASE_DIR.parent / "VERSION").read_text(encoding="utf-8").strip() or "13.1.3"
 except OSError:
-    APP_VERSION = "13.1.2"
+    APP_VERSION = "13.1.3"
 
 
 @asynccontextmanager
@@ -521,6 +521,23 @@ async def magic_intake_force_match_api(request: Request):
         return {"ok": True, "group": group}
     except Exception as exc:
         raise HTTPException(400, str(exc))
+
+
+@app.post("/api/magic-intake/type")
+async def magic_intake_type_api(request: Request):
+    _require_user(request)
+    payload = await request.json()
+    group_key = str(payload.get("group_key") or "")
+    media_type = str(payload.get("media_type") or "")
+    if not group_key or media_type not in {"movie", "tv", "music"}:
+        raise HTTPException(400, "group_key and valid media_type are required")
+    try:
+        result = magic_intake.set_media_type(group_key, media_type)
+        scan_result = magic_intake.request_scan()
+        result["scan"] = scan_result
+        return result
+    except Exception as exc:
+        raise HTTPException(400, str(exc) or repr(exc))
 
 
 @app.post("/api/magic-intake/import")

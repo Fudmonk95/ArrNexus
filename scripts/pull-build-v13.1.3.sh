@@ -2,11 +2,11 @@
 set -euo pipefail
 
 REPO="https://github.com/Fudmonk95/ArrNexus.git"
-TAG="v13.1.2"
-IMAGE="arrnexus:v13.1.2"
+TAG="v13.1.3"
+IMAGE="arrnexus:v13.1.3"
 DEST="/opt/arrnexus-v13.1-src"
 
-printf '%s\n' "======================================================================" " ARRNEXUS v13.1.2 - PULL + BUILD" "======================================================================"
+printf '%s\n' "======================================================================" " ARRNEXUS v13.1.3 - PULL + BUILD" "======================================================================"
 
 command -v git >/dev/null || { echo "ERROR: git is not installed"; exit 1; }
 command -v docker >/dev/null || { echo "ERROR: docker is not installed"; exit 1; }
@@ -20,8 +20,8 @@ git clone --depth 1 --branch "$TAG" "$REPO" "$DEST"
 cd "$DEST"
 
 VERSION="$(tr -d '\r\n ' < VERSION)"
-if [ "$VERSION" != "13.1.2" ]; then
-  echo "ERROR: Expected VERSION 13.1.2, got: $VERSION"
+if [ "$VERSION" != "13.1.3" ]; then
+  echo "ERROR: Expected VERSION 13.1.3, got: $VERSION"
   exit 1
 fi
 
