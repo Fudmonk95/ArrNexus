@@ -22,6 +22,11 @@ SPOTIFY_USER_SCOPES = (
 
 def spotify_redirect_uri(public_url: str = "", request_url: str = "") -> str:
     base = str(public_url or "").strip().rstrip("/")
+    if not base:
+        domain = setting_get("dashboard.public_domain", "").strip().lower()
+        if domain:
+            domain = domain.removeprefix("https://").removeprefix("http://").strip("/")
+            base = f"https://arrnexus.{domain}"
     if not base and request_url:
         parsed = urlparse(str(request_url))
         base = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
@@ -39,7 +44,7 @@ def spotify_redirect_validation(redirect_uri: str) -> tuple[bool, str]:
     host = (parsed.hostname or "").lower()
     if parsed.scheme == "https" and host:
         return True, "Ready"
-    if parsed.scheme == "http" and host in {"127.0.0.1", "localhost", "::1"}:
+    if parsed.scheme == "http" and host in {"127.0.0.1", "::1"}:
         return True, "Ready (loopback HTTP)"
     if parsed.scheme == "http":
         return False, "Spotify requires HTTPS for non-loopback callback addresses. Configure an HTTPS ArrNexus public URL."

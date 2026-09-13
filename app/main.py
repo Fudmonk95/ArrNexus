@@ -34,6 +34,7 @@ from . import queue_janitor
 from . import magic_intake
 from . import mediastack
 from . import stack_setup
+from . import dashboard_boards
 from . import zurg
 from . import services
 
@@ -208,9 +209,27 @@ async def dashboard(request: Request):
         and not stack_setup.state().get("completed")
     ):
         return _go("/stack-setup")
-    # Dashboard rendering is intentionally cache-only. Slow providers, Zurg
-    # indexing and request correlation run in background tasks and can never
-    # block the web UI.
+
+    board_id = str(request.query_params.get("board") or dashboard_boards.home_board() or "overview")
+    board = dashboard_boards.get_board(board_id) or dashboard_boards.get_board("overview")
+    if board and board.get("id") != "overview":
+        try:
+            await mediastack.refresh_status()
+        except Exception:
+            pass
+        zurg_status = zurg.cached_status()
+        live = pipeline.cached_snapshot()
+        runtime = await dashboard_boards.runtime(
+            board,
+            stack=mediastack.cached_snapshot(),
+            live=live,
+            orchestrator=orchestrator.cached_state(),
+            janitor=queue_janitor.cached_state(),
+            zurg=zurg_status,
+        )
+        return _render(request, "dashboard_board.html", **runtime)
+
+    # The built-in Overview remains the original fast cache-only dashboard.
     zurg_status = zurg.cached_status()
     live = pipeline.cached_snapshot()
     return _render(
@@ -226,6 +245,81 @@ async def dashboard(request: Request):
         orchestrator=orchestrator.cached_state(),
         janitor=queue_janitor.cached_state(),
     )
+
+
+@app.get("/dashboard/boards", response_class=HTMLResponse)
+async def dashboard_boards_page(request: Request):
+    state = dashboard_boards.board_api()
+    return _render(
+        request,
+        "dashboard_boards.html",
+        boards=state["boards"],
+        home_board=state["home_board"],
+        widgets=state["widgets"],
+        public_domain=state["public_domain"],
+        service_links=state["service_links"],
+        spotify_public_url=state["spotify_public_url"],
+    )
+
+
+@app.get("/api/dashboard/boards")
+async def dashboard_boards_api(request: Request):
+    _require_user(request)
+    return dashboard_boards.board_api()
+
+
+@app.post("/dashboard/boards/settings")
+async def dashboard_boards_settings(request: Request):
+    _require_user(request)
+    form = await request.form()
+    domain = dashboard_boards.set_public_domain(str(form.get("public_domain") or ""))
+    for key in dashboard_boards.SERVICE_KEYS:
+        value = str(form.get(f"url_{key}") or "").strip()
+        dashboard_boards.set_service_url(key, value)
+    if domain:
+        _flash(request, f"Public service links saved for {domain}. ArrNexus HTTPS public URL is ready for Spotify.", "success")
+    else:
+        _flash(request, "Dashboard public links saved.", "success")
+    return _go("/dashboard/boards")
+
+
+@app.post("/dashboard/boards/save")
+async def dashboard_board_save(request: Request):
+    _require_user(request)
+    form = await request.form()
+    try:
+        board = dashboard_boards.save_board(
+            str(form.get("board_id") or ""),
+            str(form.get("name") or ""),
+            [str(x) for x in form.getlist("widgets")],
+            str(form.get("description") or ""),
+        )
+        _flash(request, f"Board {board['name']} saved.", "success")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/dashboard/boards")
+
+
+@app.post("/dashboard/boards/delete")
+async def dashboard_board_delete(request: Request, board_id: str = Form(...)):
+    _require_user(request)
+    try:
+        dashboard_boards.delete_board(board_id)
+        _flash(request, "Dashboard board deleted.", "success")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/dashboard/boards")
+
+
+@app.post("/dashboard/boards/home")
+async def dashboard_board_home(request: Request, board_id: str = Form(...)):
+    _require_user(request)
+    try:
+        dashboard_boards.set_home_board(board_id)
+        _flash(request, "Home dashboard updated.", "success")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/dashboard/boards")
 
 
 @app.get("/pipeline", response_class=HTMLResponse)
