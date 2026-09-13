@@ -9,10 +9,15 @@ from typing import Any
 
 import httpx
 
+from .db import log_event, setting_get
+from . import stack_setup
+
 AGENT_URL = os.getenv("MEDIASTACK_AGENT_URL", "http://arrnexus-stack-agent:8787").rstrip("/")
+AGENT_TOKEN = os.getenv("MEDIASTACK_AGENT_TOKEN", "").strip()
 FAST_INTERVAL = max(5.0, float(os.getenv("MEDIASTACK_REFRESH_SECONDS", "10")))
 UPDATE_INTERVAL = max(60.0, float(os.getenv("MEDIASTACK_UPDATE_SECONDS", "1800")))
 CONFIG_INTERVAL = max(30.0, float(os.getenv("MEDIASTACK_CONFIG_SECONDS", "300")))
+JOB_INTERVAL = max(2.0, float(os.getenv("MEDIASTACK_JOB_SECONDS", "5")))
 
 _CACHE: dict[str, Any] = {
     "agent_url": AGENT_URL,
@@ -21,12 +26,15 @@ _CACHE: dict[str, Any] = {
     "updated_monotonic": 0.0,
     "error": "",
     "health": {},
+    "capabilities": {},
     "system": {},
     "services": [],
     "updates": {},
     "configs": {"roots": {}, "files": []},
+    "jobs": [],
     "updates_checked_at": "",
     "configs_checked_at": "",
+    "jobs_checked_at": "",
 }
 _LOCK = asyncio.Lock()
 
@@ -48,12 +56,12 @@ def _human_bytes(value: int | float | None) -> str:
 
 
 def _resource_pressure(item: dict[str, Any]) -> tuple[str, list[str]]:
-    """Classify resource pressure without confusing it with Docker health.
+    """Classify current pressure separately from Docker's health status.
 
-    CPU can legitimately exceed 100% on a multi-core host, so v0.1 only
-    records CPU in the dashboard and does not raise a pressure alert from CPU
-    alone. Container memory limits and repeated restarts are much stronger
-    signals and are used for warnings here.
+    CPU may legitimately exceed 100% on a multi-core host, so it is displayed
+    rather than treated as a fault. Historical restarts are useful context but
+    are only a warning by themselves; current memory pressure can make the
+    status critical.
     """
     memory_percent = float(item.get("memory_percent") or 0)
     restart_count = int(item.get("restart_count") or 0)
@@ -67,13 +75,10 @@ def _resource_pressure(item: dict[str, Any]) -> tuple[str, list[str]]:
         severity = "warn"
         alerts.append(f"RAM {memory_percent:.1f}% of container limit")
 
-    if restart_count >= 5:
-        severity = "bad"
-        alerts.append(f"{restart_count} container restarts")
-    elif restart_count >= 2:
+    if restart_count >= 2:
         if severity == "good":
             severity = "warn"
-        alerts.append(f"{restart_count} container restarts")
+        alerts.append(f"{restart_count} historical container restarts")
 
     return severity, alerts
 
@@ -159,9 +164,30 @@ def _decorate_snapshot(raw: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-async def _get(path: str, *, params: dict[str, Any] | None = None, timeout: float = 12.0) -> dict[str, Any]:
+def _headers(write: bool = False) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if write and AGENT_TOKEN:
+        headers["Authorization"] = f"Bearer {AGENT_TOKEN}"
+    return headers
+
+
+async def _request(
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_payload: dict[str, Any] | None = None,
+    timeout: float = 12.0,
+    write: bool = False,
+) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=min(timeout, 4.0))) as client:
-        response = await client.get(f"{AGENT_URL}{path}", params=params)
+        response = await client.request(
+            method,
+            f"{AGENT_URL}{path}",
+            params=params,
+            json=json_payload,
+            headers=_headers(write),
+        )
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
@@ -169,18 +195,33 @@ async def _get(path: str, *, params: dict[str, Any] | None = None, timeout: floa
         return payload
 
 
+async def _get(path: str, *, params: dict[str, Any] | None = None, timeout: float = 12.0) -> dict[str, Any]:
+    return await _request("GET", path, params=params, timeout=timeout)
+
+
+async def _post(
+    path: str,
+    *,
+    json_payload: dict[str, Any] | None = None,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    return await _request("POST", path, json_payload=json_payload, timeout=timeout, write=True)
+
+
 async def refresh_status() -> dict[str, Any]:
     async with _LOCK:
         try:
-            health, system, containers = await asyncio.gather(
+            health, capabilities, system, containers = await asyncio.gather(
                 _get("/health", timeout=5.0),
+                _get("/api/capabilities", timeout=5.0),
                 _get("/api/system", timeout=8.0),
-                _get("/api/containers", timeout=15.0),
+                _get("/api/containers", timeout=20.0),
             )
             _CACHE.update(
                 {
                     "connected": bool(health.get("ok")),
                     "health": health,
+                    "capabilities": capabilities,
                     "system": system,
                     "services": containers.get("services") or [],
                     "updated_at": _now_iso(),
@@ -202,7 +243,7 @@ async def refresh_status() -> dict[str, Any]:
 
 async def refresh_updates() -> dict[str, Any]:
     try:
-        payload = await _get("/api/updates", timeout=45.0)
+        payload = await _get("/api/updates", timeout=60.0)
         async with _LOCK:
             _CACHE["updates"] = payload
             _CACHE["updates_checked_at"] = _now_iso()
@@ -232,9 +273,20 @@ async def refresh_configs() -> dict[str, Any]:
         return _CACHE["configs"]
 
 
+async def refresh_jobs() -> dict[str, Any]:
+    try:
+        payload = await _get("/api/jobs", timeout=8.0)
+        async with _LOCK:
+            _CACHE["jobs"] = payload.get("jobs") or []
+            _CACHE["jobs_checked_at"] = _now_iso()
+        return payload
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "jobs": list(_CACHE.get("jobs") or [])}
+
+
 async def refresh_all() -> dict[str, Any]:
     await refresh_status()
-    await asyncio.gather(refresh_updates(), refresh_configs())
+    await asyncio.gather(refresh_updates(), refresh_configs(), refresh_jobs())
     return cached_snapshot()
 
 
@@ -242,6 +294,7 @@ def cached_snapshot() -> dict[str, Any]:
     out = _decorate_snapshot(_CACHE)
     updated = float(_CACHE.get("updated_monotonic") or 0)
     out["age_seconds"] = max(0.0, time.monotonic() - updated) if updated else None
+    out["write_enabled"] = bool((out.get("capabilities") or {}).get("write_enabled"))
     return out
 
 
@@ -263,20 +316,19 @@ async def metadata_loop() -> None:
     while True:
         try:
             now = time.monotonic()
-            jobs = []
+            jobs = [refresh_jobs()]
             if not last_updates or now - last_updates >= UPDATE_INTERVAL:
                 jobs.append(refresh_updates())
                 last_updates = now
             if not last_configs or now - last_configs >= CONFIG_INTERVAL:
                 jobs.append(refresh_configs())
                 last_configs = now
-            if jobs:
-                await asyncio.gather(*jobs)
+            await asyncio.gather(*jobs)
         except asyncio.CancelledError:
             raise
         except Exception:
             pass
-        await asyncio.sleep(30.0)
+        await asyncio.sleep(max(5.0, min(30.0, JOB_INTERVAL)))
 
 
 async def logs(name: str, tail: int = 250) -> dict[str, Any]:
@@ -286,3 +338,130 @@ async def logs(name: str, tail: int = 250) -> dict[str, Any]:
 
 async def config_file(root: str, path: str) -> dict[str, Any]:
     return await _get("/api/config", params={"root": root, "path": path}, timeout=15.0)
+
+
+async def discovery() -> dict[str, Any]:
+    return await _get("/api/discovery", timeout=20.0)
+
+
+async def update_plan(name: str) -> dict[str, Any]:
+    return await _get(f"/api/update-plan/{name}", timeout=20.0)
+
+
+async def lifecycle(name: str, action: str) -> dict[str, Any]:
+    result = await _post(f"/api/actions/{name}/{action}", timeout=75.0)
+    log_event("info", "mediastack", "lifecycle", f"{action.title()} requested for {name}", result)
+    await refresh_status()
+    return result
+
+
+async def start_update(name: str) -> dict[str, Any]:
+    result = await _post(f"/api/actions/{name}/update", timeout=20.0)
+    log_event("info", "mediastack", "update_queued", f"Update queued for {name}", result)
+    return result
+
+
+async def job(job_id: str) -> dict[str, Any]:
+    return await _get(f"/api/jobs/{job_id}", timeout=10.0)
+
+
+async def adopt(names: list[str]) -> dict[str, Any]:
+    result = await _post("/api/adopt", json_payload={"names": names}, timeout=20.0)
+    log_event("info", "mediastack", "adopt", "Containers adopted into MediaStack", {"names": names})
+    await refresh_status()
+    return result
+
+
+def _local_minute() -> str:
+    # The container receives TZ=Europe/London in the final stack. datetime.now()
+    # therefore follows the operator-configured local timezone without needing a
+    # second timezone dependency.
+    return datetime.now().strftime("%H:%M")
+
+
+async def _wait_update_job(job_id: str, timeout: int = 900) -> dict[str, Any]:
+    started = time.monotonic()
+    last: dict[str, Any] = {}
+    while time.monotonic() - started < timeout:
+        payload = await job(job_id)
+        current = payload.get("job") or {}
+        last = current
+        if current.get("status") in {"complete", "failed"}:
+            return current
+        await asyncio.sleep(5)
+    raise RuntimeError(f"update job {job_id} timed out (last stage={last.get('stage')})")
+
+
+async def update_scheduler_loop() -> None:
+    """Run opt-in sequential automatic updates inside the maintenance window.
+
+    Automatic updates are disabled unless all of these are true:
+    - setup mode is configured for automatic updates;
+    - the Stack Agent write channel is explicitly enabled;
+    - the individual service policy is `automatic`;
+    - an image digest change is currently reported.
+
+    One failed service stops the cycle. Zurg/Jellyfin/PostgreSQL/ArrNexus are
+    manual by default in stack_setup and must be explicitly overridden.
+    """
+    await asyncio.sleep(20)
+    last_run_date = ""
+    while True:
+        try:
+            setup_state = stack_setup.state()
+            if str(setup_state.get("update_mode") or "review") != "automatic":
+                await asyncio.sleep(30)
+                continue
+
+            if _local_minute() != str(setup_state.get("update_time") or "04:00"):
+                await asyncio.sleep(20)
+                continue
+
+            today = datetime.now().strftime("%Y-%m-%d")
+            if last_run_date == today:
+                await asyncio.sleep(30)
+                continue
+
+            snapshot = await refresh_status()
+            if not snapshot.get("write_enabled"):
+                log_event("warning", "mediastack", "auto_update_skipped", "Automatic update window reached but Stack Agent write actions are disabled")
+                last_run_date = today
+                await asyncio.sleep(60)
+                continue
+
+            await refresh_updates()
+            snapshot = cached_snapshot()
+            policies = stack_setup.service_policies(setup_state)
+            candidates = [
+                row
+                for row in snapshot.get("services") or []
+                if row.get("update_available") and policies.get(str(row.get("name") or "")) == "automatic"
+            ]
+            last_run_date = today
+            if not candidates:
+                log_event("info", "mediastack", "auto_update", "Automatic update window: no eligible updates")
+                await asyncio.sleep(60)
+                continue
+
+            log_event(
+                "info",
+                "mediastack",
+                "auto_update_start",
+                f"Starting automatic update window for {len(candidates)} service(s)",
+                {"services": [row.get("name") for row in candidates]},
+            )
+            for row in candidates:
+                name = str(row.get("name") or "")
+                queued = await start_update(name)
+                result = await _wait_update_job(str(queued.get("job_id") or ""))
+                if result.get("status") != "complete":
+                    log_event("error", "mediastack", "auto_update_failed", f"Automatic update failed for {name}; remaining updates were skipped", result)
+                    break
+                log_event("info", "mediastack", "auto_update_complete", f"Automatic update completed for {name}", result)
+                await refresh_status()
+                await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log_event("error", "mediastack", "auto_update_error", str(exc))
+        await asyncio.sleep(20)
