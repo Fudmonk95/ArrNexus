@@ -10,7 +10,7 @@ if [[ ! -f "$SOURCE_TAR" ]]; then
   exit 1
 fi
 
-for cmd in git gh tar rsync; do
+for cmd in git gh tar; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "Required command is missing: $cmd" >&2
     exit 1
@@ -47,10 +47,12 @@ cd "$WORK/repo"
 git fetch origin "$BRANCH"
 git checkout -B "$BRANCH" "origin/$BRANCH"
 
-# Copy the exact text/application payload recovered from the running image.
-# Do not delete branch-only files: MediaStack integration files may already
-# exist and must survive this restore.
-rsync -a --exclude='__pycache__/' --exclude='*.pyc' "$SOURCE_DIR/app/" app/
+# Copy the application payload recovered from the running image. Do not remove
+# branch-only files: MediaStack integration files may already exist and must
+# survive this restore.
+cp -a "$SOURCE_DIR/app/." app/
+find app -type d -name '__pycache__' -prune -exec rm -rf {} +
+find app -type f -name '*.pyc' -delete
 cp "$SOURCE_DIR/VERSION" VERSION
 cp "$SOURCE_DIR/requirements.txt" requirements.txt
 
