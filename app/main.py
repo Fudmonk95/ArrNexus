@@ -1067,6 +1067,14 @@ async def mediastack_update_plan_api(request: Request, name: str):
 @app.post("/api/mediastack/actions/{name}/{action}")
 async def mediastack_action_api(request: Request, name: str, action: str):
     _require_user(request)
+    if action == "update":
+        try:
+            return await mediastack.start_update(name)
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:1000] if exc.response is not None else str(exc)
+            raise HTTPException(exc.response.status_code if exc.response is not None else 502, detail)
+        except Exception as exc:
+            raise HTTPException(502, str(exc))
     if action not in {"start", "stop", "restart"}:
         raise HTTPException(400, "Unsupported MediaStack action")
     try:

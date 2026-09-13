@@ -27,6 +27,11 @@ UPDATE_TIMEOUT = float(os.getenv("UPDATE_TIMEOUT", "12"))
 WRITE_REQUESTED = os.getenv("WRITE_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
 AGENT_TOKEN = os.getenv("AGENT_TOKEN", "").strip()
 WRITE_ENABLED = WRITE_REQUESTED and bool(AGENT_TOKEN)
+WRITE_ALLOWLIST = {
+    item.strip()
+    for item in os.getenv("WRITE_ALLOWLIST", "").split(",")
+    if item.strip()
+}
 GHCR_USERNAME = os.getenv("GHCR_USERNAME", "").strip()
 GHCR_TOKEN = os.getenv("GHCR_TOKEN", "").strip()
 STABILIZATION_SECONDS = max(3, int(os.getenv("STABILIZATION_SECONDS", "10")))
@@ -48,6 +53,14 @@ _CONFIG_EXCLUDES = (
     "tmp/",
     "temp/",
 )
+
+
+def _ensure_state_root() -> None:
+    STATE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        STATE_ROOT.chmod(0o700)
+    except OSError:
+        pass
 
 
 def _now() -> str:
@@ -95,11 +108,12 @@ def _adopted_names() -> set[str]:
 
 
 def _save_adopted(names: set[str]) -> None:
-    STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    _ensure_state_root()
     path = STATE_ROOT / "adopted.json"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(sorted(names), indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
+    path.chmod(0o600)
 
 
 def _require_write(request: Request) -> None:
@@ -112,6 +126,12 @@ def _require_write(request: Request) -> None:
     expected = f"Bearer {AGENT_TOKEN}"
     if not secrets.compare_digest(supplied, expected):
         raise HTTPException(401, "invalid MediaStack agent token")
+
+
+def _require_service_write(request: Request, name: str) -> None:
+    _require_write(request)
+    if WRITE_ALLOWLIST and name not in WRITE_ALLOWLIST:
+        raise HTTPException(403, f"{name} is not in the MediaStack write allowlist")
 
 
 def _cpu_percent(stats: dict[str, Any]) -> float:
@@ -405,6 +425,9 @@ def _clone_body(detail: dict[str, Any], image: str) -> tuple[dict[str, Any], dic
         host["Binds"] = binds
 
     labels = dict(config.get("Labels") or {})
+    for label in list(labels):
+        if label.startswith("com.docker.compose.") or label.startswith("io.portainer."):
+            labels.pop(label, None)
     labels["arrnexus.mediastack"] = "true"
     labels["arrnexus.managed"] = "true"
     config["Labels"] = labels
@@ -511,7 +534,7 @@ async def _job_update(job_id: str, **updates: Any) -> None:
         job.update(updates)
         job["updated_at"] = _now()
         try:
-            STATE_ROOT.mkdir(parents=True, exist_ok=True)
+            _ensure_state_root()
             jobs_dir = STATE_ROOT / "jobs"
             jobs_dir.mkdir(parents=True, exist_ok=True)
             (jobs_dir / f"{job_id}.json").write_text(json.dumps(job, indent=2) + "\n", encoding="utf-8")
@@ -538,6 +561,7 @@ async def _run_update(job_id: str, name: str) -> None:
 
                 snapshot = _snapshot_path(job_id, name)
                 snapshot.write_text(json.dumps(old_detail, indent=2) + "\n", encoding="utf-8")
+                snapshot.chmod(0o600)
                 old_image_id = str(old_detail.get("Image") or "")
 
                 await _job_update(job_id, stage="pull", image=image, old_image_id=old_image_id, message=f"Pulling {image}")
@@ -632,6 +656,7 @@ async def health() -> dict[str, Any]:
             "config_roots": {name: str(path) for name, path in _config_roots().items()},
             "watch_containers": sorted(WATCH_CONTAINERS),
             "adopted_containers": sorted(_adopted_names()),
+            "write_allowlist": sorted(WRITE_ALLOWLIST),
         }
     except Exception as exc:
         return {"ok": False, "docker": False, "error": str(exc)}
@@ -644,6 +669,7 @@ async def capabilities() -> dict[str, Any]:
         "read": True,
         "write_requested": WRITE_REQUESTED,
         "write_enabled": WRITE_ENABLED,
+        "write_allowlist": sorted(WRITE_ALLOWLIST),
         "actions": {
             "start": WRITE_ENABLED,
             "stop": WRITE_ENABLED,
@@ -798,7 +824,7 @@ async def adopt(request: Request) -> dict[str, Any]:
 
 @app.post("/api/actions/{name}/{action}")
 async def lifecycle_action(name: str, action: str, request: Request) -> dict[str, Any]:
-    _require_write(request)
+    _require_service_write(request, name)
     action = action.lower()
     if action not in {"start", "stop", "restart"}:
         raise HTTPException(400, "unsupported lifecycle action")
@@ -821,7 +847,7 @@ async def lifecycle_action(name: str, action: str, request: Request) -> dict[str
 
 @app.post("/api/actions/{name}/update")
 async def start_update(name: str, request: Request) -> dict[str, Any]:
-    _require_write(request)
+    _require_service_write(request, name)
     async with docker_client() as client:
         row = await _find_managed(client, name)
         canonical = _container_name(row)
