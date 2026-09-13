@@ -1,0 +1,117 @@
+/* ArrNexus Dashboard v2 colour layer — richer Homarr-style visual treatment. */
+.arr-board-v2{
+  --c-cyan:#22d3ee;
+  --c-blue:#60a5fa;
+  --c-violet:#8b5cf6;
+  --c-pink:#ec4899;
+  --c-green:#34d399;
+  --c-amber:#f59e0b;
+  --c-red:#fb7185;
+}
+
+.arr-board-v2 .board-backdrop:after{
+  background:
+    radial-gradient(circle at 8% 12%,rgba(34,211,238,.16),transparent 28%),
+    radial-gradient(circle at 86% 8%,rgba(139,92,246,.22),transparent 30%),
+    radial-gradient(circle at 75% 82%,rgba(236,72,153,.10),transparent 28%),
+    linear-gradient(180deg,rgba(2,7,14,.12),rgba(2,7,14,.56));
+}
+
+.board-v2-header{
+  border-color:rgba(125,211,252,.18);
+  background:linear-gradient(135deg,rgba(5,18,34,.74),rgba(23,13,46,.60));
+  box-shadow:0 18px 55px rgba(0,0,0,.24),0 0 34px rgba(34,211,238,.05);
+}
+
+.board-v2-titlebar h1{
+  background:linear-gradient(90deg,#fff 0%,#bfe9ff 38%,#d8c7ff 72%,#ffb7de 100%);
+  -webkit-background-clip:text;
+  background-clip:text;
+  color:transparent;
+  text-shadow:0 0 34px rgba(96,165,250,.12);
+}
+
+.board-title-stats>div:nth-child(1){border-color:rgba(52,211,153,.25);background:linear-gradient(145deg,rgba(52,211,153,.12),rgba(5,12,23,.52))}
+.board-title-stats>div:nth-child(2){border-color:rgba(245,158,11,.27);background:linear-gradient(145deg,rgba(245,158,11,.12),rgba(5,12,23,.52))}
+.board-title-stats>div:nth-child(3){border-color:rgba(139,92,246,.27);background:linear-gradient(145deg,rgba(139,92,246,.12),rgba(5,12,23,.52))}
+
+.board-v2-widget{
+  background:
+    linear-gradient(145deg,rgba(255,255,255,.045),rgba(255,255,255,.01)),
+    rgba(7,15,27,var(--board-opacity));
+  box-shadow:0 18px 45px rgba(0,0,0,.24),inset 0 1px 0 rgba(255,255,255,.035);
+}
+.board-v2-widget:before{
+  content:"";
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  border-radius:inherit;
+  background:linear-gradient(135deg,rgba(255,255,255,.025),transparent 35%);
+}
+
+/* Give every native widget its own identity instead of a wall of identical navy cards. */
+.widget-app-launcher{border-color:rgba(34,211,238,.24);background:linear-gradient(145deg,rgba(34,211,238,.11),rgba(7,15,27,var(--board-opacity)) 42%,rgba(59,130,246,.06))}
+.widget-host-resources{border-color:rgba(139,92,246,.25);background:linear-gradient(145deg,rgba(139,92,246,.13),rgba(7,15,27,var(--board-opacity)) 48%,rgba(236,72,153,.06))}
+.widget-jellyfin-streams{border-color:rgba(96,165,250,.26);background:linear-gradient(145deg,rgba(96,165,250,.12),rgba(7,15,27,var(--board-opacity)) 46%,rgba(34,211,238,.05))}
+.widget-recent-media{border-color:rgba(236,72,153,.24);background:linear-gradient(145deg,rgba(236,72,153,.10),rgba(7,15,27,var(--board-opacity)) 44%,rgba(139,92,246,.06))}
+.widget-active-requests{border-color:rgba(245,158,11,.24);background:linear-gradient(145deg,rgba(245,158,11,.11),rgba(7,15,27,var(--board-opacity)) 46%,rgba(251,113,133,.05))}
+.widget-downloads{border-color:rgba(34,197,94,.24);background:linear-gradient(145deg,rgba(34,197,94,.10),rgba(7,15,27,var(--board-opacity)) 46%,rgba(34,211,238,.05))}
+.widget-calendar{border-color:rgba(59,130,246,.24);background:linear-gradient(145deg,rgba(59,130,246,.10),rgba(7,15,27,var(--board-opacity)) 46%,rgba(139,92,246,.05))}
+.widget-docker-stats{border-color:rgba(14,165,233,.24);background:linear-gradient(145deg,rgba(14,165,233,.10),rgba(7,15,27,var(--board-opacity)) 46%,rgba(16,185,129,.05))}
+.widget-updates{border-color:rgba(245,158,11,.26);background:linear-gradient(145deg,rgba(245,158,11,.13),rgba(7,15,27,var(--board-opacity)) 46%,rgba(251,113,133,.05))}
+.widget-missing-queue{border-color:rgba(251,113,133,.24);background:linear-gradient(145deg,rgba(251,113,133,.10),rgba(7,15,27,var(--board-opacity)) 46%,rgba(245,158,11,.05))}
+.widget-zurg-health{border-color:rgba(52,211,153,.26);background:linear-gradient(145deg,rgba(52,211,153,.12),rgba(7,15,27,var(--board-opacity)) 46%,rgba(34,211,238,.05))}
+.widget-clock{border-color:rgba(139,92,246,.25);background:linear-gradient(135deg,rgba(139,92,246,.19),rgba(7,15,27,var(--board-opacity)) 58%,rgba(34,211,238,.08))}
+.widget-bookmarks{border-color:rgba(34,211,238,.23);background:linear-gradient(145deg,rgba(34,211,238,.09),rgba(7,15,27,var(--board-opacity)) 45%,rgba(139,92,246,.05))}
+.widget-note{border-color:rgba(245,158,11,.24);background:linear-gradient(145deg,rgba(245,158,11,.10),rgba(7,15,27,var(--board-opacity)) 50%)}
+.widget-iframe{border-color:rgba(96,165,250,.20)}
+
+.board-v2-widget:hover{
+  transform:translateY(-1px);
+  border-color:color-mix(in srgb,var(--board-accent) 58%,rgba(255,255,255,.2));
+  box-shadow:0 24px 64px rgba(0,0,0,.34),0 0 28px color-mix(in srgb,var(--board-accent) 7%,transparent);
+}
+
+.widget-kicker{font-weight:950}
+.widget-head h2{color:#f7fbff}
+
+/* App tiles should feel like app launchers, not rows in a settings page. */
+.app-tile{
+  min-height:68px;
+  border-color:rgba(255,255,255,.09);
+  background:linear-gradient(145deg,rgba(255,255,255,.075),rgba(255,255,255,.02));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
+}
+.app-tile:nth-child(6n+1){background:linear-gradient(145deg,rgba(34,211,238,.13),rgba(255,255,255,.025))}
+.app-tile:nth-child(6n+2){background:linear-gradient(145deg,rgba(139,92,246,.13),rgba(255,255,255,.025))}
+.app-tile:nth-child(6n+3){background:linear-gradient(145deg,rgba(52,211,153,.12),rgba(255,255,255,.025))}
+.app-tile:nth-child(6n+4){background:linear-gradient(145deg,rgba(245,158,11,.12),rgba(255,255,255,.025))}
+.app-tile:nth-child(6n+5){background:linear-gradient(145deg,rgba(236,72,153,.12),rgba(255,255,255,.025))}
+.app-tile:nth-child(6n+6){background:linear-gradient(145deg,rgba(96,165,250,.13),rgba(255,255,255,.025))}
+.app-icon-wrap{background:rgba(4,9,18,.44);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08),0 8px 24px rgba(0,0,0,.18)}
+
+.resource-gauge{filter:drop-shadow(0 0 18px color-mix(in srgb,var(--board-accent) 22%,transparent))}
+.resource-gauge.memory{filter:drop-shadow(0 0 18px rgba(56,189,248,.20))}
+.metric-chart{background:linear-gradient(180deg,rgba(96,165,250,.07),rgba(255,255,255,.018))}
+
+.poster-art{border:1px solid rgba(255,255,255,.07);box-shadow:0 12px 32px rgba(0,0,0,.34)}
+.poster-card:hover .poster-art{transform:translateY(-2px);box-shadow:0 16px 38px rgba(0,0,0,.42)}
+.poster-art{transition:.18s ease}
+
+.progress-track span{box-shadow:0 0 14px color-mix(in srgb,var(--board-accent) 28%,transparent)}
+
+/* Make Dashboard Studio itself feel less like a form page. */
+.dashboard-manager-grid .panel,.board-appearance-panel{
+  border-color:rgba(96,165,250,.13);
+  background:linear-gradient(145deg,rgba(96,165,250,.035),rgba(139,92,246,.025)),linear-gradient(180deg,rgba(18,31,50,.97),rgba(13,24,40,.97));
+}
+.widget-choice{transition:.16s ease;border-radius:12px}
+.widget-choice:hover{background:linear-gradient(135deg,rgba(34,211,238,.08),rgba(139,92,246,.08));box-shadow:inset 0 0 0 1px rgba(125,211,252,.14)}
+.board-manager-row{border-radius:12px;transition:.16s ease}
+.board-manager-row:hover{background:linear-gradient(90deg,rgba(34,211,238,.055),rgba(139,92,246,.045))}
+
+@media(max-width:720px){
+  .board-title-stats{display:none}
+  .app-tile-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
