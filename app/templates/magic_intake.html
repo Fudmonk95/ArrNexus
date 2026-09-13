@@ -36,6 +36,14 @@
     <label><span>Search</span><input id="magic-filter-search" type="search" placeholder="Title or source release"></label>
     <label><span>Genre</span><select id="magic-filter-genre"><option value="all">All genres</option>{% for genre in filters.genres %}<option value="{{ genre|lower }}">{{ genre }}</option>{% endfor %}</select></label>
     <label><span>Theme</span><select id="magic-filter-theme"><option value="all">All themes</option>{% for theme in filters.themes %}<option value="{{ theme }}">{{ theme|title }}</option>{% endfor %}</select></label>
+    <label><span>Source</span><select id="magic-filter-source">
+      <option value="all">All sources</option>
+      <option value="dmm_rd">DMM / Direct RD</option>
+      <option value="arr_managed">Arr Managed</option>
+      <option value="nzb">NZB</option>
+      <option value="torrent">Torrent</option>
+      <option value="unknown">Unknown</option>
+    </select></label>
     <label><span>State</span><select id="magic-filter-state">
       <option value="all">All states</option>
       <option value="matched">Matched</option><option value="review">Needs review</option><option value="unmatched">Unmatched</option>
@@ -52,6 +60,7 @@
   <div class="details-body">
     <form method="post" action="/magic-intake/settings" class="form-grid">
       <label class="check"><input type="checkbox" name="enabled" {% if cfg.enabled %}checked{% endif %}><span>Background scan enabled</span></label>
+      <label class="check"><input type="checkbox" name="trusted_dmm_bypass" {% if cfg.trusted_dmm_bypass %}checked{% endif %}><span>Trusted DMM bypass — ignore Arr rejection labels only after Movie/TV identity is confirmed</span></label>
       <label><span>Scan every (seconds)</span><input type="number" min="20" name="interval_seconds" value="{{ cfg.interval_seconds }}"></label>
       <label><span>Auto-match threshold</span><input type="number" min="80" max="100" name="auto_match_threshold" value="{{ cfg.auto_match_threshold }}"></label>
       <label><span>Verify for (minutes)</span><input type="number" min="2" max="60" name="verify_window_minutes" value="{{ cfg.verify_window_minutes|default(10) }}"></label>
@@ -84,6 +93,7 @@
         <div class="magic-card-title"><strong data-magic-title>{{ g.display_title }}</strong>{% if g.match_year or g.year %} <span class="muted" data-magic-year>({{ g.match_year or g.year }})</span>{% endif %}</div>
         <div class="magic-tags">
           <span class="pill">{{ g.media_type|upper }}</span>
+          <span class="pill">{{ g.source_label or 'Unknown' }}</span>
           <span class="pill {% if g.confidence >= cfg.auto_match_threshold %}good{% elif g.confidence >= 80 %}warn{% else %}bad{% endif %}" data-magic-confidence>{{ g.confidence }}%</span>
           <span class="pill" data-magic-state>{{ g.status_label or g.state }}</span>
         </div>
@@ -93,6 +103,12 @@
           {% if g.media_type == 'tv' and g.episode_count %} · {{ g.episode_count }} episode marker(s){% endif %}
         </p>
         {% if g.genres %}<div class="magic-genres">{% for genre in g.genres[:6] %}<span class="tag">{{ genre }}</span>{% endfor %}</div>{% endif %}
+        {% if g.precheck_detail %}
+        <p class="muted small"><strong>Arr check:</strong> {{ g.precheck_detail }}</p>
+        {% endif %}
+        {% if g.missing_items %}
+        <p class="muted small"><strong>Still missing:</strong> {{ g.missing_items[:20]|join(', ') }}{% if g.missing_items|length > 20 %} · +{{ g.missing_items|length - 20 }} more{% endif %}</p>
+        {% endif %}
         <details class="magic-release-details"><summary>Source releases</summary><div class="mono small">{% for p in g.source_paths %}<div>{{ p }}</div>{% endfor %}</div></details>
 
         {% set locked_type_states = ['queued','importing','verifying','awaiting_arr','partially_verified','numbering_mismatch','verification_timeout','source_missing','partial','imported'] %}
@@ -104,20 +120,21 @@
           </select>
         </label>
 
-        {% if g.match_title %}
+        {% if g.match_title and g.needs_import %}
         <form method="post" action="/magic-intake/import" class="magic-import-form" data-magic-import-form>
           <input type="hidden" name="group_key" value="{{ g.group_key }}">
           <label><span>Destination</span><select name="destination_key" required>
             {% for key,path in g.destination_options.items() %}<option value="{{ key }}" {% if g.destination_key == key %}selected{% endif %}>{{ key|replace('plus','+')|title }} · {{ path }}</option>{% endfor %}
           </select></label>
-          {% if g.media_type == 'movie' and g.source_paths|length > 1 %}
-          <label><span>Movie release</span><select name="selected_source" required>{% for p in g.source_paths %}<option value="{{ p }}">{{ p }}</option>{% endfor %}</select></label>
+          {% set movie_sources = g.actionable_sources if g.actionable_sources else g.source_paths %}
+          {% if g.media_type == 'movie' and movie_sources|length > 1 %}
+          <label><span>Movie release</span><select name="selected_source" required>{% for p in movie_sources %}<option value="{{ p }}">{{ p }}</option>{% endfor %}</select></label>
           {% else %}<input type="hidden" name="selected_source" value="">{% endif %}
           {% set moved_states = ['awaiting_arr','partially_verified','numbering_mismatch','verification_timeout','source_missing','partial'] %}
           <button type="submit" class="primary" data-magic-import-button {% if g.state in ['queued','importing','verifying'] or g.state in moved_states %}disabled{% endif %}>
             {% if g.state in ['queued','importing','verifying'] %}Working…
             {% elif g.state in moved_states %}Moved — recheck
-            {% else %}{{ 'Import Series' if g.media_type == 'tv' else ('Import Artist' if g.media_type == 'music' else 'Import') }}{% endif %}
+            {% else %}{{ 'Import Missing Episodes' if g.media_type == 'tv' else ('Import Artist' if g.media_type == 'music' else 'Import Missing Movie') }}{% endif %}
           </button>
         </form>
         {% endif %}
@@ -164,4 +181,5 @@
   </section>
 </div>
 {% endblock %}
-{% block scripts %}<script>window.ArrNexusMagicIntake=true;window.ArrNexusMagicTotal={{ total_visible|int }};window.ArrNexusMagicLimit={{ page_limit|int }};window.ArrNexusMagicRevision={{ (state.last_scan_at or "")|tojson }};</script>{% endblock %}
+{% block scripts %}<script>window.ArrNexusMagicIntake=true;window.ArrNexusMagicTotal={{ total_visible|int }};window.ArrNexusMagicLimit={{ page_limit|int }};window.ArrNexusMagicRevision={{ (state.last_scan_at or "")|tojson }};</script><script src="/static/magic_intake_v14.js?v=13.4.0"></script>
+{% endblock %}

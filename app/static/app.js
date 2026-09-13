@@ -66,6 +66,7 @@
       q:(document.querySelector('#magic-filter-search')?.value||'').trim(),
       genre:document.querySelector('#magic-filter-genre')?.value||'all',
       theme:document.querySelector('#magic-filter-theme')?.value||'all',
+      source:document.querySelector('#magic-filter-source')?.value||'all',
       state:document.querySelector('#magic-filter-state')?.value||'all',
     };
   }
@@ -209,15 +210,16 @@
     const episodeText=row.media_type==='tv'&&row.episode_count?` · ${esc(row.episode_count)} episode marker(s)`:'';
     const releases=(row.source_paths||[]).map(x=>`<div>${esc(x)}</div>`).join('');
     const destinations=Object.entries(row.destination_options||{}).map(([key,path])=>`<option value="${esc(key)}" ${row.destination_key===key?'selected':''}>${esc(key.replace('plus','+').replace(/\b\w/g,c=>c.toUpperCase()))} · ${esc(path)}</option>`).join('');
+    const smartSources=(row.actionable_sources&&row.actionable_sources.length)?row.actionable_sources:(row.source_paths||[]);
     let sourceField='<input type="hidden" name="selected_source" value="">';
-    if(row.media_type==='movie'&&(row.source_paths||[]).length>1){
-      sourceField=`<label><span>Movie release</span><select name="selected_source" required>${(row.source_paths||[]).map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}</select></label>`;
+    if(row.media_type==='movie'&&smartSources.length>1){
+      sourceField=`<label><span>Movie release</span><select name="selected_source" required>${smartSources.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}</select></label>`;
     }
-    const importLabel=row.media_type==='tv'?'Import Series':(row.media_type==='music'?'Import Artist':'Import');
+    const importLabel=row.media_type==='tv'?'Import Missing Episodes':(row.media_type==='music'?'Import Artist':'Import Missing Movie');
     const working=magicWorkingStates.has(row.state);
     const moved=magicMovedStates.has(row.state);
     let buttonLabel=working?'Working…':(moved?'Moved — recheck':(row.state==='failed'?'Retry Import':importLabel));
-    const importForm=row.match_title?`<form method="post" action="/magic-intake/import" class="magic-import-form" data-magic-import-form><input type="hidden" name="group_key" value="${esc(row.group_key)}"><label><span>Destination</span><select name="destination_key" required>${destinations}</select></label>${sourceField}<button type="submit" class="primary" data-magic-import-button ${(working||moved)?'disabled':''}>${esc(buttonLabel)}</button></form>`:'';
+    const importForm=(row.match_title&&row.needs_import)?`<form method="post" action="/magic-intake/import" class="magic-import-form" data-magic-import-form><input type="hidden" name="group_key" value="${esc(row.group_key)}"><label><span>Destination</span><select name="destination_key" required>${destinations}</select></label>${sourceField}<button type="submit" class="primary" data-magic-import-button ${(working||moved)?'disabled':''}>${esc(buttonLabel)}</button></form>`:'';
     const poster=row.poster_url?`<img src="${esc(row.poster_url)}" alt="" loading="lazy">`:'<div class="magic-poster-empty">?</div>';
     const progressVisible=Number(row.progress||0)||working||moved||['failed'].includes(row.state);
     const searchText=`${row.display_title||''} ${(row.source_paths||[]).join(' ')}`.toLowerCase();
@@ -225,9 +227,11 @@
     return `<article class="magic-card" id="${esc(row.dom_id||'')}" data-group-key="${esc(row.group_key)}" data-media-type="${esc(row.media_type)}" data-state="${esc(row.state)}" data-genres="${esc((row.genres||[]).join('|').toLowerCase())}" data-themes="${esc((row.themes||[]).join('|').toLowerCase())}" data-search="${esc(searchText)}">
       <div class="magic-poster">${poster}</div><div class="magic-card-body">
       <div class="magic-card-title"><strong data-magic-title>${esc(row.display_title||row.match_title||row.normalized_title||'Unknown')}</strong>${year?` <span class="muted" data-magic-year>(${esc(year)})</span>`:''}</div>
-      <div class="magic-tags"><span class="pill">${esc(String(row.media_type||'').toUpperCase())}</span><span class="pill ${confClass}" data-magic-confidence>${conf}%</span><span class="pill" data-magic-state>${esc(row.status_label||row.state||'')}</span></div>
+      <div class="magic-tags"><span class="pill">${esc(String(row.media_type||'').toUpperCase())}</span><span class="pill">${esc(row.source_label||'Unknown')}</span><span class="pill ${confClass}" data-magic-confidence>${conf}%</span><span class="pill" data-magic-state>${esc(row.status_label||row.state||'')}</span></div>
       <p class="muted magic-summary"><strong>${esc(row.release_count||0)}</strong> release entr${Number(row.release_count||0)===1?'y':'ies'}${seasonText}${episodeText}</p>
       ${genres?`<div class="magic-genres">${genres}</div>`:''}
+      ${row.precheck_detail?`<p class="muted small"><strong>Arr check:</strong> ${esc(row.precheck_detail)}</p>`:''}
+      ${row.missing_items&&row.missing_items.length?`<p class="muted small"><strong>Still missing:</strong> ${esc(row.missing_items.slice(0,20).join(', '))}${row.missing_items.length>20?` · +${row.missing_items.length-20} more`:''}</p>`:''}
       <details class="magic-release-details"><summary>Source releases</summary><div class="mono small">${releases}</div></details>
       <label class="magic-type-control"><span>Media type</span><select data-magic-type-override data-group-key="${esc(row.group_key)}" ${[...magicWorkingStates,...magicMovedStates,'imported'].includes(row.state)?'disabled title="Media type is locked after the move stage"':''}><option value="movie" ${row.media_type==='movie'?'selected':''}>Movie</option><option value="tv" ${row.media_type==='tv'?'selected':''}>TV Series</option><option value="music" ${row.media_type==='music'?'selected':''}>Music</option></select></label>
       ${importForm}
@@ -336,7 +340,7 @@
     magic.revision=String(window.ArrNexusMagicRevision||'');
     document.querySelectorAll('[data-magic-type]').forEach(button=>button.addEventListener('click',()=>setMagicType(button.dataset.magicType||'all',button)));
     const search=document.querySelector('#magic-filter-search');if(search)search.addEventListener('input',()=>scheduleMagicReload(250));
-    ['#magic-filter-genre','#magic-filter-theme','#magic-filter-state'].forEach(selector=>{
+    ['#magic-filter-genre','#magic-filter-theme','#magic-filter-source','#magic-filter-state'].forEach(selector=>{
       const el=document.querySelector(selector);if(el)el.addEventListener('change',()=>scheduleMagicReload(0));
     });
     document.querySelector('#magic-load-more')?.addEventListener('click',()=>fetchMagicGroups({append:true}));
