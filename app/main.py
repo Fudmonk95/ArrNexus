@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import secrets
+import httpx
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -32,6 +33,7 @@ from . import orchestrator
 from . import queue_janitor
 from . import magic_intake
 from . import mediastack
+from . import stack_setup
 from . import zurg
 from . import services
 
@@ -59,6 +61,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(magic_intake.verification_loop(), name="magic-intake-verifier"),
         asyncio.create_task(mediastack.status_loop(), name="mediastack-status"),
         asyncio.create_task(mediastack.metadata_loop(), name="mediastack-metadata"),
+        asyncio.create_task(mediastack.update_scheduler_loop(), name="mediastack-update-scheduler"),
         asyncio.create_task(media_lists.scheduler_loop(), name="media-list-scheduler"),
         asyncio.create_task(media_automation.scheduler_loop(), name="media-automation-scheduler"),
     ]
@@ -148,6 +151,8 @@ async def setup_submit(request: Request, username: str = Form(...), display_name
         uid = create_user(username, email, display_name, password)
         request.session["user_id"] = uid
         log_event("info", "auth", "setup", "Initial administrator created")
+        if os.getenv("MEDIASTACK_GUIDED_SETUP", "false").lower() in {"1", "true", "yes"}:
+            return _go("/stack-setup")
         return _go("/")
     except Exception as exc:
         _flash(request, str(exc), "error")
@@ -198,6 +203,11 @@ async def profile_save(request: Request, username: str = Form(...), display_name
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
+    if (
+        os.getenv("MEDIASTACK_GUIDED_SETUP", "false").lower() in {"1", "true", "yes"}
+        and not stack_setup.state().get("completed")
+    ):
+        return _go("/stack-setup")
     # Dashboard rendering is intentionally cache-only. Slow providers, Zurg
     # indexing and request correlation run in background tasks and can never
     # block the web UI.
@@ -982,6 +992,11 @@ async def automation_import(request: Request, library_name: str = Form(""), yaml
 
 @app.get("/mediastack", response_class=HTMLResponse)
 async def mediastack_page(request: Request):
+    try:
+        await mediastack.refresh_status()
+        await mediastack.refresh_jobs()
+    except Exception:
+        pass
     return _render(request, "mediastack.html", stack=mediastack.cached_snapshot())
 
 
@@ -994,7 +1009,9 @@ async def mediastack_api(request: Request):
 @app.post("/api/mediastack/refresh")
 async def mediastack_refresh_api(request: Request):
     _require_user(request)
-    return await mediastack.refresh_status()
+    await mediastack.refresh_status()
+    await mediastack.refresh_jobs()
+    return mediastack.cached_snapshot()
 
 
 @app.post("/api/mediastack/check-updates")
@@ -1027,6 +1044,140 @@ async def mediastack_config_api(request: Request, root: str, path: str):
         return await mediastack.config_file(root, path)
     except Exception as exc:
         raise HTTPException(502, str(exc))
+
+
+@app.get("/api/mediastack/discovery")
+async def mediastack_discovery_api(request: Request):
+    _require_user(request)
+    try:
+        return await mediastack.discovery()
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.get("/api/mediastack/update-plan/{name}")
+async def mediastack_update_plan_api(request: Request, name: str):
+    _require_user(request)
+    try:
+        return await mediastack.update_plan(name)
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.post("/api/mediastack/actions/{name}/{action}")
+async def mediastack_action_api(request: Request, name: str, action: str):
+    _require_user(request)
+    if action not in {"start", "stop", "restart"}:
+        raise HTTPException(400, "Unsupported MediaStack action")
+    try:
+        return await mediastack.lifecycle(name, action)
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:1000] if exc.response is not None else str(exc)
+        raise HTTPException(exc.response.status_code if exc.response is not None else 502, detail)
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.post("/api/mediastack/actions/{name}/update")
+async def mediastack_start_update_api(request: Request, name: str):
+    _require_user(request)
+    try:
+        return await mediastack.start_update(name)
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:1000] if exc.response is not None else str(exc)
+        raise HTTPException(exc.response.status_code if exc.response is not None else 502, detail)
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.get("/api/mediastack/jobs/{job_id}")
+async def mediastack_job_api(request: Request, job_id: str):
+    _require_user(request)
+    try:
+        return await mediastack.job(job_id)
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.get("/stack-setup", response_class=HTMLResponse)
+async def stack_setup_page(request: Request):
+    try:
+        await mediastack.refresh_status()
+    except Exception:
+        pass
+    stack = mediastack.cached_snapshot()
+    return _render(request, "stack_setup.html", setup=stack_setup.page_context(stack), stack=stack)
+
+
+@app.post("/api/stack-setup/preview")
+async def stack_setup_preview_api(request: Request):
+    _require_user(request)
+    payload = await request.json()
+    current = stack_setup.normalise(payload if isinstance(payload, dict) else {})
+    return {
+        "ok": True,
+        "state": current,
+        "plan": stack_setup.adoption_plan(mediastack.cached_snapshot(), current),
+    }
+
+
+@app.get("/api/stack-setup/recovery-compose")
+async def stack_setup_recovery_compose_api(request: Request):
+    _require_user(request)
+    text = stack_setup.recovery_compose(mediastack.cached_snapshot(), stack_setup.state())
+    return PlainTextResponse(
+        text,
+        media_type="text/yaml",
+        headers={"Content-Disposition": 'attachment; filename="arrnexus-mediastack-recovery.yml"'},
+    )
+
+
+@app.post("/stack-setup")
+async def stack_setup_save(request: Request):
+    _require_user(request)
+    form = await request.form()
+    selected = [str(value) for value in form.getlist("services")]
+    payload = {
+        "mode": str(form.get("mode") or "adopt"),
+        "selected_services": selected,
+        "stack_root": str(form.get("stack_root") or "/opt/arrnexus-mediastack"),
+        "zurg_mount_root": str(form.get("zurg_mount_root") or "/zurg_mnt"),
+        "config_strategy": str(form.get("config_strategy") or "keep-existing"),
+        "tz": str(form.get("tz") or "Europe/London"),
+        "puid": str(form.get("puid") or "1000"),
+        "pgid": str(form.get("pgid") or "1000"),
+        "jellyfin_gpu": str(form.get("jellyfin_gpu") or "auto"),
+        "update_mode": str(form.get("update_mode") or "review"),
+        "update_time": str(form.get("update_time") or "04:00"),
+        "rollback": bool(form.get("rollback")),
+        "stabilization_seconds": str(form.get("stabilization_seconds") or "30"),
+    }
+    action = str(form.get("action") or "save")
+    complete = action == "complete"
+    saved = stack_setup.save(payload, complete=complete)
+    policies = {
+        key: str(form.get(f"policy_{key}") or "")
+        for key in saved.get("selected_services") or []
+    }
+    stack_setup.save_service_policies(policies)
+
+    stack = mediastack.cached_snapshot()
+    plan = stack_setup.adoption_plan(stack, saved)
+    if complete and saved.get("mode") == "adopt":
+        names = [str(row.get("container") or "") for row in plan.get("services") or [] if row.get("present") and row.get("container")]
+        if stack.get("write_enabled") and names:
+            try:
+                await mediastack.adopt(names)
+                _flash(request, f"MediaStack setup saved. Adopted {len(names)} existing container(s).", "success")
+            except Exception as exc:
+                _flash(request, f"Setup saved, but adoption needs attention: {exc}", "error")
+        else:
+            _flash(request, "MediaStack setup saved. The Docker control channel is still locked, so no containers were changed.", "success")
+    elif complete and saved.get("mode") == "fresh":
+        _flash(request, "Fresh-install desired state saved. No production containers were replaced; the install executor can apply this plan when enabled.", "success")
+    else:
+        _flash(request, "MediaStack setup plan saved.", "success")
+    return _go("/stack-setup")
 
 
 @app.get("/logs", response_class=HTMLResponse)
