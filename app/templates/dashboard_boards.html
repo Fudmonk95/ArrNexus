@@ -1,38 +1,40 @@
 {% extends "base.html" %}
-{% block title %}Dashboard Boards · ArrNexus{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/dashboard_boards.css?v={{ version }}">{% endblock %}
+{% block title %}Dashboard Studio · ArrNexus{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div><h1>Dashboard boards</h1><p>Build native ArrNexus boards, service launchers and media widgets without needing Homarr.</p></div>
-  <div class="inline-actions"><a class="button" href="/">Back to Dashboard</a></div>
+  <div><h1>Dashboard Studio</h1><p>Create visual boards, connect your services, choose a background and then arrange everything directly on the board.</p></div>
+  <div class="inline-actions"><a class="button" href="/?board={{ home_board if home_board != 'overview' else '' }}">Open home board</a></div>
 </div>
 
 <section class="panel">
-  <div class="panel-head"><div><h2>Public service links</h2><span class="muted">One domain can generate Sonarr, Radarr, Jellyfin and other tunnel links automatically.</span></div></div>
+  <div class="panel-head"><div><h2>Public service links</h2><span class="muted">Use your Cloudflare/reverse-proxy domain for clickable service tiles and Spotify OAuth.</span></div><a href="/music/settings">Spotify settings</a></div>
   <form method="post" action="/dashboard/boards/settings" class="stack">
     <label>Base public domain
       <input name="public_domain" value="{{ public_domain }}" placeholder="cyberscott.co.uk">
-      <span class="field-help">Example: cyberscott.co.uk generates https://sonarr.cyberscott.co.uk, https://radarr.cyberscott.co.uk, https://jellyfin.cyberscott.co.uk and https://arrnexus.cyberscott.co.uk. Individual overrides below always win.</span>
+      <span class="field-help">A base domain automatically creates https://sonarr.&lt;domain&gt;, https://radarr.&lt;domain&gt;, https://jellyfin.&lt;domain&gt;, https://arrnexus.&lt;domain&gt; and the other service links. Use an override only when a service uses a different hostname.</span>
     </label>
-    <div class="service-link-editor">
-      {% for service in service_links %}
-      <label>{{ service.name }} public URL
-        <input name="url_{{ service.key }}" value="{{ service.override }}" placeholder="{{ service.url or ('https://' ~ service.key ~ '.example.com') }}">
-      </label>
-      {% endfor %}
-    </div>
+    <details>
+      <summary>Individual service URL overrides</summary>
+      <div class="service-link-editor" style="margin-top:12px">
+        {% for service in service_links %}
+        <label>{{ service.name }} public URL
+          <input name="url_{{ service.key }}" value="{{ service.override }}" placeholder="{{ service.url or ('https://' ~ service.key ~ '.example.com') }}">
+        </label>
+        {% endfor %}
+      </div>
+    </details>
     <button class="primary" type="submit">Save public links</button>
   </form>
-  {% if spotify_public_url %}<div class="spotify-domain-hint"><strong>Spotify callback base:</strong> {{ spotify_public_url }}<span class="muted"> · Spotify will use {{ spotify_public_url }}/music/spotify/callback</span></div>{% endif %}
+  {% if spotify_public_url %}<div class="spotify-domain-hint"><strong>Spotify callback:</strong> {{ spotify_public_url }}/music/spotify/callback</div>{% endif %}
 </section>
 
 <div class="grid two dashboard-manager-grid">
 <section class="panel">
-  <div class="panel-head"><div><h2>Boards</h2><span class="muted">Overview stays as the original ArrNexus dashboard.</span></div></div>
+  <div class="panel-head"><div><h2>Your boards</h2><span class="muted">Open any visual board and use Edit board to drag, resize, add and remove widgets.</span></div></div>
   <div class="board-manager-list">
   {% for board in boards %}
     <div class="board-manager-row">
-      <div><strong>{{ board.name }}</strong><div class="muted small">{{ board.description or board.id }}</div></div>
+      <div><strong>{{ board.name }}</strong><div class="muted small">{{ board.description or board.id }}</div>{% if board.id != 'overview' %}<div class="muted small">{{ board.items|length }} widgets · {{ board.appearance.columns }} columns</div>{% endif %}</div>
       <div class="inline-actions">
         <a class="button" href="/{% if board.id != 'overview' %}?board={{ board.id }}{% endif %}">Open</a>
         {% if board.id != home_board %}<form method="post" action="/dashboard/boards/home"><input type="hidden" name="board_id" value="{{ board.id }}"><button type="submit">Set home</button></form>{% else %}<span class="pill good">Home</span>{% endif %}
@@ -44,25 +46,47 @@
 </section>
 
 <section class="panel">
-  <div class="panel-head"><div><h2>Create / update board</h2><span class="muted">Pick the native widgets you want. More Homarr-style widgets can be added to this catalogue over time.</span></div></div>
+  <div class="panel-head"><div><h2>Create a board</h2><span class="muted">Start with a useful set of widgets, then customize it visually on the board itself.</span></div></div>
   <form method="post" action="/dashboard/boards/save" class="stack">
-    <div class="form-grid"><label>Board ID<input name="board_id" placeholder="living-room"></label><label>Name<input name="name" placeholder="Living Room"></label></div>
-    <label>Description<input name="description" placeholder="TV-friendly media overview"></label>
+    <div class="form-grid"><label>Board ID<input name="board_id" placeholder="server-room"></label><label>Name<input name="name" placeholder="Server Room"></label></div>
+    <label>Description<input name="description" placeholder="Server health and downloads"></label>
     <div class="widget-picker">
       {% for widget in widgets %}
-      <label class="widget-choice"><input type="checkbox" name="widgets" value="{{ widget.key }}" checked><span><strong>{{ widget.name }}</strong><small>{{ widget.description }}</small></span></label>
+      <label class="widget-choice"><input type="checkbox" name="widgets" value="{{ widget.key }}" {% if widget.key in ['app-launcher','host-resources','jellyfin-streams','downloads','recent-media'] %}checked{% endif %}><span><strong>{{ widget.name }}</strong><small>{{ widget.description }}</small><small>{{ widget.category }}</small></span></label>
       {% endfor %}
     </div>
-    <button class="primary" type="submit">Save board</button>
+    <button class="primary" type="submit">Create board</button>
   </form>
 </section>
 </div>
 
+{% for board in boards %}{% if board.id != 'overview' %}
+<section class="panel board-appearance-panel">
+  <div class="panel-head"><div><h2>{{ board.name }} appearance</h2><span class="muted">Wallpaper, glass effect and grid density are board-specific.</span></div><a href="/?board={{ board.id }}">Preview ↗</a></div>
+  <form method="post" action="/dashboard/boards/appearance" class="stack">
+    <input type="hidden" name="board_id" value="{{ board.id }}">
+    <div class="form-grid">
+      <label>Accent colour<input type="color" name="accent" value="{{ board.appearance.accent }}"></label>
+      <label>Columns<input type="number" min="6" max="24" name="columns" value="{{ board.appearance.columns }}"></label>
+      <label>Panel opacity<input type="number" min="0.25" max="1" step="0.05" name="panel_opacity" value="{{ board.appearance.panel_opacity }}"></label>
+      <label>Glass blur<input type="number" min="0" max="40" name="blur" value="{{ board.appearance.blur }}"></label>
+      <label>Corner radius<input type="number" min="0" max="32" name="radius" value="{{ board.appearance.radius }}"></label>
+      <label>Grid row height<input type="number" min="48" max="140" name="row_height" value="{{ board.appearance.row_height }}"></label>
+    </div>
+    <label>Background / wallpaper
+      <input name="background" value="{{ board.appearance.background }}" placeholder="https://.../wallpaper.jpg or CSS gradient">
+      <span class="field-help">Paste an HTTPS image URL or a CSS linear-gradient/radial-gradient. ArrNexus adds a readability overlay to image URLs.</span>
+    </label>
+    <button type="submit">Save {{ board.name }} appearance</button>
+  </form>
+</section>
+{% endif %}{% endfor %}
+
 <section class="panel">
-  <div class="panel-head"><div><h2>Native integrations</h2><span class="muted">ArrNexus uses its existing service API connections for widgets and separate public URLs for launching each app.</span></div><a href="/arr-services">Configure API connections</a></div>
+  <div class="panel-head"><div><h2>Native integrations</h2><span class="muted">Widgets use ArrNexus's existing service API connections. App tiles use the public URLs above.</span></div><a href="/arr-services">Configure API connections</a></div>
   <div class="integration-grid">
     {% for service in service_links %}
-    <div class="integration-card"><strong>{{ service.name }}</strong><span class="muted">{{ service.url or 'Public link not configured' }}</span>{% if service.url %}<a href="{{ service.url }}" target="_blank" rel="noopener">Open service ↗</a>{% endif %}</div>
+    <div class="integration-card"><div style="display:flex;align-items:center;gap:9px"><img src="{{ service.icon }}" alt="" style="width:30px;height:30px"><strong>{{ service.name }}</strong></div><span class="muted">{{ service.url or 'Public link not configured' }}</span>{% if service.url %}<a href="{{ service.url }}" target="_blank" rel="noopener">Open service ↗</a>{% endif %}</div>
     {% endfor %}
   </div>
 </section>
