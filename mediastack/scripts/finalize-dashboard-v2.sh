@@ -10,6 +10,14 @@ from pathlib import Path
 p = Path("app/templates/dashboard_board.html")
 s = p.read_text(encoding="utf-8")
 
+# Jinja resolves dict attributes before mapping keys for names such as `items`.
+# `board.items` therefore becomes dict.items (a method) rather than the board's
+# widget list. Always use an explicit mapping lookup for this key.
+s = s.replace(
+    '{% for item in board.items %}',
+    "{% for item in board['items'] %}",
+)
+
 s = s.replace(
     '<div class="resource-gauge" style="--pct:{{ [metrics.cpu,100]|min }}">',
     '<div class="resource-gauge" style="--angle:{{ ([metrics.cpu,100]|min) * 3.6 }}deg">',
@@ -55,6 +63,15 @@ else:
 PY
 
 python3 -m py_compile app/dashboard_boards.py app/music.py app/main.py
+
+# Guard against the exact Jinja dict.items regression that caused Dashboard v2
+# to return HTTP 500.
+if grep -Fq '{% for item in board.items %}' app/templates/dashboard_board.html; then
+  echo "ERROR: unsafe board.items Jinja access remains" >&2
+  exit 1
+fi
+
+grep -Fq "{% for item in board['items'] %}" app/templates/dashboard_board.html
 
 if git diff --quiet -- app/templates/dashboard_board.html; then
   echo "Dashboard v2 template finalizer is already applied."
