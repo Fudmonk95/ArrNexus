@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Dashboard Boards · ArrNexus{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/dashboard_boards.css?v={{ version }}">{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Dashboard boards</h1><p>Build native ArrNexus boards, service launchers and media widgets without needing Homarr.</p></div>
+  <div class="inline-actions"><a class="button" href="/">Back to Dashboard</a></div>
+</div>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>Public service links</h2><span class="muted">One domain can generate Sonarr, Radarr, Jellyfin and other tunnel links automatically.</span></div></div>
+  <form method="post" action="/dashboard/boards/settings" class="stack">
+    <label>Base public domain
+      <input name="public_domain" value="{{ public_domain }}" placeholder="cyberscott.co.uk">
+      <span class="field-help">Example: cyberscott.co.uk generates https://sonarr.cyberscott.co.uk, https://radarr.cyberscott.co.uk, https://jellyfin.cyberscott.co.uk and https://arrnexus.cyberscott.co.uk. Individual overrides below always win.</span>
+    </label>
+    <div class="service-link-editor">
+      {% for service in service_links %}
+      <label>{{ service.name }} public URL
+        <input name="url_{{ service.key }}" value="{{ service.url if service.url and public_domain not in service.url else '' }}" placeholder="{{ service.url or ('https://' ~ service.key ~ '.example.com') }}">
+      </label>
+      {% endfor %}
+    </div>
+    <button class="primary" type="submit">Save public links</button>
+  </form>
+  {% if spotify_public_url %}<div class="spotify-domain-hint"><strong>Spotify callback base:</strong> {{ spotify_public_url }}<span class="muted"> · Spotify will use {{ spotify_public_url }}/music/spotify/callback</span></div>{% endif %}
+</section>
+
+<div class="grid two dashboard-manager-grid">
+<section class="panel">
+  <div class="panel-head"><div><h2>Boards</h2><span class="muted">Overview stays as the original ArrNexus dashboard.</span></div></div>
+  <div class="board-manager-list">
+  {% for board in boards %}
+    <div class="board-manager-row">
+      <div><strong>{{ board.name }}</strong><div class="muted small">{{ board.description or board.id }}</div></div>
+      <div class="inline-actions">
+        <a class="button" href="/{% if board.id != 'overview' %}?board={{ board.id }}{% endif %}">Open</a>
+        {% if board.id != home_board %}<form method="post" action="/dashboard/boards/home"><input type="hidden" name="board_id" value="{{ board.id }}"><button type="submit">Set home</button></form>{% else %}<span class="pill good">Home</span>{% endif %}
+        {% if not board.builtin %}<form method="post" action="/dashboard/boards/delete" onsubmit="return confirm('Delete this ArrNexus board?')"><input type="hidden" name="board_id" value="{{ board.id }}"><button type="submit" class="danger">Delete</button></form>{% endif %}
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>Create / update board</h2><span class="muted">Pick the native widgets you want. More Homarr-style widgets can be added to this catalogue over time.</span></div></div>
+  <form method="post" action="/dashboard/boards/save" class="stack">
+    <div class="form-grid"><label>Board ID<input name="board_id" placeholder="living-room"></label><label>Name<input name="name" placeholder="Living Room"></label></div>
+    <label>Description<input name="description" placeholder="TV-friendly media overview"></label>
+    <div class="widget-picker">
+      {% for widget in widgets %}
+      <label class="widget-choice"><input type="checkbox" name="widgets" value="{{ widget.key }}" checked><span><strong>{{ widget.name }}</strong><small>{{ widget.description }}</small></span></label>
+      {% endfor %}
+    </div>
+    <button class="primary" type="submit">Save board</button>
+  </form>
+</section>
+</div>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>Native integrations</h2><span class="muted">ArrNexus uses its existing service API connections for widgets and separate public URLs for launching each app.</span></div><a href="/arr-services">Configure API connections</a></div>
+  <div class="integration-grid">
+    {% for service in service_links %}
+    <div class="integration-card"><strong>{{ service.name }}</strong><span class="muted">{{ service.url or 'Public link not configured' }}</span>{% if service.url %}<a href="{{ service.url }}" target="_blank" rel="noopener">Open service ↗</a>{% endif %}</div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}
