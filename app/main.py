@@ -8,7 +8,7 @@ import secrets
 import httpx
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse, FileResponse, Response
@@ -1069,6 +1069,30 @@ async def spotify_connect(request: Request):
     if not redirect_ok:
         _flash(request, f"Spotify cannot be linked yet. {redirect_message} Redirect URI: {redirect_uri or 'not configured'}", "error")
         return _go("/music/settings")
+
+    # OAuth state is deliberately tied to the browser session that starts the
+    # flow. Starting from a LAN/test hostname and returning through the public
+    # Cloudflare hostname creates a different browser cookie/session and makes
+    # the state check fail. Refuse that unsafe/ambiguous flow up front and tell
+    # the user which hostname to open instead.
+    redirect_host = (urlparse(redirect_uri).hostname or "").lower()
+    forwarded_host = str(request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
+    current_netloc = forwarded_host or request.url.netloc
+    try:
+        current_host = (urlparse("//" + current_netloc).hostname or "").lower()
+    except Exception:
+        current_host = (request.url.hostname or "").lower()
+    if redirect_host and current_host and redirect_host != current_host:
+        public_base = redirect_uri.removesuffix("/music/spotify/callback")
+        _flash(
+            request,
+            f"Open ArrNexus at {public_base} and press Link Spotify there. "
+            f"This browser session is on {current_netloc}, but Spotify returns to {redirect_host}; "
+            "using two different ArrNexus origins would fail the OAuth state check.",
+            "error",
+        )
+        return _go("/music/settings")
+
     state = secrets.token_urlsafe(24)
     request.session["spotify_state"] = state
     request.session["spotify_redirect_uri"] = redirect_uri
@@ -1085,7 +1109,17 @@ async def spotify_callback(request: Request, code: str = "", state: str = "", er
     expected_state = request.session.pop("spotify_state", None)
     redirect_uri = request.session.pop("spotify_redirect_uri", "")
     if error or not code or state != expected_state:
-        _flash(request, error or "Spotify authorization state did not match.", "error")
+        if error:
+            message = error
+        elif state != expected_state:
+            message = (
+                "Spotify authorization state did not match. Start Link Spotify from the same HTTPS "
+                "ArrNexus hostname used by the callback; do not begin OAuth from a LAN IP/test origin "
+                "and return through a different ArrNexus instance."
+            )
+        else:
+            message = "Spotify authorization did not return an authorization code."
+        _flash(request, message, "error")
         return _go("/music")
     try:
         if not redirect_uri:
