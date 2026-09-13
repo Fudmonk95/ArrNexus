@@ -9,6 +9,7 @@ TEST_BIND="${TEST_BIND:-127.0.0.1}"
 TEST_ROOT="${TEST_ROOT:-/opt/arrnexus-mediastack-test}"
 LIVE_DATA="${LIVE_DATA:-/mnt/appdata/arrnexus/data}"
 AGENT_NAME="${AGENT_NAME:-arrnexus-stack-agent}"
+CONTROL_ENV="${MEDIASTACK_CONTROL_ENV:-/opt/arrnexus-mediastack/state/control.env}"
 EXPECTED_BRANCH="feature/mediastack-v1-control-plane"
 
 for cmd in docker python3 curl; do
@@ -18,6 +19,15 @@ done
 [[ -d "$REPO_DIR/.git" ]] || { echo "ArrNexus feature checkout not found at $REPO_DIR" >&2; exit 2; }
 docker inspect arrnexus >/dev/null 2>&1 || { echo "Production ArrNexus container was not found. Refusing test launch." >&2; exit 3; }
 docker inspect "$AGENT_NAME" >/dev/null 2>&1 || { echo "MediaStack agent $AGENT_NAME is not running. Start monitor mode first." >&2; exit 4; }
+
+# If the deliberately-created control env exists, consume it so the disposable
+# UI can authenticate to the Stack Agent without printing or copying the token
+# into the repository. In normal monitor mode this file does not exist.
+if [[ -f "$CONTROL_ENV" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONTROL_ENV"
+fi
+MEDIASTACK_AGENT_TOKEN="${MEDIASTACK_AGENT_TOKEN:-}"
 
 if docker inspect "$TEST_NAME" >/dev/null 2>&1; then
   echo "Removing previous disposable test container $TEST_NAME..."
@@ -59,16 +69,23 @@ echo "Building $TEST_IMAGE from $BRANCH..."
 docker build -t "$TEST_IMAGE" .
 
 echo "Starting isolated ArrNexus control-plane UI test on ${TEST_BIND}:${TEST_PORT}..."
-docker run -d \
-  --name "$TEST_NAME" \
-  --restart no \
-  -p "${TEST_BIND}:${TEST_PORT}:8000" \
-  -e TZ=Europe/London \
-  -e DB_PATH=/data/router.db \
-  -e ARRNEXUS_HTTPS_ONLY=false \
-  -e MEDIASTACK_GUIDED_SETUP=false \
-  -e MEDIASTACK_AGENT_URL="http://${AGENT_NAME}:8787" \
-  -v "$TEST_ROOT/data:/data" \
+RUN_ARGS=(
+  -d
+  --name "$TEST_NAME"
+  --restart no
+  -p "${TEST_BIND}:${TEST_PORT}:8000"
+  -e TZ=Europe/London
+  -e DB_PATH=/data/router.db
+  -e ARRNEXUS_HTTPS_ONLY=false
+  -e MEDIASTACK_GUIDED_SETUP=false
+  -e MEDIASTACK_AGENT_URL="http://${AGENT_NAME}:8787"
+  -v "$TEST_ROOT/data:/data"
+)
+if [[ -n "$MEDIASTACK_AGENT_TOKEN" ]]; then
+  RUN_ARGS+=( -e MEDIASTACK_AGENT_TOKEN="$MEDIASTACK_AGENT_TOKEN" )
+fi
+
+docker run "${RUN_ARGS[@]}" \
   "$TEST_IMAGE" \
   uvicorn app.main:app --host 0.0.0.0 --port 8000 --lifespan off >/dev/null
 
@@ -123,7 +140,11 @@ echo
 echo "MediaStack v1 UI test is ready."
 echo "Production ArrNexus was not stopped or recreated."
 echo "Background ArrNexus workers and automatic updates are disabled in this test container (--lifespan off)."
-echo "The Stack Agent should still report write_enabled=false for this first control-plane UI validation."
+if [[ -n "$MEDIASTACK_AGENT_TOKEN" ]]; then
+  echo "The UI test has the Stack Agent control credential, but agent-side allowlisting still limits permitted services."
+else
+  echo "The Stack Agent control credential is not present; the UI remains read-only."
+fi
 if [[ "$TEST_BIND" == "127.0.0.1" ]]; then
   echo "Open through an SSH tunnel or locally: http://127.0.0.1:${TEST_PORT}/mediastack"
 else
