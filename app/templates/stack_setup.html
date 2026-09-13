@@ -27,16 +27,8 @@
     <section class="panel setup-step" data-step="0">
       <div class="panel-head"><div><h2>How should ArrNexus manage this server?</h2><span class="muted">For this server, adoption is the safe choice: keep the working configs and progressively bring containers under ArrNexus control.</span></div></div>
       <div class="choice-grid">
-        <label class="choice-card">
-          <input type="radio" name="mode" value="adopt" {% if setup.state.mode == 'adopt' %}checked{% endif %}>
-          <strong>Adopt existing server</strong>
-          <span>Discover the containers already running, retain their current config paths and mounts, and let ArrNexus take over lifecycle/update management progressively.</span>
-        </label>
-        <label class="choice-card">
-          <input type="radio" name="mode" value="fresh" {% if setup.state.mode == 'fresh' %}checked{% endif %}>
-          <strong>Fresh install</strong>
-          <span>Create a new MediaStack layout from the service catalogue. This is intended for a new server or a future clean rebuild, not an in-place production cutover.</span>
-        </label>
+        <label class="choice-card"><input type="radio" name="mode" value="adopt" {% if setup.state.mode == 'adopt' %}checked{% endif %}><strong>Adopt existing server</strong><span>Discover the containers already running, retain their current config paths and mounts, and let ArrNexus take over lifecycle/update management progressively.</span></label>
+        <label class="choice-card"><input type="radio" name="mode" value="fresh" {% if setup.state.mode == 'fresh' %}checked{% endif %}><strong>Fresh install</strong><span>Create a new MediaStack layout from the service catalogue. This is intended for a new server or a future clean rebuild, not an in-place production cutover.</span></label>
       </div>
       <div class="setup-callout warn" style="margin-top:14px"><strong>No big-bang migration.</strong> Running Docker containers cannot be moved into a different Compose project without recreation. Adoption records the existing live state first; each service can then cross the ArrNexus ownership boundary one at a time with rollback.</div>
       <div class="setup-footer"><span></span><div class="right"><button type="button" class="primary" data-next>Continue</button></div></div>
@@ -46,26 +38,14 @@
       <div class="panel-head"><div><h2>Choose services</h2><span class="muted">Dependencies are added automatically. ArrNexus and the Stack Agent are always present.</span></div></div>
       <div class="service-selector-groups">
         {% for group_name, items in setup.groups.items() %}
-        <div class="service-selector-group">
-          <h3>{{ group_name }}</h3>
-          <div class="service-selector-grid">
-            {% for item in items %}
-            <label class="service-option">
-              <input type="checkbox" name="services" value="{{ item.key }}" {% if item.key in setup.state.selected_services %}checked{% endif %} {% if item.required %}data-required="1"{% endif %}>
-              <span>
-                <strong>{{ item.name }}</strong>
-                <small>{{ item.description }}</small>
-                <span class="service-meta">
-                  {% if item.required %}<span class="pill good">Core</span>{% endif %}
-                  {% if item.port %}<span class="tag">Port {{ item.port }}</span>{% endif %}
-                  {% if item.dependencies %}<span class="tag">Needs {{ item.dependencies|join(', ') }}</span>{% endif %}
-                  <span class="tag">{{ item.update_policy }} updates</span>
-                </span>
-              </span>
-            </label>
-            {% endfor %}
-          </div>
-        </div>
+        <div class="service-selector-group"><h3>{{ group_name }}</h3><div class="service-selector-grid">
+          {% for item in items %}
+          <label class="service-option">
+            <input type="checkbox" name="services" value="{{ item.key }}" {% if item.key in setup.state.selected_services %}checked{% endif %} {% if item.required %}data-required="1"{% endif %}>
+            <span><strong>{{ item.name }}</strong><small>{{ item.description }}</small><span class="service-meta">{% if item.required %}<span class="pill good">Core</span>{% endif %}{% if item.port %}<span class="tag">Port {{ item.port }}</span>{% endif %}{% if item.dependencies %}<span class="tag">Needs {{ item.dependencies|join(', ') }}</span>{% endif %}<span class="tag">{{ item.update_policy }} updates</span></span></span>
+          </label>
+          {% endfor %}
+        </div></div>
         {% endfor %}
       </div>
       <p class="dependency-note">The catalogue is deliberately based on this server. Removed legacy ArrNexus paths such as InfiniDysk, Decypharr, NZB-DAV, Plex, Emby and AIOStreams are not being reintroduced.</p>
@@ -83,7 +63,13 @@
         <label>PGID<input type="number" min="1" max="65535" name="pgid" value="{{ setup.state.pgid }}"></label>
         <label>Jellyfin hardware acceleration<select name="jellyfin_gpu"><option value="auto" {% if setup.state.jellyfin_gpu == 'auto' %}selected{% endif %}>Auto-detect /dev/dri</option><option value="enabled" {% if setup.state.jellyfin_gpu == 'enabled' %}selected{% endif %}>Require GPU</option><option value="disabled" {% if setup.state.jellyfin_gpu == 'disabled' %}selected{% endif %}>CPU only</option></select></label>
       </div>
-      <div class="setup-callout" style="margin-top:14px">Current-server adoption keeps Jellyfin's proven UID/GID/device access and Zurg mount propagation. Fresh install preflight will refuse to apply a plan if required FUSE, mount propagation, ports or GPU requirements do not pass.</div>
+      <div class="setup-callout" style="margin-top:14px">Current-server adoption keeps Jellyfin's proven UID/GID/device access and Zurg mount propagation. Fresh install preflight refuses to apply a plan if blocking Docker, mount or port checks fail.</div>
+      <div class="preflight-head"><h3>Preflight</h3><span class="preflight-summary" id="preflight-summary">{{ setup.preflight.blocking }} blocking · {{ setup.preflight.warnings }} warning(s)</span></div>
+      <div class="preflight-list" id="preflight-list">
+        {% for check in setup.preflight.checks %}
+        <div class="preflight-row"><span class="dot {{ check.level }}"></span><strong>{{ check.label }}</strong><span>{{ check.detail }}</span></div>
+        {% endfor %}
+      </div>
       <div class="setup-footer"><button type="button" class="secondary" data-prev>Back</button><div class="right"><button type="button" class="primary" data-next>Continue</button></div></div>
     </section>
 
@@ -117,14 +103,9 @@
         <div class="setup-summary"><span>Would install</span><strong id="review-install">{{ setup.plan.to_install }}</strong></div>
         <div class="setup-summary"><span>Update mode</span><strong id="review-update-mode">{{ setup.plan.update_mode|title }}</strong></div>
       </div>
-      <div class="plan-list" id="review-plan-list">
-        {% for row in setup.plan.services %}<div class="plan-row"><strong>{{ row.name }}</strong><span class="pill {{ 'good' if row.present else 'warn' }}">{{ 'Adopt' if row.present else 'Install' }}</span><span class="mono">{{ row.image }}</span><span class="muted">{{ row.state }}</span></div>{% endfor %}
-      </div>
-      <div id="review-unselected-wrap" {% if not setup.plan.unselected_live_services %}hidden{% endif %}>
-        <h3>Running but not selected</h3>
-        <div class="plan-list" id="review-unselected-list">{% for row in setup.plan.unselected_live_services %}<div class="plan-row"><strong>{{ row.name }}</strong><span class="pill warn">Leave unmanaged</span><span class="mono">{{ row.image }}</span><span class="muted">{{ row.state }}</span></div>{% endfor %}</div>
-      </div>
-      <div class="setup-callout" style="margin-top:14px"><strong>Apply behaviour:</strong> existing services are adopted in place first. ArrNexus keeps their persistent data paths. They only receive new management labels when a controlled recreate/update is successfully performed. Fresh-install services are saved as desired state for the install executor.</div>
+      <div class="plan-list" id="review-plan-list">{% for row in setup.plan.services %}<div class="plan-row"><strong>{{ row.name }}</strong><span class="pill {{ 'good' if row.present else 'warn' }}">{{ 'Adopt' if row.present else 'Install' }}</span><span class="mono">{{ row.image }}</span><span class="muted">{{ row.state }}</span></div>{% endfor %}</div>
+      <div id="review-unselected-wrap" {% if not setup.plan.unselected_live_services %}hidden{% endif %}><h3>Running but not selected</h3><div class="plan-list" id="review-unselected-list">{% for row in setup.plan.unselected_live_services %}<div class="plan-row"><strong>{{ row.name }}</strong><span class="pill warn">Leave unmanaged</span><span class="mono">{{ row.image }}</span><span class="muted">{{ row.state }}</span></div>{% endfor %}</div></div>
+      <div class="setup-callout" style="margin-top:14px"><strong>Apply behaviour:</strong> existing services are adopted in place first. ArrNexus keeps their persistent data paths. They only receive new management labels when a controlled recreate/update succeeds. Fresh-install services are saved as desired state for the install executor.</div>
       {% if not stack.write_enabled %}<div class="setup-callout warn" style="margin-top:10px"><strong>Control channel locked:</strong> this UI can save the complete plan now, but Docker changes remain blocked until the authenticated Stack Agent write channel is explicitly enabled.</div>{% endif %}
       <div class="setup-footer"><button type="button" class="secondary" data-prev>Back</button><div class="right"><button type="submit" name="action" value="save" class="secondary">Save plan</button><button type="submit" name="action" value="complete" class="primary">Save & adopt selected services</button></div></div>
     </section>
@@ -140,8 +121,9 @@
   const selectedServices=()=>[...form.querySelectorAll('input[name="services"]:checked')].map(el=>el.value);
   const syncPolicies=()=>{const selected=new Set(selectedServices());document.querySelectorAll('[data-policy-service]').forEach(el=>el.hidden=!selected.has(el.dataset.policyService));};
   const payload=()=>{const data=new FormData(form);return {mode:data.get('mode')||'adopt',selected_services:selectedServices(),stack_root:data.get('stack_root')||'',zurg_mount_root:data.get('zurg_mount_root')||'',config_strategy:data.get('config_strategy')||'keep-existing',tz:data.get('tz')||'Europe/London',puid:data.get('puid')||'1000',pgid:data.get('pgid')||'1000',jellyfin_gpu:data.get('jellyfin_gpu')||'auto',update_mode:data.get('update_mode')||'review',update_time:data.get('update_time')||'04:00',rollback:data.has('rollback'),stabilization_seconds:data.get('stabilization_seconds')||'30'};};
-  async function preview(){const caption=document.getElementById('review-caption');caption.textContent='Calculating current plan…';try{const res=await fetch('/api/stack-setup/preview',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload())});const data=await res.json();if(!res.ok)throw new Error(data.detail||`HTTP ${res.status}`);const plan=data.plan||{};document.getElementById('review-selected').textContent=plan.selected_count??0;document.getElementById('review-present').textContent=plan.already_present??0;document.getElementById('review-install').textContent=plan.to_install??0;document.getElementById('review-update-mode').textContent=String(plan.update_mode||'review').replace(/^./,c=>c.toUpperCase());document.getElementById('review-plan-list').innerHTML=(plan.services||[]).map(row=>`<div class="plan-row"><strong>${esc(row.name)}</strong><span class="pill ${row.present?'good':'warn'}">${row.present?'Adopt':'Install'}</span><span class="mono">${esc(row.image)}</span><span class="muted">${esc(row.state)}</span></div>`).join('')||'<p class="empty">No services selected.</p>';const unmanaged=plan.unselected_live_services||[];document.getElementById('review-unselected-wrap').hidden=!unmanaged.length;document.getElementById('review-unselected-list').innerHTML=unmanaged.map(row=>`<div class="plan-row"><strong>${esc(row.name)}</strong><span class="pill warn">Leave unmanaged</span><span class="mono">${esc(row.image)}</span><span class="muted">${esc(row.state)}</span></div>`).join('');caption.textContent='Live preview from your selections and current Docker state.';}catch(err){caption.textContent=`Could not refresh preview: ${err.message}`;}}
-  const show=n=>{current=Math.max(0,Math.min(steps.length-1,n));steps.forEach((el,i)=>el.hidden=i!==current);tabs.forEach((el,i)=>el.classList.toggle('active',i===current));if(current===3)syncPolicies();if(current===4)preview();window.scrollTo({top:0,behavior:'smooth'});};
+  const renderPreflight=p=>{if(!p)return;const summary=document.getElementById('preflight-summary'),list=document.getElementById('preflight-list');if(summary)summary.textContent=`${p.blocking||0} blocking · ${p.warnings||0} warning(s)`;if(list)list.innerHTML=(p.checks||[]).map(c=>`<div class="preflight-row"><span class="dot ${esc(c.level||'warn')}"></span><strong>${esc(c.label)}</strong><span>${esc(c.detail)}</span></div>`).join('')||'<p class="empty">No preflight checks available.</p>';};
+  async function preview(updateReview=true){const caption=document.getElementById('review-caption');if(updateReview&&caption)caption.textContent='Calculating current plan…';try{const res=await fetch('/api/stack-setup/preview',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload())});const data=await res.json();if(!res.ok)throw new Error(data.detail||`HTTP ${res.status}`);renderPreflight(data.preflight);if(!updateReview)return;const plan=data.plan||{};document.getElementById('review-selected').textContent=plan.selected_count??0;document.getElementById('review-present').textContent=plan.already_present??0;document.getElementById('review-install').textContent=plan.to_install??0;document.getElementById('review-update-mode').textContent=String(plan.update_mode||'review').replace(/^./,c=>c.toUpperCase());document.getElementById('review-plan-list').innerHTML=(plan.services||[]).map(row=>`<div class="plan-row"><strong>${esc(row.name)}</strong><span class="pill ${row.present?'good':'warn'}">${row.present?'Adopt':'Install'}</span><span class="mono">${esc(row.image)}</span><span class="muted">${esc(row.state)}</span></div>`).join('')||'<p class="empty">No services selected.</p>';const unmanaged=plan.unselected_live_services||[];document.getElementById('review-unselected-wrap').hidden=!unmanaged.length;document.getElementById('review-unselected-list').innerHTML=unmanaged.map(row=>`<div class="plan-row"><strong>${esc(row.name)}</strong><span class="pill warn">Leave unmanaged</span><span class="mono">${esc(row.image)}</span><span class="muted">${esc(row.state)}</span></div>`).join('');if(caption)caption.textContent='Live preview from your selections and current Docker state.';}catch(err){if(caption&&updateReview)caption.textContent=`Could not refresh preview: ${err.message}`;}}
+  const show=n=>{current=Math.max(0,Math.min(steps.length-1,n));steps.forEach((el,i)=>el.hidden=i!==current);tabs.forEach((el,i)=>el.classList.toggle('active',i===current));if(current===2)preview(false);if(current===3)syncPolicies();if(current===4)preview(true);window.scrollTo({top:0,behavior:'smooth'});};
   document.querySelectorAll('[data-next]').forEach(b=>b.addEventListener('click',()=>show(current+1)));document.querySelectorAll('[data-prev]').forEach(b=>b.addEventListener('click',()=>show(current-1)));tabs.forEach((t,i)=>t.addEventListener('click',()=>show(i)));
   document.querySelectorAll('input[name="services"]').forEach(el=>el.addEventListener('change',syncPolicies));document.querySelectorAll('input[data-required="1"]').forEach(el=>{el.checked=true;el.addEventListener('click',e=>{e.preventDefault();el.checked=true;});});
   syncPolicies();show(0);
