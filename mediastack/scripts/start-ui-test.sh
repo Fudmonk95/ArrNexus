@@ -32,6 +32,13 @@ if ! docker inspect "$AGENT_NAME" >/dev/null 2>&1; then
   exit 4
 fi
 
+# A rerun should replace only the disposable UI-test container. Production is
+# never touched here.
+if docker inspect "$TEST_NAME" >/dev/null 2>&1; then
+  echo "Removing previous test container $TEST_NAME..."
+  docker rm -f "$TEST_NAME" >/dev/null
+fi
+
 if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${TEST_PORT}$"; then
   echo "Port $TEST_PORT is already in use; choose another with TEST_PORT=<port>." >&2
   exit 5
@@ -61,8 +68,10 @@ if [[ ! -f "$LIVE_DB" ]]; then
   exit 8
 fi
 
-# Use SQLite's online backup API so the production database can stay live.
+# Use SQLite's online backup API so production can stay live. Remove only the
+# previous disposable snapshot; never modify the live database.
 echo "Creating consistent read snapshot of ArrNexus database..."
+rm -f "$TEST_DB"
 python3 - "$LIVE_DB" "$TEST_DB" <<'PY'
 import sqlite3, sys
 src_path, dst_path = sys.argv[1], sys.argv[2]
@@ -75,20 +84,14 @@ src.close()
 PY
 chmod 600 "$TEST_DB"
 
-SESSION_SECRET="$(docker inspect arrnexus --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^ARRNEXUS_SESSION_SECRET=//p' | head -n1)"
-if [[ -z "$SESSION_SECRET" ]]; then
-  echo "Could not recover the current ArrNexus session secret; refusing to launch an ambiguous test login." >&2
-  exit 9
-fi
+# Deliberately DO NOT reuse the production session secret. The copied database
+# contains the same user/password records, so normal login still works, while a
+# separate secret keeps browser sessions for the test isolated from production.
+echo "Using an isolated test session secret (production sessions are not shared)."
 
 # The test image contains the feature branch, including MediaStack UI.
 echo "Building $TEST_IMAGE from $BRANCH..."
 docker build -t "$TEST_IMAGE" .
-
-if docker inspect "$TEST_NAME" >/dev/null 2>&1; then
-  echo "Removing previous test container $TEST_NAME..."
-  docker rm -f "$TEST_NAME" >/dev/null
-fi
 
 # Do not run ArrNexus lifespan/background automation in the test copy.
 # Uvicorn's --lifespan off means no request tracker, queue janitor, Magic Intake,
@@ -99,7 +102,6 @@ docker run -d \
   --restart no \
   -p "${TEST_BIND}:${TEST_PORT}:8000" \
   -e DB_PATH=/data/router.db \
-  -e ARRNEXUS_SESSION_SECRET="$SESSION_SECRET" \
   -e ARRNEXUS_HTTPS_ONLY=false \
   -e MEDIASTACK_AGENT_URL="http://${AGENT_NAME}:8787" \
   -v "$TEST_ROOT/data:/data" \
@@ -107,27 +109,42 @@ docker run -d \
   uvicorn app.main:app --host 0.0.0.0 --port 8000 --lifespan off >/dev/null
 
 mapfile -t AGENT_NETWORKS < <(docker inspect "$AGENT_NAME" --format '{{range $name, $cfg := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' | sed '/^$/d' | sort -u)
+ATTACHED=0
 for network in "${AGENT_NETWORKS[@]}"; do
   case "$network" in
     host|none|bridge) continue ;;
   esac
-  docker network connect "$network" "$TEST_NAME" 2>/dev/null || true
+  if docker network connect "$network" "$TEST_NAME" 2>/dev/null; then
+    ATTACHED=1
+  elif docker inspect "$TEST_NAME" --format '{{json .NetworkSettings.Networks}}' | grep -Fq '"'"$network"'"'; then
+    ATTACHED=1
+  fi
 done
 
-if [[ ${#AGENT_NETWORKS[@]} -eq 0 ]]; then
-  echo "No Stack Agent network found; stopping test container." >&2
+if [[ "$ATTACHED" -ne 1 ]]; then
+  echo "No shared user-defined Stack Agent network could be attached; stopping test container." >&2
   docker rm -f "$TEST_NAME" >/dev/null
   exit 10
 fi
 
+# Check health from inside the test container so the validation works whether
+# the host bind is localhost, a specific LAN address, or 0.0.0.0.
 for _ in $(seq 1 30); do
-  if curl -fsS "http://127.0.0.1:${TEST_PORT}/api/health" >/dev/null 2>&1; then
+  if docker exec "$TEST_NAME" python - <<'PY' >/dev/null 2>&1
+import urllib.request
+urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).read()
+PY
+  then
     break
   fi
   sleep 1
 done
 
-if ! curl -fsS "http://127.0.0.1:${TEST_PORT}/api/health" >/dev/null; then
+if ! docker exec "$TEST_NAME" python - <<'PY' >/dev/null 2>&1
+import urllib.request
+urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).read()
+PY
+then
   echo "Test ArrNexus did not become healthy. Recent logs:" >&2
   docker logs --tail 100 "$TEST_NAME" >&2 || true
   exit 11
@@ -152,8 +169,9 @@ echo
 echo "MediaStack UI test is ready."
 echo "Production ArrNexus was not stopped or recreated."
 echo "Background ArrNexus workers are disabled in this test container."
+echo "The test uses the same copied user accounts but an isolated session cookie secret."
 if [[ "$TEST_BIND" == "127.0.0.1" ]]; then
   echo "Open through an SSH tunnel or locally: http://127.0.0.1:${TEST_PORT}/mediastack"
 else
-  echo "Open in a browser using this server's address: http://<server-ip>:${TEST_PORT}/mediastack"
+  echo "Open in a browser: http://${TEST_BIND}:${TEST_PORT}/mediastack"
 fi
