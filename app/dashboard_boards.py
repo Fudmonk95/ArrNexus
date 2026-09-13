@@ -163,9 +163,24 @@ def _sanitize_options(options: Any) -> dict[str, Any]:
         if isinstance(value, (bool, int, float)):
             out[skey] = value
         elif isinstance(value, str):
-            out[skey] = value[:4000]
+            cleaned = value[:4000].strip()
+            if skey == "url" and cleaned:
+                parsed = urlparse(cleaned)
+                if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                    continue
+            out[skey] = cleaned
         elif isinstance(value, list):
-            out[skey] = [str(x)[:300] for x in value[:50]]
+            if skey == "links":
+                safe_links = []
+                for raw in value[:50]:
+                    entry = str(raw)[:300].strip()
+                    target = entry.split("|", 1)[-1].strip()
+                    parsed = urlparse(target)
+                    if parsed.scheme in {"http", "https"} and parsed.netloc:
+                        safe_links.append(entry)
+                out[skey] = safe_links
+            else:
+                out[skey] = [str(x)[:300] for x in value[:50]]
     return out
 
 
@@ -244,7 +259,17 @@ def boards() -> list[dict[str, Any]]:
                         items.append(normalized)
         # Transparent migration from the first simple Media Hub implementation.
         if not items:
-            legacy = [str(x) for x in (row.get("widgets") or []) if str(x) in WIDGETS]
+            legacy_raw = [str(x) for x in (row.get("widgets") or [])]
+            legacy = []
+            for kind in legacy_raw:
+                if kind == "service-grid":
+                    kind = "app-launcher"
+                if kind in WIDGETS and kind not in legacy:
+                    legacy.append(kind)
+            if bid == "media-hub":
+                for kind in DEFAULT_MEDIA_KINDS:
+                    if kind not in legacy:
+                        legacy.append(kind)
             items = [_default_item(kind, i) for i, kind in enumerate(legacy)]
         items.sort(key=lambda x: int(x.get("order") or 0))
         widgets = list(dict.fromkeys(str(x.get("kind")) for x in items))
@@ -603,7 +628,9 @@ async def download_queue(limit: int = 15) -> list[dict[str, Any]]:
                 size = float(item.get("size") or 0)
                 left = float(item.get("sizeleft") or item.get("sizeLeft") or 0)
                 progress = round(max(0.0, min(100.0, ((size - left) / size) * 100.0)), 1) if size else 0.0
-                title = item.get("title") or item.get("movie", {}).get("title") or item.get("series", {}).get("title") or "Download"
+                movie = item.get("movie") or {}
+                series = item.get("series") or {}
+                title = item.get("title") or movie.get("title") or series.get("title") or "Download"
                 rows.append({
                     "service": label,
                     "title": title,
