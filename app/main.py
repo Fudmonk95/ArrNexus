@@ -31,6 +31,7 @@ from . import pipeline
 from . import orchestrator
 from . import queue_janitor
 from . import magic_intake
+from . import mediastack
 from . import zurg
 from . import services
 
@@ -56,6 +57,8 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(queue_janitor.scan_loop(), name="queue-janitor"),
         asyncio.create_task(magic_intake.scan_loop(), name="magic-intake"),
         asyncio.create_task(magic_intake.verification_loop(), name="magic-intake-verifier"),
+        asyncio.create_task(mediastack.status_loop(), name="mediastack-status"),
+        asyncio.create_task(mediastack.metadata_loop(), name="mediastack-metadata"),
         asyncio.create_task(media_lists.scheduler_loop(), name="media-list-scheduler"),
         asyncio.create_task(media_automation.scheduler_loop(), name="media-automation-scheduler"),
     ]
@@ -975,6 +978,55 @@ async def automation_import(request: Request, library_name: str = Form(""), yaml
     except Exception as exc:
         _flash(request, str(exc), "error")
     return _go("/automation")
+
+
+@app.get("/mediastack", response_class=HTMLResponse)
+async def mediastack_page(request: Request):
+    return _render(request, "mediastack.html", stack=mediastack.cached_snapshot())
+
+
+@app.get("/api/mediastack")
+async def mediastack_api(request: Request):
+    _require_user(request)
+    return mediastack.cached_snapshot()
+
+
+@app.post("/api/mediastack/refresh")
+async def mediastack_refresh_api(request: Request):
+    _require_user(request)
+    return await mediastack.refresh_status()
+
+
+@app.post("/api/mediastack/check-updates")
+async def mediastack_update_check_api(request: Request):
+    _require_user(request)
+    await mediastack.refresh_updates()
+    return mediastack.cached_snapshot()
+
+
+@app.post("/api/mediastack/refresh-configs")
+async def mediastack_config_refresh_api(request: Request):
+    _require_user(request)
+    await mediastack.refresh_configs()
+    return mediastack.cached_snapshot().get("configs") or {}
+
+
+@app.get("/api/mediastack/logs/{name}")
+async def mediastack_logs_api(request: Request, name: str, tail: int = 250):
+    _require_user(request)
+    try:
+        return await mediastack.logs(name, tail)
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.get("/api/mediastack/config")
+async def mediastack_config_api(request: Request, root: str, path: str):
+    _require_user(request)
+    try:
+        return await mediastack.config_file(root, path)
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
 
 
 @app.get("/logs", response_class=HTMLResponse)
