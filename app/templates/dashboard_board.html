@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}{{ board.name }} · ArrNexus{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/dashboard_boards.css?v={{ version }}">{% endblock %}
+{% block content %}
+<div class="board-shell">
+  <div class="board-topbar">
+    <div class="board-tabs">
+      {% for item in boards %}
+      <a class="board-tab {% if item.id == board.id %}active{% endif %}" href="/{% if item.id != 'overview' %}?board={{ item.id }}{% endif %}">{{ item.name }}</a>
+      {% endfor %}
+    </div>
+    <a class="button" href="/dashboard/boards">Manage boards</a>
+  </div>
+
+  <div class="page-head board-heading">
+    <div><h1>{{ board.name }}</h1><p>{{ board.description or 'Your media server at a glance.' }}</p></div>
+    {% if public_domain %}<span class="pill good">{{ public_domain }}</span>{% else %}<a class="button" href="/dashboard/boards">Configure public links</a>{% endif %}
+  </div>
+
+  <div class="native-board-grid">
+  {% for widget in board.widgets %}
+    {% if widget == 'service-grid' %}
+    <section class="panel board-widget span-2">
+      <div class="panel-head"><div><h2>Services</h2><span class="muted">Live Docker health with direct service links</span></div><a href="/mediastack">MediaStack</a></div>
+      <div class="service-launch-grid">
+      {% for service in services %}
+        {% if service.public_url %}<a class="service-launch" href="{{ service.public_url }}" target="_blank" rel="noopener">{% else %}<div class="service-launch disabled">{% endif %}
+          <div class="service-launch-head"><span class="dot {{ service.board_status }}"></span><strong>{{ service.label }}</strong><span class="grow"></span>{% if service.update_available %}<span class="pill warn">Update</span>{% endif %}</div>
+          <div class="service-launch-meta"><span>{{ service.status_text or service.state }}</span><span>{{ service.cpu_percent|default(0) }}% CPU</span><span>{{ service.memory_human|default('—') }}</span></div>
+          {% if service.public_url %}<span class="service-launch-url">{{ service.public_url }}</span>{% else %}<span class="service-launch-url">No public URL configured</span>{% endif %}
+        {% if service.public_url %}</a>{% else %}</div>{% endif %}
+      {% endfor %}
+      </div>
+    </section>
+    {% elif widget == 'active-requests' %}
+    <section class="panel board-widget span-2">
+      <div class="panel-head"><div><h2>Active requests</h2><span class="muted">Seerr → Arr → Zurg pipeline</span></div><a href="/pipeline">Open Live Requests</a></div>
+      {% if active_requests %}<div class="board-list">{% for row in active_requests %}<div class="board-list-row"><div><strong>{{ row.title }}</strong>{% if row.year %} <span class="muted">({{ row.year }})</span>{% endif %}<div class="muted small">{{ row.service or row.source or '—' }}</div></div><span class="stage stage-{{ row.stage }}">{{ row.stage_label or row.stage }}</span></div>{% endfor %}</div>{% else %}<div class="board-empty">No active requests right now.</div>{% endif %}
+    </section>
+    {% elif widget == 'jellyfin-streams' %}
+    <section class="panel board-widget">
+      <div class="panel-head"><div><h2>Jellyfin streams</h2><span class="muted">Current playback and transcoding</span></div>{% if service_links|selectattr('key','equalto','jellyfin')|list %}{% set jf = (service_links|selectattr('key','equalto','jellyfin')|list)[0] %}{% if jf.url %}<a href="{{ jf.url }}" target="_blank">Open</a>{% endif %}{% endif %}</div>
+      {% if jellyfin_sessions %}<div class="board-list">{% for session in jellyfin_sessions %}<div class="board-list-row"><div><strong>{{ session.series ~ ' · ' if session.series else '' }}{{ session.title }}</strong><div class="muted small">{{ session.user }} · {{ session.client }}</div></div><span class="pill {{ 'warn' if session.transcoding else 'good' }}">{{ 'Transcoding' if session.transcoding else ('Paused' if session.paused else 'Direct') }}</span></div>{% endfor %}</div>{% else %}<div class="board-empty">Nothing is playing right now.</div>{% endif %}
+    </section>
+    {% elif widget == 'recent-media' %}
+    <section class="panel board-widget">
+      <div class="panel-head"><div><h2>Recent media</h2><span class="muted">Recently added in Jellyfin</span></div></div>
+      {% if recent_media %}<div class="recent-grid">{% for item in recent_media %}<div class="recent-item"><strong>{{ item.series or item.title }}</strong>{% if item.series %}<span>{{ item.title }}</span>{% endif %}<span>{{ item.type }}{% if item.year %} · {{ item.year }}{% endif %}</span></div>{% endfor %}</div>{% else %}<div class="board-empty">Recent Jellyfin media is not available yet.</div>{% endif %}
+    </section>
+    {% elif widget == 'docker-stats' %}
+    <section class="panel board-widget span-2">
+      <div class="panel-head"><div><h2>Docker stats</h2><span class="muted">MediaStack container resources</span></div><a href="/mediastack">Full control plane</a></div>
+      <div class="table-wrap"><table><thead><tr><th>Service</th><th>State</th><th>CPU</th><th>RAM</th><th>Restarts</th></tr></thead><tbody>{% for service in services %}<tr><td><strong>{{ service.label }}</strong></td><td><span class="dot {{ service.board_status }}"></span> {{ service.status_text or service.state }}</td><td>{{ service.cpu_percent|default(0) }}%</td><td>{{ service.memory_human|default('—') }}</td><td>{{ service.restart_count|default(0) }}</td></tr>{% endfor %}</tbody></table></div>
+    </section>
+    {% elif widget == 'updates' %}
+    <section class="panel board-widget">
+      <div class="panel-head"><div><h2>Updates</h2><span class="muted">Image digest changes</span></div><a href="/mediastack">Manage</a></div>
+      {% if updates %}<div class="board-list">{% for service in updates %}<div class="board-list-row"><strong>{{ service.name }}</strong><span class="pill warn">Update</span></div>{% endfor %}</div>{% else %}<div class="board-empty">All checked containers are current.</div>{% endif %}
+    </section>
+    {% elif widget == 'missing-queue' %}
+    <section class="panel board-widget">
+      <div class="panel-head"><div><h2>Missing & queued</h2><span class="muted">Recovery and queue state</span></div></div>
+      <div class="mini-stat-grid"><a href="/missing-media"><span>Missing</span><strong>{{ orchestrator.summary.missing|default(0) }}</strong></a><a href="/queue-janitor"><span>Queue issues</span><strong>{{ (janitor.summary.warning|default(0)) + (janitor.summary.actionable|default(0)) }}</strong></a><a href="/missing-media"><span>Searching</span><strong>{{ orchestrator.summary.searching|default(0) }}</strong></a><a href="/queue-janitor"><span>Attention</span><strong>{{ janitor.summary.attention|default(0) }}</strong></a></div>
+    </section>
+    {% elif widget == 'zurg-health' %}
+    <section class="panel board-widget">
+      <div class="panel-head"><div><h2>Zurg</h2><span class="muted">Storage and mount state</span></div><a href="/zurg">Open</a></div>
+      <dl class="kv"><dt>Filesystem</dt><dd>{{ 'Ready' if zurg.readable else 'Unavailable' }}</dd><dt>Movies</dt><dd>{{ zurg.counts.movies|default(0) }}</dd><dt>Shows</dt><dd>{{ zurg.counts.shows|default(0) }}</dd><dt>Unplayable</dt><dd>{{ zurg.counts['__unplayable__']|default(0) }}</dd><dt>Cache</dt><dd>{{ zurg.storage.size_human if zurg.storage else '—' }}</dd></dl>
+    </section>
+    {% endif %}
+  {% endfor %}
+  </div>
+</div>
+{% endblock %}
