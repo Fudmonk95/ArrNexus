@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-MEDIA_ROOT="${MEDIA_ROOT:-/mnt/arrnexus}"
+ZURG_MOUNT_ROOT="${ZURG_MOUNT_ROOT:-/zurg_mnt}"
 STACK_ROOT="${STACK_ROOT:-/opt/arrnexus-mediastack}"
 FAIL=0
 
@@ -14,20 +14,23 @@ command -v docker >/dev/null 2>&1 && ok "Docker installed" || fail "Docker is no
 docker info >/dev/null 2>&1 && ok "Docker daemon reachable" || fail "Docker daemon is not reachable"
 docker compose version >/dev/null 2>&1 && ok "Docker Compose plugin installed" || fail "Docker Compose plugin missing"
 [[ -e /dev/fuse ]] && ok "/dev/fuse is available" || fail "/dev/fuse is missing"
+[[ -e /dev/dri/renderD128 ]] && ok "Jellyfin render device available" || warn "/dev/dri/renderD128 is not available"
 [[ -r /etc/fuse.conf ]] && ok "/etc/fuse.conf readable" || warn "/etc/fuse.conf not readable"
-if grep -Eq '^\s*user_allow_other\s*$' /etc/fuse.conf 2>/dev/null; then
-  ok "FUSE allow-other enabled"
-else
-  warn "user_allow_other is not enabled in /etc/fuse.conf"
-fi
 
-mkdir -p "$MEDIA_ROOT/zurg" 2>/dev/null || fail "Cannot create $MEDIA_ROOT/zurg"
+mkdir -p "$ZURG_MOUNT_ROOT/zurg" 2>/dev/null || fail "Cannot create $ZURG_MOUNT_ROOT/zurg"
 mkdir -p "$STACK_ROOT" 2>/dev/null || fail "Cannot create $STACK_ROOT"
 
-if findmnt -T "$MEDIA_ROOT" -o PROPAGATION -n 2>/dev/null | grep -Eq 'shared|rshared'; then
-  ok "$MEDIA_ROOT mount propagation is shared"
+PROPAGATION="$(findmnt -T "$ZURG_MOUNT_ROOT" -o PROPAGATION -n 2>/dev/null || true)"
+if [[ "$PROPAGATION" =~ shared ]]; then
+  ok "$ZURG_MOUNT_ROOT mount propagation is shared"
 else
-  warn "$MEDIA_ROOT is not currently shared; install.sh can set it rshared"
+  warn "$ZURG_MOUNT_ROOT is not currently shared at the host level; install.sh will bind it to itself and mark it rshared"
+fi
+
+if mountpoint -q "$ZURG_MOUNT_ROOT/zurg" && findmnt -T "$ZURG_MOUNT_ROOT/zurg" -t fuse.rclone >/dev/null 2>&1; then
+  ok "Existing Zurg FUSE mount detected at $ZURG_MOUNT_ROOT/zurg"
+else
+  warn "No active fuse.rclone mount detected at $ZURG_MOUNT_ROOT/zurg"
 fi
 
 if [[ -S /var/run/docker.sock ]]; then
