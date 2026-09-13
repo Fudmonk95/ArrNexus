@@ -33,11 +33,13 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config:/stack-config:ro
     ports:
-      - "${STACK_AGENT_PORT:-8787}:8787"
+      # The agent can expose logs/configs, so keep it host-local. ArrNexus talks
+      # to it over the private media network using http://stack-agent:8787.
+      - "127.0.0.1:${STACK_AGENT_PORT:-8787}:8787"
 
-  # The live server already proves this architecture: the sponsor/nightly Zurg
-  # container owns the FUSE/rclone mount under /zurg_mnt and exports it with
-  # rshared propagation. Consumers receive the same host tree as rslave.
+  # The live server already proves this architecture: Zurg owns its internal
+  # rclone/FUSE mount under /zurg_mnt and exports the host tree with rshared
+  # propagation. Consumers receive that exact same tree as rslave.
   zurg:
     <<: *common
     image: ${ZURG_IMAGE:-ghcr.io/debridmediamanager/zurg:latest}
@@ -118,10 +120,16 @@ services:
     <<: *common
     image: ${JELLYFIN_IMAGE:-ghcr.io/jellyfin/jellyfin:10.11.11}
     container_name: jellyfin
+    user: "${JELLYFIN_UID:-1001}:${JELLYFIN_GID:-1001}"
+    group_add:
+      - "${JELLYFIN_VIDEO_GID:-44}"
+      - "${JELLYFIN_RENDER_GID:-104}"
     environment:
       TZ: ${TZ:-Europe/London}
     devices:
-      - /dev/dri/renderD128:/dev/dri/renderD128
+      # Match the proven live deployment: expose the DRI directory rather than
+      # hard-coding one render node.
+      - /dev/dri:/dev/dri
     volumes:
       - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/jellyfin:/config
       - ${STACK_ROOT:-/opt/arrnexus-mediastack}/cache/jellyfin:/cache
