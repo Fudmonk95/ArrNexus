@@ -1,0 +1,49 @@
+name: arrnexus-mediastack-monitor
+
+services:
+  stack-agent:
+    build:
+      context: ./agent
+    container_name: arrnexus-stack-agent
+    restart: unless-stopped
+    environment:
+      DOCKER_SOCKET: /var/run/docker.sock
+      STACK_LABEL: arrnexus.mediastack=true
+      WATCH_CONTAINERS: >-
+        arrnexus,zurg,sonarr,radarr,lidarr,lidarr-postgres,prowlarr,seerrng,jellyfin,
+        whisparr,bazarr,neutarr,maintainerr,profilarr,profilarr-parser,homarr
+      CONFIG_ROOTS: >-
+        zurg=/config-roots/zurg;
+        arrnexus=/config-roots/arrnexus;
+        sonarr=/config-roots/sonarr;
+        radarr=/config-roots/radarr;
+        lidarr=/config-roots/lidarr;
+        prowlarr=/config-roots/prowlarr;
+        seerrng=/config-roots/seerrng;
+        jellyfin=/config-roots/jellyfin;
+        whisparr=/config-roots/whisparr;
+        bazarr=/config-roots/bazarr;
+        neutarr=/config-roots/neutarr;
+        maintainerr=/config-roots/maintainerr;
+        profilarr=/config-roots/profilarr;
+        homarr=/config-roots/homarr
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /opt/zurg:/config-roots/zurg:ro
+      - /mnt/appdata/arrnexus/data:/config-roots/arrnexus:ro
+      - /home/renegademonk/docker/sonarr/config:/config-roots/sonarr:ro
+      - /home/renegademonk/docker/radarr/config:/config-roots/radarr:ro
+      - /home/renegademonk/docker/lidarr/config:/config-roots/lidarr:ro
+      - /home/renegademonk/docker/prowlarr/config:/config-roots/prowlarr:ro
+      - /home/renegademonk/docker/seerrng/config:/config-roots/seerrng:ro
+      - /home/renegademonk/docker/jellyfin:/config-roots/jellyfin:ro
+      - /home/renegademonk/docker/whisparr/config:/config-roots/whisparr:ro
+      - /home/renegademonk/docker/bazarr/config:/config-roots/bazarr:ro
+      - /home/renegademonk/docker/neutarr/config:/config-roots/neutarr:ro
+      - /home/renegademonk/docker/maintainerr/data:/config-roots/maintainerr:ro
+      - /home/renegademonk/docker/profilarr/config:/config-roots/profilarr:ro
+      - /mnt/appdata/DUMB-metadata/homarr:/config-roots/homarr:ro
+    ports:
+      # Intentionally localhost-only. The agent can read logs/configs and should
+      # not be exposed directly to the LAN or Internet. ArrNexus will proxy it.
+      - "127.0.0.1:${STACK_AGENT_PORT:-8787}:8787"
