@@ -28,18 +28,24 @@ services:
     environment:
       DOCKER_SOCKET: /var/run/docker.sock
       CONFIG_ROOT: /stack-config
+      STATE_ROOT: /state
       STACK_LABEL: arrnexus.mediastack=true
+      WRITE_ENABLED: ${MEDIASTACK_WRITE_ENABLED:-false}
+      AGENT_TOKEN: ${MEDIASTACK_AGENT_TOKEN:-}
+      GHCR_USERNAME: ${GHCR_USERNAME:-}
+      GHCR_TOKEN: ${GHCR_TOKEN:-}
+      STABILIZATION_SECONDS: ${MEDIASTACK_STABILIZATION_SECONDS:-10}
+      HEALTH_TIMEOUT_SECONDS: ${MEDIASTACK_HEALTH_TIMEOUT_SECONDS:-120}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config:/stack-config:ro
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/state:/state
     ports:
-      # The agent can expose logs/configs, so keep it host-local. ArrNexus talks
-      # to it over the private media network using http://stack-agent:8787.
+      # Host-local only. ArrNexus talks to the agent on the private network.
       - "127.0.0.1:${STACK_AGENT_PORT:-8787}:8787"
 
-  # The live server already proves this architecture: Zurg owns its internal
-  # rclone/FUSE mount under /zurg_mnt and exports the host tree with rshared
-  # propagation. Consumers receive that exact same tree as rslave.
+  # Zurg owns the internal rclone/FUSE mount under /zurg_mnt. Consumers see
+  # that exact host tree via rslave propagation.
   zurg:
     <<: *common
     image: ${ZURG_IMAGE:-ghcr.io/debridmediamanager/zurg:latest}
@@ -83,6 +89,23 @@ services:
     ports:
       - "${RADARR_PORT:-7878}:7878"
 
+  lidarr-postgres:
+    <<: *common
+    image: ${LIDARR_POSTGRES_IMAGE:-postgres:16}
+    container_name: lidarr-postgres
+    environment:
+      POSTGRES_DB: ${LIDARR_POSTGRES_DB:-lidarr}
+      POSTGRES_USER: ${LIDARR_POSTGRES_USER:-lidarr}
+      POSTGRES_PASSWORD: ${LIDARR_POSTGRES_PASSWORD:-change-me-before-fresh-install}
+      TZ: ${TZ:-Europe/London}
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/lidarr-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LIDARR_POSTGRES_USER:-lidarr} -d ${LIDARR_POSTGRES_DB:-lidarr}"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
   lidarr:
     <<: *common
     image: ${LIDARR_IMAGE:-lscr.io/linuxserver/lidarr:latest}
@@ -93,6 +116,9 @@ services:
       - *zurg-consumer-volume
     ports:
       - "${LIDARR_PORT:-8686}:8686"
+    depends_on:
+      lidarr-postgres:
+        condition: service_healthy
 
   prowlarr:
     <<: *common
@@ -127,8 +153,6 @@ services:
     environment:
       TZ: ${TZ:-Europe/London}
     devices:
-      # Match the proven live deployment: expose the DRI directory rather than
-      # hard-coding one render node.
       - /dev/dri:/dev/dri
     volumes:
       - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/jellyfin:/config
@@ -142,6 +166,7 @@ services:
     image: ${ARRNEXUS_IMAGE:-arrnexus:v13.4.0}
     container_name: arrnexus
     environment:
+      TZ: ${TZ:-Europe/London}
       DB_PATH: /data/router.db
       ZURG_ROOT: /zurg_mnt/zurg
       ZURG_CACHE_PATH: /host/zurg-rclone-cache
@@ -155,6 +180,7 @@ services:
       JELLYFIN_URL: http://jellyfin:8096
       SEERR_URL: http://seerrng:5055
       MEDIASTACK_AGENT_URL: http://stack-agent:8787
+      MEDIASTACK_AGENT_TOKEN: ${MEDIASTACK_AGENT_TOKEN:-}
       ARRNEXUS_SESSION_SECRET: ${ARRNEXUS_SESSION_SECRET:-}
       ARRNEXUS_HTTPS_ONLY: ${ARRNEXUS_HTTPS_ONLY:-false}
     volumes:
@@ -183,8 +209,7 @@ services:
       - seerrng
       - jellyfin
 
-  # Optional services currently present on the live server. They stay isolated
-  # and can be enabled with: docker compose --profile extras up -d
+  # Optional services currently present on the live server.
   whisparr:
     <<: *common
     profiles: [extras]
