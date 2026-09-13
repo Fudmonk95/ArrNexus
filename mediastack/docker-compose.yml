@@ -1,0 +1,264 @@
+name: arrnexus-mediastack
+
+x-common: &common
+  restart: unless-stopped
+  networks: [media]
+  labels:
+    arrnexus.mediastack: "true"
+
+x-arr-env: &arr-env
+  PUID: ${PUID:-1000}
+  PGID: ${PGID:-1000}
+  TZ: ${TZ:-Europe/London}
+
+x-zurg-consumer-volume: &zurg-consumer-volume
+  type: bind
+  source: ${ZURG_MOUNT_ROOT:-/zurg_mnt}
+  target: /zurg_mnt
+  read_only: true
+  bind:
+    propagation: rslave
+
+services:
+  stack-agent:
+    <<: *common
+    build:
+      context: ./agent
+    container_name: arrnexus-stack-agent
+    environment:
+      DOCKER_SOCKET: /var/run/docker.sock
+      CONFIG_ROOT: /stack-config
+      STACK_LABEL: arrnexus.mediastack=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config:/stack-config:ro
+    ports:
+      # The agent can expose logs/configs, so keep it host-local. ArrNexus talks
+      # to it over the private media network using http://stack-agent:8787.
+      - "127.0.0.1:${STACK_AGENT_PORT:-8787}:8787"
+
+  # The live server already proves this architecture: Zurg owns its internal
+  # rclone/FUSE mount under /zurg_mnt and exports the host tree with rshared
+  # propagation. Consumers receive that exact same tree as rslave.
+  zurg:
+    <<: *common
+    image: ${ZURG_IMAGE:-ghcr.io/debridmediamanager/zurg:latest}
+    container_name: zurg
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse:/dev/fuse:rwm
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/zurg:/config
+      - ${ZURG_CACHE_DIR:-/mnt/appdata/zurg-rclone-cache}:/config/data/rclone-cache
+      - type: bind
+        source: ${ZURG_MOUNT_ROOT:-/zurg_mnt}
+        target: /zurg_mnt
+        bind:
+          propagation: rshared
+    ports:
+      - "${ZURG_PORT:-9999}:9999"
+
+  sonarr:
+    <<: *common
+    image: ${SONARR_IMAGE:-lscr.io/linuxserver/sonarr:latest}
+    container_name: sonarr
+    environment: *arr-env
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/sonarr:/config
+      - *zurg-consumer-volume
+    ports:
+      - "${SONARR_PORT:-8989}:8989"
+
+  radarr:
+    <<: *common
+    image: ${RADARR_IMAGE:-lscr.io/linuxserver/radarr:latest}
+    container_name: radarr
+    environment: *arr-env
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/radarr:/config
+      - *zurg-consumer-volume
+    ports:
+      - "${RADARR_PORT:-7878}:7878"
+
+  lidarr:
+    <<: *common
+    image: ${LIDARR_IMAGE:-lscr.io/linuxserver/lidarr:latest}
+    container_name: lidarr
+    environment: *arr-env
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/lidarr:/config
+      - *zurg-consumer-volume
+    ports:
+      - "${LIDARR_PORT:-8686}:8686"
+
+  prowlarr:
+    <<: *common
+    image: ${PROWLARR_IMAGE:-lscr.io/linuxserver/prowlarr:latest}
+    container_name: prowlarr
+    environment: *arr-env
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/prowlarr:/config
+    ports:
+      - "${PROWLARR_PORT:-9696}:9696"
+
+  seerrng:
+    <<: *common
+    image: ${SEERR_IMAGE:-snapetech/seerrng:latest}
+    container_name: seerrng
+    environment:
+      TZ: ${TZ:-Europe/London}
+      LOG_LEVEL: ${SEERR_LOG_LEVEL:-info}
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/seerrng:/app/config
+    ports:
+      - "${SEERR_PORT:-5055}:5055"
+
+  jellyfin:
+    <<: *common
+    image: ${JELLYFIN_IMAGE:-ghcr.io/jellyfin/jellyfin:10.11.11}
+    container_name: jellyfin
+    user: "${JELLYFIN_UID:-1001}:${JELLYFIN_GID:-1001}"
+    group_add:
+      - "${JELLYFIN_VIDEO_GID:-44}"
+      - "${JELLYFIN_RENDER_GID:-104}"
+    environment:
+      TZ: ${TZ:-Europe/London}
+    devices:
+      # Match the proven live deployment: expose the DRI directory rather than
+      # hard-coding one render node.
+      - /dev/dri:/dev/dri
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/jellyfin:/config
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/cache/jellyfin:/cache
+      - *zurg-consumer-volume
+    ports:
+      - "${JELLYFIN_PORT:-8096}:8096"
+
+  arrnexus:
+    <<: *common
+    image: ${ARRNEXUS_IMAGE:-arrnexus:v13.4.0}
+    container_name: arrnexus
+    environment:
+      DB_PATH: /data/router.db
+      ZURG_ROOT: /zurg_mnt/zurg
+      ZURG_CACHE_PATH: /host/zurg-rclone-cache
+      MAGIC_ROOT: /zurg_magic
+      MAGIC_ARR_PREFIX: /zurg_mnt/zurg/__magic__
+      ZURG_URL: http://zurg:9999
+      RADARR_URL: http://radarr:7878
+      SONARR_URL: http://sonarr:8989
+      LIDARR_URL: http://lidarr:8686
+      PROWLARR_URL: http://prowlarr:9696
+      JELLYFIN_URL: http://jellyfin:8096
+      SEERR_URL: http://seerrng:5055
+      MEDIASTACK_AGENT_URL: http://stack-agent:8787
+      ARRNEXUS_SESSION_SECRET: ${ARRNEXUS_SESSION_SECRET:-}
+      ARRNEXUS_HTTPS_ONLY: ${ARRNEXUS_HTTPS_ONLY:-false}
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/arrnexus:/data
+      - ${ZURG_CACHE_DIR:-/mnt/appdata/zurg-rclone-cache}:/host/zurg-rclone-cache:ro
+      - type: bind
+        source: ${ZURG_MOUNT_ROOT:-/zurg_mnt}
+        target: /zurg_mnt
+        read_only: true
+        bind:
+          propagation: rslave
+      - type: bind
+        source: ${ZURG_MOUNT_ROOT:-/zurg_mnt}/zurg/__magic__
+        target: /zurg_magic
+        bind:
+          propagation: rslave
+    ports:
+      - "${ARRNEXUS_PORT:-8484}:8000"
+    depends_on:
+      - stack-agent
+      - zurg
+      - sonarr
+      - radarr
+      - lidarr
+      - prowlarr
+      - seerrng
+      - jellyfin
+
+  # Optional services currently present on the live server. They stay isolated
+  # and can be enabled with: docker compose --profile extras up -d
+  whisparr:
+    <<: *common
+    profiles: [extras]
+    image: ${WHISPARR_IMAGE:-ghcr.io/thespad/whisparr:v3.5.0-release.1585-spad50}
+    container_name: whisparr
+    environment: *arr-env
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/whisparr:/config
+      - *zurg-consumer-volume
+    ports:
+      - "${WHISPARR_PORT:-6969}:6969"
+
+  bazarr:
+    <<: *common
+    profiles: [extras]
+    image: ${BAZARR_IMAGE:-lscr.io/linuxserver/bazarr:latest}
+    container_name: bazarr
+    environment: *arr-env
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/bazarr:/config
+      - *zurg-consumer-volume
+    ports:
+      - "${BAZARR_PORT:-6767}:6767"
+
+  neutarr:
+    <<: *common
+    profiles: [extras]
+    image: ${NEUTARR_IMAGE:-iampuid0/neutarr:1.11.1}
+    container_name: neutarr
+    environment:
+      TZ: ${TZ:-Europe/London}
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/neutarr:/config
+    ports:
+      - "${NEUTARR_PORT:-9705}:9705"
+
+  maintainerr:
+    <<: *common
+    profiles: [extras]
+    image: ${MAINTAINERR_IMAGE:-ghcr.io/maintainerr/maintainerr:3.27.0}
+    container_name: maintainerr
+    environment:
+      TZ: ${TZ:-Europe/London}
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/maintainerr:/opt/data
+    ports:
+      - "${MAINTAINERR_PORT:-6246}:6246"
+
+  profilarr:
+    <<: *common
+    profiles: [extras]
+    image: ${PROFILARR_IMAGE:-ghcr.io/dictionarry-hub/profilarr:develop}
+    container_name: profilarr
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/profilarr:/config
+    ports:
+      - "${PROFILARR_PORT:-6869}:6868"
+
+  profilarr-parser:
+    <<: *common
+    profiles: [extras]
+    image: ${PROFILARR_PARSER_IMAGE:-ghcr.io/dictionarry-hub/profilarr-parser:develop}
+    container_name: profilarr-parser
+
+  homarr:
+    <<: *common
+    profiles: [extras]
+    image: ${HOMARR_IMAGE:-ghcr.io/homarr-labs/homarr:latest}
+    container_name: homarr
+    volumes:
+      - ${STACK_ROOT:-/opt/arrnexus-mediastack}/config/homarr:/appdata
+    ports:
+      - "${HOMARR_PORT:-7575}:7575"
+
+networks:
+  media:
+    name: arrnexus-media

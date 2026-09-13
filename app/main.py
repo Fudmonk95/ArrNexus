@@ -428,6 +428,7 @@ async def magic_intake_page(request: Request):
 async def magic_intake_settings(
     request: Request, enabled: bool = Form(False), interval_seconds: int = Form(60), auto_match_threshold: int = Form(95),
     verify_window_minutes: int = Form(10), verify_interval_seconds: int = Form(30),
+    trusted_dmm_bypass: bool = Form(False),
     magic_root: str = Form(""), arr_prefix: str = Form(""),
 ):
     magic_intake.save_settings(locals())
@@ -483,11 +484,11 @@ async def magic_intake_api(request: Request):
 @app.get("/api/magic-intake/groups")
 async def magic_intake_groups_api(
     request: Request, media_type: str = "all", genre: str = "all", theme: str = "all",
-    state: str = "all", q: str = "", offset: int = 0, limit: int = 72,
+    source: str = "all", state: str = "all", q: str = "", offset: int = 0, limit: int = 72,
 ):
     _require_user(request)
     return magic_intake.query_groups(
-        media_type=media_type, genre=genre, theme=theme, state=state, q=q, offset=offset, limit=limit,
+        media_type=media_type, genre=genre, theme=theme, source=source, state=state, q=q, offset=offset, limit=limit,
     )
 
 
@@ -508,20 +509,39 @@ async def magic_intake_lookup_api(request: Request, media_type: str, q: str):
 @app.post("/api/magic-intake/force-match")
 async def magic_intake_force_match_api(request: Request):
     _require_user(request)
+
     payload = await request.json()
     group_key = str(payload.get("group_key") or "")
     candidate = payload.get("candidate") or {}
-    if not group_key or not isinstance(candidate, dict):
-        raise HTTPException(400, "group_key and candidate are required")
-    try:
-        group = magic_intake.force_match(group_key, candidate)
-        # Regroup in the background so any other raw cards resolving to the
-        # same canonical identity collapse without making Force Match wait.
-        asyncio.create_task(magic_intake.scan(), name="magic-regroup-after-force-match")
-        return {"ok": True, "group": group}
-    except Exception as exc:
-        raise HTTPException(400, str(exc))
 
+    if not group_key or not isinstance(candidate, dict):
+        raise HTTPException(
+            400,
+            "group_key and candidate are required",
+        )
+
+    try:
+        group = magic_intake.force_match(
+            group_key,
+            candidate,
+        )
+
+        inspection = await magic_intake.inspect_group(
+            group_key,
+            manual=True,
+        )
+
+        return {
+            "ok": True,
+            "group": group,
+            "inspection": inspection,
+        }
+
+    except Exception as exc:
+        raise HTTPException(
+            400,
+            str(exc) or repr(exc),
+        )
 
 @app.post("/api/magic-intake/type")
 async def magic_intake_type_api(request: Request):
@@ -568,6 +588,80 @@ async def magic_intake_recheck_api(request: Request):
         return magic_intake.request_recheck(group_key)
     except Exception as exc:
         raise HTTPException(400, str(exc))
+
+
+
+@app.post("/api/magic-intake/inspect")
+async def magic_intake_inspect_api(request: Request):
+    _require_user(request)
+
+    payload = await request.json()
+    group_key = str(payload.get("group_key") or "")
+
+    if not group_key:
+        raise HTTPException(
+            400,
+            "group_key is required",
+        )
+
+    try:
+        return await magic_intake.inspect_group(
+            group_key,
+            manual=True,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            400,
+            str(exc) or repr(exc),
+        )
+
+
+@app.post("/api/magic-intake/bulk-recheck")
+async def magic_intake_bulk_recheck_api(request: Request):
+    _require_user(request)
+
+    payload = await request.json()
+    group_keys = payload.get("group_keys") or []
+
+    if not isinstance(group_keys, list):
+        raise HTTPException(
+            400,
+            "group_keys must be a list",
+        )
+
+    try:
+        return magic_intake.request_bulk_inspect(
+            group_keys,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            400,
+            str(exc) or repr(exc),
+        )
+
+
+@app.post("/api/magic-intake/bulk-clear")
+async def magic_intake_bulk_clear_api(request: Request):
+    _require_user(request)
+
+    payload = await request.json()
+    group_keys = payload.get("group_keys") or []
+
+    if not isinstance(group_keys, list):
+        raise HTTPException(
+            400,
+            "group_keys must be a list",
+        )
+
+    try:
+        return magic_intake.clear_groups(
+            group_keys,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            400,
+            str(exc) or repr(exc),
+        )
 
 
 @app.get("/lists", response_class=HTMLResponse)
