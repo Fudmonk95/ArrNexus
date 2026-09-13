@@ -37,7 +37,7 @@
     </div>
 
     <div class="board-v2-grid" id="board-grid">
-      {% for item in board.items %}
+      {% for item in board['items'] %}
       <section class="board-v2-widget widget-{{ item.kind }}" data-widget-id="{{ item.id }}" data-kind="{{ item.kind }}" data-w="{{ item.w }}" data-h="{{ item.h }}" style="grid-column:span {{ item.w }};grid-row:span {{ item.h }};">
         <div class="widget-edit-chrome board-edit-only">
           <span class="widget-drag-handle" title="Drag widget">⠿</span>
