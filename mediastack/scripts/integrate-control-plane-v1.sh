@@ -20,10 +20,16 @@ git pull --ff-only origin "$BRANCH"
 
 python3 - <<'PY'
 from pathlib import Path
-import re
 
 path = Path("app/main.py")
 text = path.read_text(encoding="utf-8")
+
+# The control-plane proxy preserves useful HTTP errors from the Stack Agent.
+if "\nimport httpx\n" not in text:
+    needle = "import secrets\n"
+    if needle not in text:
+        raise SystemExit("Could not find import anchor in app/main.py")
+    text = text.replace(needle, needle + "import httpx\n", 1)
 
 # Import setup/control-plane state.
 if "from . import stack_setup\n" not in text:
