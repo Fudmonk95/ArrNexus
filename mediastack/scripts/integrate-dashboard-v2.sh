@@ -184,6 +184,48 @@ async def spotify_test(request: Request):
 p.write_text(s, encoding="utf-8")
 PY
 
+# Runtime hardening and migration for the first Dashboard v2 rollout.
+python3 - <<'PY'
+from pathlib import Path
+p = Path("app/dashboard_boards.py")
+s = p.read_text(encoding="utf-8")
+
+# Sanitize URLs used by embedded pages/bookmarks. Only HTTP(S) is permitted in
+# custom dashboard widgets; this prevents javascript: and similar URI payloads.
+old = '''        elif isinstance(value, str):\n            out[skey] = value[:4000]\n        elif isinstance(value, list):\n            out[skey] = [str(x)[:300] for x in value[:50]]\n'''
+new = '''        elif isinstance(value, str):\n            cleaned = value[:4000].strip()\n            if skey == "url" and cleaned:\n                parsed = urlparse(cleaned)\n                if parsed.scheme not in {"http", "https"} or not parsed.netloc:\n                    continue\n            out[skey] = cleaned\n        elif isinstance(value, list):\n            if skey == "links":\n                safe_links = []\n                for raw in value[:50]:\n                    entry = str(raw)[:300].strip()\n                    target = entry.split("|", 1)[-1].strip()\n                    parsed = urlparse(target)\n                    if parsed.scheme in {"http", "https"} and parsed.netloc:\n                        safe_links.append(entry)\n                out[skey] = safe_links\n            else:\n                out[skey] = [str(x)[:300] for x in value[:50]]\n'''
+if old in s:
+    s = s.replace(old, new, 1)
+
+# Migrate the prototype Media Hub into the richer v2 starter layout instead of
+# preserving a plain-text service-grid-only layout forever.
+old = '''        if not items:\n            legacy = [str(x) for x in (row.get("widgets") or []) if str(x) in WIDGETS]\n            items = [_default_item(kind, i) for i, kind in enumerate(legacy)]\n'''
+new = '''        if not items:\n            legacy_raw = [str(x) for x in (row.get("widgets") or [])]\n            legacy = []\n            for kind in legacy_raw:\n                if kind == "service-grid":\n                    kind = "app-launcher"\n                if kind in WIDGETS and kind not in legacy:\n                    legacy.append(kind)\n            if bid == "media-hub":\n                for kind in DEFAULT_MEDIA_KINDS:\n                    if kind not in legacy:\n                        legacy.append(kind)\n            items = [_default_item(kind, i) for i, kind in enumerate(legacy)]\n'''
+if old in s:
+    s = s.replace(old, new, 1)
+
+# Queue payloads can explicitly contain null movie/series objects.
+old = '''                title = item.get("title") or item.get("movie", {}).get("title") or item.get("series", {}).get("title") or "Download"\n'''
+new = '''                movie = item.get("movie") or {}\n                series = item.get("series") or {}\n                title = item.get("title") or movie.get("title") or series.get("title") or "Download"\n'''
+if old in s:
+    s = s.replace(old, new, 1)
+
+p.write_text(s, encoding="utf-8")
+PY
+
+# Keep the desktop 12-column board until the mobile flex layout takes over;
+# creating implicit columns at tablet widths makes resized widgets unpredictable.
+python3 - <<'PY'
+from pathlib import Path
+p = Path("app/static/dashboard_boards.css")
+s = p.read_text(encoding="utf-8")
+s = s.replace(
+    '@media(max-width:1200px){.board-v2-grid{grid-template-columns:repeat(6,minmax(0,1fr))}.board-v2-widget{grid-column:span min(var(--w,6),6)!important}.board-title-stats{display:none}.app-tile-grid{grid-template-columns:repeat(auto-fill,minmax(125px,1fr))}}',
+    '@media(max-width:1200px){.board-title-stats{display:none}.app-tile-grid{grid-template-columns:repeat(auto-fill,minmax(125px,1fr))}}',
+)
+p.write_text(s, encoding="utf-8")
+PY
+
 python3 -m py_compile \
   app/main.py \
   app/dashboard_boards.py \
@@ -193,11 +235,12 @@ python3 -m py_compile \
 grep -q '/api/dashboard/boards/{board_id}/layout' app/main.py
 grep -q '/api/dashboard/jellyfin/image/{item_id}' app/main.py
 grep -q '/music/spotify/test' app/main.py
+grep -q 'app-launcher' app/dashboard_boards.py
 
-if git diff --quiet -- app/main.py; then
-  echo "Dashboard v2 main.py integration is already applied."
+if git diff --quiet -- app/main.py app/dashboard_boards.py app/static/dashboard_boards.css; then
+  echo "Dashboard v2 integration is already applied."
 else
-  git add app/main.py
+  git add app/main.py app/dashboard_boards.py app/static/dashboard_boards.css
   git commit -m "Wire Dashboard v2 editor and Spotify diagnostics into ArrNexus"
   git push origin "$BRANCH"
 fi
