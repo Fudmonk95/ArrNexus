@@ -47,6 +47,37 @@ def _human_bytes(value: int | float | None) -> str:
     return f"{amount:.1f} PiB"
 
 
+def _resource_pressure(item: dict[str, Any]) -> tuple[str, list[str]]:
+    """Classify resource pressure without confusing it with Docker health.
+
+    CPU can legitimately exceed 100% on a multi-core host, so v0.1 only
+    records CPU in the dashboard and does not raise a pressure alert from CPU
+    alone. Container memory limits and repeated restarts are much stronger
+    signals and are used for warnings here.
+    """
+    memory_percent = float(item.get("memory_percent") or 0)
+    restart_count = int(item.get("restart_count") or 0)
+    alerts: list[str] = []
+    severity = "good"
+
+    if memory_percent >= 95:
+        severity = "bad"
+        alerts.append(f"RAM {memory_percent:.1f}% of container limit")
+    elif memory_percent >= 85:
+        severity = "warn"
+        alerts.append(f"RAM {memory_percent:.1f}% of container limit")
+
+    if restart_count >= 5:
+        severity = "bad"
+        alerts.append(f"{restart_count} container restarts")
+    elif restart_count >= 2:
+        if severity == "good":
+            severity = "warn"
+        alerts.append(f"{restart_count} container restarts")
+
+    return severity, alerts
+
+
 def _decorate_service(row: dict[str, Any], update_map: dict[str, dict[str, Any]]) -> dict[str, Any]:
     item = dict(row)
     state = str(item.get("state") or "unknown").lower()
@@ -61,11 +92,15 @@ def _decorate_service(row: dict[str, Any], update_map: dict[str, dict[str, Any]]
         status_class = "good"
         status_text = health or "running"
 
+    resource_class, resource_alerts = _resource_pressure(item)
     update = update_map.get(str(item.get("name") or ""), {})
     item.update(
         {
             "status_class": status_class,
             "status_text": status_text,
+            "resource_class": resource_class,
+            "resource_alerts": resource_alerts,
+            "resource_attention": bool(resource_alerts),
             "memory_human": _human_bytes(item.get("memory_used")),
             "memory_limit_human": _human_bytes(item.get("memory_limit")),
             "network_rx_human": _human_bytes(item.get("network_rx")),
@@ -87,7 +122,17 @@ def _decorate_snapshot(raw: dict[str, Any]) -> dict[str, Any]:
     running = sum(1 for row in services if str(row.get("state") or "").lower() == "running")
     healthy = sum(1 for row in services if row.get("status_class") == "good")
     updates = sum(1 for row in services if row.get("update_available"))
-    attention = sum(1 for row in services if row.get("status_class") in {"warn", "bad"})
+    health_attention = sum(1 for row in services if row.get("status_class") in {"warn", "bad"})
+    pressure_attention = sum(1 for row in services if row.get("resource_attention"))
+    warnings = sum(1 for row in services if row.get("resource_class") == "warn")
+    critical = sum(1 for row in services if row.get("resource_class") == "bad")
+    attention_names = sorted(
+        {
+            str(row.get("name") or "")
+            for row in services
+            if row.get("status_class") in {"warn", "bad"} or row.get("resource_attention")
+        }
+    )
     cpu_total = sum(float(row.get("cpu_percent") or 0) for row in services)
     memory_used = sum(int(row.get("memory_used") or 0) for row in services)
     system = out.get("system") or {}
@@ -97,7 +142,12 @@ def _decorate_snapshot(raw: dict[str, Any]) -> dict[str, Any]:
         "total": len(services),
         "running": running,
         "healthy": healthy,
-        "attention": attention,
+        "attention": len(attention_names),
+        "health_attention": health_attention,
+        "pressure_attention": pressure_attention,
+        "warnings": warnings,
+        "critical": critical,
+        "attention_names": attention_names,
         "updates": updates,
         "cpu_percent": round(cpu_total, 2),
         "memory_used": memory_used,
