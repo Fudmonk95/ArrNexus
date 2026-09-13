@@ -10,6 +10,7 @@
     </div>
     <div class="inline-actions no-top">
       {% if setup.state.completed %}<span class="setup-complete-badge"><span class="dot good"></span>Setup saved</span>{% endif %}
+      <a class="button secondary" href="/api/stack-setup/recovery-compose">Export Recovery Compose</a>
       <a class="button secondary" href="/mediastack">Back to MediaStack</a>
     </div>
   </div>
@@ -37,7 +38,7 @@
           <span>Create a new MediaStack layout from the service catalogue. This is intended for a new server or a future clean rebuild, not an in-place production cutover.</span>
         </label>
       </div>
-      <div class="setup-callout warn" style="margin-top:14px"><strong>No big-bang migration.</strong> Running Docker containers cannot be moved into a different Compose project without recreation. Adoption stores the existing live state first; each service can then be recreated under ArrNexus one at a time with rollback.</div>
+      <div class="setup-callout warn" style="margin-top:14px"><strong>No big-bang migration.</strong> Running Docker containers cannot be moved into a different Compose project without recreation. Adoption records the existing live state first; each service can then cross the ArrNexus ownership boundary one at a time with rollback.</div>
       <div class="setup-footer"><span></span><div class="right"><button type="button" class="primary" data-next>Continue</button></div></div>
     </section>
 
@@ -100,8 +101,8 @@
       </div>
       <h3>Per-service policy</h3>
       <div class="policy-grid">
-        {% for item in setup.catalog if item.key in setup.state.selected_services %}
-        <div class="policy-card"><label>{{ item.name }}<select name="policy_{{ item.key }}"><option value="manual" {% if setup.policies.get(item.key) == 'manual' %}selected{% endif %}>Manual</option><option value="review" {% if setup.policies.get(item.key) == 'review' %}selected{% endif %}>Review</option><option value="automatic" {% if setup.policies.get(item.key) == 'automatic' %}selected{% endif %}>Automatic</option></select><span class="field-help">{{ item.notes or ('Update risk: ' ~ item.update_risk) }}</span></label></div>
+        {% for item in setup.catalog %}
+        <div class="policy-card" data-policy-service="{{ item.key }}" {% if item.key not in setup.state.selected_services %}hidden{% endif %}><label>{{ item.name }}<select name="policy_{{ item.key }}"><option value="manual" {% if setup.policies.get(item.key) == 'manual' %}selected{% endif %}>Manual</option><option value="review" {% if setup.policies.get(item.key) == 'review' %}selected{% endif %}>Review</option><option value="automatic" {% if setup.policies.get(item.key) == 'automatic' %}selected{% endif %}>Automatic</option></select><span class="field-help">{{ item.notes or ('Update risk: ' ~ item.update_risk) }}</span></label></div>
         {% endfor %}
       </div>
       <div class="setup-callout warn" style="margin-top:14px">Zurg, Jellyfin, PostgreSQL and ArrNexus default to manual. Jellyfin remains pinned to the known-working release until the version 12 plugin situation is deliberately approved.</div>
@@ -109,22 +110,20 @@
     </section>
 
     <section class="panel setup-step" data-step="4" hidden>
-      <div class="panel-head"><div><h2>Review current adoption plan</h2><span class="muted">This preview comes from the containers the Stack Agent can currently see. Saving does not perform a mass recreation.</span></div></div>
+      <div class="panel-head"><div><h2>Review current plan</h2><span class="muted" id="review-caption">This preview is calculated from your current selections and the containers the Stack Agent can see.</span></div></div>
       <div class="setup-summary-grid">
-        <div class="setup-summary"><span>Selected</span><strong>{{ setup.plan.selected_count }}</strong></div>
-        <div class="setup-summary"><span>Already present</span><strong>{{ setup.plan.already_present }}</strong></div>
-        <div class="setup-summary"><span>Would install</span><strong>{{ setup.plan.to_install }}</strong></div>
-        <div class="setup-summary"><span>Update mode</span><strong>{{ setup.plan.update_mode|title }}</strong></div>
+        <div class="setup-summary"><span>Selected</span><strong id="review-selected">{{ setup.plan.selected_count }}</strong></div>
+        <div class="setup-summary"><span>Already present</span><strong id="review-present">{{ setup.plan.already_present }}</strong></div>
+        <div class="setup-summary"><span>Would install</span><strong id="review-install">{{ setup.plan.to_install }}</strong></div>
+        <div class="setup-summary"><span>Update mode</span><strong id="review-update-mode">{{ setup.plan.update_mode|title }}</strong></div>
       </div>
-      <div class="plan-list">
-        {% for row in setup.plan.services %}
-        <div class="plan-row"><strong>{{ row.name }}</strong><span class="pill {{ 'good' if row.present else 'warn' }}">{{ 'Adopt' if row.present else 'Install' }}</span><span class="mono">{{ row.image }}</span><span class="muted">{{ row.state }}</span></div>
-        {% endfor %}
+      <div class="plan-list" id="review-plan-list">
+        {% for row in setup.plan.services %}<div class="plan-row"><strong>{{ row.name }}</strong><span class="pill {{ 'good' if row.present else 'warn' }}">{{ 'Adopt' if row.present else 'Install' }}</span><span class="mono">{{ row.image }}</span><span class="muted">{{ row.state }}</span></div>{% endfor %}
       </div>
-      {% if setup.plan.unselected_live_services %}
-      <h3>Running but not selected</h3>
-      <div class="plan-list">{% for row in setup.plan.unselected_live_services %}<div class="plan-row"><strong>{{ row.name }}</strong><span class="pill warn">Leave unmanaged</span><span class="mono">{{ row.image }}</span><span class="muted">{{ row.state }}</span></div>{% endfor %}</div>
-      {% endif %}
+      <div id="review-unselected-wrap" {% if not setup.plan.unselected_live_services %}hidden{% endif %}>
+        <h3>Running but not selected</h3>
+        <div class="plan-list" id="review-unselected-list">{% for row in setup.plan.unselected_live_services %}<div class="plan-row"><strong>{{ row.name }}</strong><span class="pill warn">Leave unmanaged</span><span class="mono">{{ row.image }}</span><span class="muted">{{ row.state }}</span></div>{% endfor %}</div>
+      </div>
       <div class="setup-callout" style="margin-top:14px"><strong>Apply behaviour:</strong> existing services are adopted in place first. ArrNexus keeps their persistent data paths. They only receive new management labels when a controlled recreate/update is successfully performed. Fresh-install services are saved as desired state for the install executor.</div>
       {% if not stack.write_enabled %}<div class="setup-callout warn" style="margin-top:10px"><strong>Control channel locked:</strong> this UI can save the complete plan now, but Docker changes remain blocked until the authenticated Stack Agent write channel is explicitly enabled.</div>{% endif %}
       <div class="setup-footer"><button type="button" class="secondary" data-prev>Back</button><div class="right"><button type="submit" name="action" value="save" class="secondary">Save plan</button><button type="submit" name="action" value="complete" class="primary">Save & adopt selected services</button></div></div>
@@ -136,11 +135,16 @@
 {% block scripts %}
 <script>
 (() => {
-  const steps=[...document.querySelectorAll('.setup-step')],tabs=[...document.querySelectorAll('.setup-step-tab')];let current=0;
-  const show=n=>{current=Math.max(0,Math.min(steps.length-1,n));steps.forEach((el,i)=>el.hidden=i!==current);tabs.forEach((el,i)=>el.classList.toggle('active',i===current));window.scrollTo({top:0,behavior:'smooth'});};
+  const form=document.getElementById('stack-setup-form'),steps=[...document.querySelectorAll('.setup-step')],tabs=[...document.querySelectorAll('.setup-step-tab')];let current=0;
+  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const selectedServices=()=>[...form.querySelectorAll('input[name="services"]:checked')].map(el=>el.value);
+  const syncPolicies=()=>{const selected=new Set(selectedServices());document.querySelectorAll('[data-policy-service]').forEach(el=>el.hidden=!selected.has(el.dataset.policyService));};
+  const payload=()=>{const data=new FormData(form);return {mode:data.get('mode')||'adopt',selected_services:selectedServices(),stack_root:data.get('stack_root')||'',zurg_mount_root:data.get('zurg_mount_root')||'',config_strategy:data.get('config_strategy')||'keep-existing',tz:data.get('tz')||'Europe/London',puid:data.get('puid')||'1000',pgid:data.get('pgid')||'1000',jellyfin_gpu:data.get('jellyfin_gpu')||'auto',update_mode:data.get('update_mode')||'review',update_time:data.get('update_time')||'04:00',rollback:data.has('rollback'),stabilization_seconds:data.get('stabilization_seconds')||'30'};};
+  async function preview(){const caption=document.getElementById('review-caption');caption.textContent='Calculating current plan…';try{const res=await fetch('/api/stack-setup/preview',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload())});const data=await res.json();if(!res.ok)throw new Error(data.detail||`HTTP ${res.status}`);const plan=data.plan||{};document.getElementById('review-selected').textContent=plan.selected_count??0;document.getElementById('review-present').textContent=plan.already_present??0;document.getElementById('review-install').textContent=plan.to_install??0;document.getElementById('review-update-mode').textContent=String(plan.update_mode||'review').replace(/^./,c=>c.toUpperCase());document.getElementById('review-plan-list').innerHTML=(plan.services||[]).map(row=>`<div class="plan-row"><strong>${esc(row.name)}</strong><span class="pill ${row.present?'good':'warn'}">${row.present?'Adopt':'Install'}</span><span class="mono">${esc(row.image)}</span><span class="muted">${esc(row.state)}</span></div>`).join('')||'<p class="empty">No services selected.</p>';const unmanaged=plan.unselected_live_services||[];document.getElementById('review-unselected-wrap').hidden=!unmanaged.length;document.getElementById('review-unselected-list').innerHTML=unmanaged.map(row=>`<div class="plan-row"><strong>${esc(row.name)}</strong><span class="pill warn">Leave unmanaged</span><span class="mono">${esc(row.image)}</span><span class="muted">${esc(row.state)}</span></div>`).join('');caption.textContent='Live preview from your selections and current Docker state.';}catch(err){caption.textContent=`Could not refresh preview: ${err.message}`;}}
+  const show=n=>{current=Math.max(0,Math.min(steps.length-1,n));steps.forEach((el,i)=>el.hidden=i!==current);tabs.forEach((el,i)=>el.classList.toggle('active',i===current));if(current===3)syncPolicies();if(current===4)preview();window.scrollTo({top:0,behavior:'smooth'});};
   document.querySelectorAll('[data-next]').forEach(b=>b.addEventListener('click',()=>show(current+1)));document.querySelectorAll('[data-prev]').forEach(b=>b.addEventListener('click',()=>show(current-1)));tabs.forEach((t,i)=>t.addEventListener('click',()=>show(i)));
-  document.querySelectorAll('input[data-required="1"]').forEach(el=>{el.checked=true;el.addEventListener('click',e=>{e.preventDefault();el.checked=true;});});
-  show(0);
+  document.querySelectorAll('input[name="services"]').forEach(el=>el.addEventListener('change',syncPolicies));document.querySelectorAll('input[data-required="1"]').forEach(el=>{el.checked=true;el.addEventListener('click',e=>{e.preventDefault();el.checked=true;});});
+  syncPolicies();show(0);
 })();
 </script>
 {% endblock %}
