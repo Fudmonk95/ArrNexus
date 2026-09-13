@@ -9,6 +9,16 @@ services:
     environment:
       DOCKER_SOCKET: /var/run/docker.sock
       STACK_LABEL: arrnexus.mediastack=true
+      STATE_ROOT: /state
+      # Write actions remain locked unless BOTH this flag and a non-empty token
+      # are supplied. The Docker socket bind itself cannot enforce read-only API
+      # calls, so capability gating happens inside the narrow Stack Agent.
+      WRITE_ENABLED: ${MEDIASTACK_WRITE_ENABLED:-false}
+      AGENT_TOKEN: ${MEDIASTACK_AGENT_TOKEN:-}
+      GHCR_USERNAME: ${GHCR_USERNAME:-}
+      GHCR_TOKEN: ${GHCR_TOKEN:-}
+      STABILIZATION_SECONDS: ${MEDIASTACK_STABILIZATION_SECONDS:-10}
+      HEALTH_TIMEOUT_SECONDS: ${MEDIASTACK_HEALTH_TIMEOUT_SECONDS:-120}
       WATCH_CONTAINERS: >-
         arrnexus,zurg,sonarr,radarr,lidarr,lidarr-postgres,prowlarr,seerrng,jellyfin,
         whisparr,bazarr,neutarr,maintainerr,profilarr,profilarr-parser,homarr
@@ -29,6 +39,7 @@ services:
         homarr=/config-roots/homarr
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${MEDIASTACK_STATE_DIR:-/opt/arrnexus-mediastack/state}:/state
       - /opt/zurg:/config-roots/zurg:ro
       - /mnt/appdata/arrnexus/data:/config-roots/arrnexus:ro
       - /home/renegademonk/docker/sonarr/config:/config-roots/sonarr:ro
@@ -44,6 +55,6 @@ services:
       - /home/renegademonk/docker/profilarr/config:/config-roots/profilarr:ro
       - /mnt/appdata/DUMB-metadata/homarr:/config-roots/homarr:ro
     ports:
-      # Intentionally localhost-only. The agent can read logs/configs and should
-      # not be exposed directly to the LAN or Internet. ArrNexus will proxy it.
+      # Host-local only. ArrNexus reaches the agent over a shared Docker
+      # network; no browser should talk to this port directly.
       - "127.0.0.1:${STACK_AGENT_PORT:-8787}:8787"
