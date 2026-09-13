@@ -6,14 +6,16 @@
 <label>Client ID<input name="client_id" value="{{ client_id }}"></label>
 <label>Client secret<input type="password" name="client_secret" placeholder="{{ 'Leave blank to keep current secret' if configured else 'Client secret' }}"></label>
 <label>Market<input name="market" value="{{ market }}" maxlength="2"></label>
-<label>ArrNexus public URL<input name="public_url" value="{{ public_url }}" placeholder="https://arrnexus.example.com"><span class="field-help">Use the HTTPS hostname that your browser can reach through Cloudflare/reverse proxy. Do not include /music/spotify/callback here.</span></label>
+<label>ArrNexus public URL<input name="public_url" value="{{ public_url }}" placeholder="https://arrnexus.example.com"><span class="field-help">Use the HTTPS hostname that reaches ArrNexus through Cloudflare/reverse proxy. Do not include /music/spotify/callback. If you configure a base domain under Dashboard → Boards, ArrNexus can derive https://arrnexus.&lt;domain&gt; automatically.</span></label>
 <button class="primary">Save Spotify settings</button>
-</form></section>
+</form>
+<div class="inline-actions"><a class="button" href="/dashboard/boards">Configure public domain / tunnel links</a></div>
+</section>
 <section class="panel"><div class="panel-head"><h2>Spotify redirect URI</h2><span class="pill {{ 'good' if redirect_ok else 'bad' }}">{{ 'Ready' if redirect_ok else 'Needs attention' }}</span></div>
-<p class="muted">Copy this exact URI into the Redirect URIs section of your Spotify developer application.</p>
+<p class="muted">Copy this exact URI into the Redirect URIs section of your Spotify developer application. Spotify requires the URI to match exactly.</p>
 <div class="copy-row"><code id="spotify-redirect-uri" class="code-inline">{{ redirect_uri or 'Set a public URL first' }}</code><button type="button" data-copy="#spotify-redirect-uri">Copy</button></div>
 <p class="{{ 'good-text' if redirect_ok else 'error-text' }}">{{ redirect_message }}</p>
-{% if not redirect_ok %}<p class="muted small">A LAN callback such as <code>http://192.168.x.x:8484/...</code> is intentionally blocked before ArrNexus sends you to Spotify.</p>{% endif %}
+{% if not redirect_ok %}<p class="muted small">LAN HTTP callbacks such as <code>http://192.168.x.x:8484/...</code> are not accepted by Spotify. Use your HTTPS ArrNexus hostname. HTTP is only valid for explicit loopback IP addresses such as <code>127.0.0.1</code>.</p>{% endif %}
 </section>
 </div>
 {% endblock %}
