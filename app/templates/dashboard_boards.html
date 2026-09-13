@@ -34,7 +34,7 @@
   <div class="board-manager-list">
   {% for board in boards %}
     <div class="board-manager-row">
-      <div><strong>{{ board.name }}</strong><div class="muted small">{{ board.description or board.id }}</div>{% if board.id != 'overview' %}<div class="muted small">{{ board.items|length }} widgets · {{ board.appearance.columns }} columns</div>{% endif %}</div>
+      <div><strong>{{ board.name }}</strong><div class="muted small">{{ board.description or board.id }}</div>{% if board.id != 'overview' %}<div class="muted small">{{ board['items']|length }} widgets · {{ board.appearance.columns }} columns</div>{% endif %}</div>
       <div class="inline-actions">
         <a class="button" href="/{% if board.id != 'overview' %}?board={{ board.id }}{% endif %}">Open</a>
         {% if board.id != home_board %}<form method="post" action="/dashboard/boards/home"><input type="hidden" name="board_id" value="{{ board.id }}"><button type="submit">Set home</button></form>{% else %}<span class="pill good">Home</span>{% endif %}
