@@ -23,7 +23,7 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 export STACK_ROOT MEDIA_ROOT
-"$SCRIPT_DIR/preflight.sh"
+bash "$SCRIPT_DIR/preflight.sh"
 
 mkdir -p \
   "$STACK_ROOT/config/arrnexus" \
