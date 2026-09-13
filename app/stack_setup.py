@@ -21,15 +21,7 @@ SERVICE_POLICIES_KEY = "mediastack.update.service_policies"
 
 DEFAULT_STATE: dict[str, Any] = {
     "mode": "adopt",
-    "selected_services": [
-        "zurg",
-        "sonarr",
-        "radarr",
-        "lidarr",
-        "prowlarr",
-        "seerrng",
-        "jellyfin",
-    ],
+    "selected_services": ["zurg", "sonarr", "radarr", "lidarr", "prowlarr", "seerrng", "jellyfin"],
     "stack_root": "/opt/arrnexus-mediastack",
     "zurg_mount_root": "/zurg_mnt",
     "config_strategy": "keep-existing",
@@ -164,10 +156,14 @@ def save_service_policies(policies: dict[str, Any]) -> dict[str, str]:
     return service_policies()
 
 
+def _live_map(stack_snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {str(row.get("name") or ""): row for row in (stack_snapshot.get("services") or [])}
+
+
 def adoption_plan(stack_snapshot: dict[str, Any], current_state: dict[str, Any] | None = None) -> dict[str, Any]:
     current_state = current_state or state()
     selected = set(current_state.get("selected_services") or [])
-    live = {str(row.get("name") or ""): row for row in (stack_snapshot.get("services") or [])}
+    live = _live_map(stack_snapshot)
     rows: list[dict[str, Any]] = []
 
     for key in current_state.get("selected_services") or []:
@@ -192,11 +188,7 @@ def adoption_plan(stack_snapshot: dict[str, Any], current_state: dict[str, Any] 
         )
 
     unmanaged = [
-        {
-            "name": name,
-            "image": row.get("image") or "",
-            "state": row.get("state") or "",
-        }
+        {"name": name, "image": row.get("image") or "", "state": row.get("state") or ""}
         for name, row in sorted(live.items())
         if name not in selected and name not in {"arrnexus", "arrnexus-stack-agent", "arrnexus-mediastack-ui-test"}
     ]
@@ -217,6 +209,120 @@ def adoption_plan(stack_snapshot: dict[str, Any], current_state: dict[str, Any] 
         "service_policies": service_policies(current_state),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def preflight(stack_snapshot: dict[str, Any], current_state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run non-destructive setup checks using the Docker state we can observe."""
+    current_state = current_state or state()
+    selected = set(current_state.get("selected_services") or [])
+    live = _live_map(stack_snapshot)
+    checks: list[dict[str, Any]] = []
+
+    def add(key: str, label: str, ok: bool, detail: str, *, blocking: bool = False, level: str | None = None) -> None:
+        checks.append(
+            {
+                "key": key,
+                "label": label,
+                "ok": bool(ok),
+                "blocking": bool(blocking and not ok),
+                "level": level or ("good" if ok else ("bad" if blocking else "warn")),
+                "detail": detail,
+            }
+        )
+
+    connected = bool(stack_snapshot.get("connected"))
+    add("agent", "Stack Agent", connected, "Docker control plane is reachable." if connected else "Stack Agent is not reachable.", blocking=True)
+
+    system = stack_snapshot.get("system") or {}
+    docker_ok = bool(system.get("docker_version"))
+    add("docker", "Docker engine", docker_ok, f"Docker {system.get('docker_version')} · {system.get('cpus') or '—'} CPUs" if docker_ok else "Docker host details are unavailable.", blocking=True)
+
+    zurg_root = str(current_state.get("zurg_mount_root") or "/zurg_mnt").rstrip("/") or "/zurg_mnt"
+    zurg = live.get("zurg")
+    if "zurg" in selected:
+        if zurg:
+            owner_mount = next(
+                (
+                    m
+                    for m in zurg.get("mounts") or []
+                    if str(m.get("destination") or "").rstrip("/") == zurg_root
+                ),
+                None,
+            )
+            propagation = str((owner_mount or {}).get("propagation") or "")
+            add(
+                "zurg-propagation",
+                "Zurg mount propagation",
+                bool(owner_mount) and propagation in {"shared", "rshared"},
+                f"{zurg_root} is mounted into Zurg with {propagation or 'unknown'} propagation." if owner_mount else f"No {zurg_root} bind was reported for Zurg.",
+                blocking=current_state.get("mode") == "adopt",
+            )
+        else:
+            add("zurg-present", "Zurg", current_state.get("mode") == "fresh", "Zurg is not running yet; fresh install will create it." if current_state.get("mode") == "fresh" else "Zurg was selected for adoption but is not running.", blocking=current_state.get("mode") == "adopt")
+
+    consumer_failures: list[str] = []
+    consumers_checked = 0
+    for key in selected:
+        info = SERVICE_CATALOG.get(key) or {}
+        if info.get("uses_zurg_mount") != "consumer":
+            continue
+        row = live.get(key)
+        if not row and key == "seerrng":
+            row = live.get("seerr")
+        if not row:
+            continue
+        consumers_checked += 1
+        mount = next((m for m in row.get("mounts") or [] if str(m.get("destination") or "").rstrip("/") == zurg_root), None)
+        prop = str((mount or {}).get("propagation") or "")
+        if not mount or prop not in {"slave", "rslave"}:
+            consumer_failures.append(str(row.get("name") or key))
+    if consumers_checked:
+        add(
+            "consumer-propagation",
+            "Media consumer propagation",
+            not consumer_failures,
+            f"{consumers_checked} existing consumer(s) receive {zurg_root} with rslave/slave propagation." if not consumer_failures else "Incorrect/missing propagation: " + ", ".join(consumer_failures),
+            blocking=current_state.get("mode") == "adopt",
+        )
+
+    # Fresh-install collision check. Existing selected containers are adoption
+    # candidates and therefore do not count as conflicts.
+    if current_state.get("mode") == "fresh":
+        used_ports: dict[str, str] = {}
+        for name, row in live.items():
+            for port in row.get("ports") or []:
+                host_port = str(port.get("host_port") or "")
+                if host_port:
+                    used_ports.setdefault(host_port, name)
+        collisions: list[str] = []
+        for key in selected:
+            info = SERVICE_CATALOG.get(key) or {}
+            port = info.get("port")
+            if port and str(port) in used_ports and used_ports[str(port)] != key:
+                collisions.append(f"{port} ({used_ports[str(port)]})")
+        add("ports", "Port availability", not collisions, "No selected fresh-install ports conflict with observed containers." if not collisions else "Conflicting host ports: " + ", ".join(collisions), blocking=True)
+
+    caps = stack_snapshot.get("capabilities") or {}
+    write_enabled = bool(caps.get("write_enabled"))
+    add(
+        "write-channel",
+        "Authenticated Docker write channel",
+        write_enabled,
+        "Lifecycle/update actions are unlocked." if write_enabled else "Locked by design. You can save/review the plan without changing Docker.",
+        blocking=False,
+        level="good" if write_enabled else "warn",
+    )
+
+    if "jellyfin" in selected:
+        jellyfin = live.get("jellyfin")
+        if jellyfin:
+            add("jellyfin", "Jellyfin adoption", True, f"Existing Jellyfin container found ({jellyfin.get('image') or 'image unknown'}). GPU device access is preserved from Docker inspect during managed recreation.")
+        else:
+            add("jellyfin", "Jellyfin", True, "Jellyfin will be installed from the pinned known-working image; /dev/dri is requested when GPU mode is enabled/auto.", level="good")
+
+    blocking = sum(1 for check in checks if check.get("blocking"))
+    warnings = sum(1 for check in checks if not check.get("ok") and not check.get("blocking"))
+    return {"ok": blocking == 0, "blocking": blocking, "warnings": warnings, "checks": checks}
 
 
 def _yaml_quote(value: Any) -> str:
@@ -285,14 +391,7 @@ def recovery_compose(stack_snapshot: dict[str, Any], current_state: dict[str, An
                 if dep in plan["service_policies"]:
                     lines.append(f"      - {dep}")
         lines.append("")
-    lines.extend(
-        [
-            "networks:",
-            "  default:",
-            "    name: arrnexus-media",
-            "",
-        ]
-    )
+    lines.extend(["networks:", "  default:", "    name: arrnexus-media", ""])
     return "\n".join(lines)
 
 
@@ -303,5 +402,6 @@ def page_context(stack_snapshot: dict[str, Any]) -> dict[str, Any]:
         "catalog": service_catalog(),
         "groups": grouped_catalog(),
         "plan": adoption_plan(stack_snapshot, current),
+        "preflight": preflight(stack_snapshot, current),
         "policies": service_policies(current),
     }
