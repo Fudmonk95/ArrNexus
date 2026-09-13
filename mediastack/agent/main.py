@@ -822,7 +822,7 @@ async def adopt(request: Request) -> dict[str, Any]:
     return {"ok": True, "adopted": sorted(adopted)}
 
 
-@app.post("/api/actions/{name}/{action}")
+@app.post("/api/lifecycle/{name}/{action}")
 async def lifecycle_action(name: str, action: str, request: Request) -> dict[str, Any]:
     _require_service_write(request, name)
     action = action.lower()
