@@ -17,7 +17,7 @@
     <div class="service-link-editor">
       {% for service in service_links %}
       <label>{{ service.name }} public URL
-        <input name="url_{{ service.key }}" value="{{ service.url if service.url and public_domain not in service.url else '' }}" placeholder="{{ service.url or ('https://' ~ service.key ~ '.example.com') }}">
+        <input name="url_{{ service.key }}" value="{{ service.override }}" placeholder="{{ service.url or ('https://' ~ service.key ~ '.example.com') }}">
       </label>
       {% endfor %}
     </div>
