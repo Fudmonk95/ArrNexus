@@ -189,9 +189,14 @@ def set_public_domain(value: str) -> str:
     return domain
 
 
+def service_override(service: str) -> str:
+    key = str(service or "").lower()
+    return setting_get(f"dashboard.url.{key}", "").strip().rstrip("/")
+
+
 def service_url(service: str) -> str:
     key = str(service or "").lower()
-    override = setting_get(f"dashboard.url.{key}", "").strip().rstrip("/")
+    override = service_override(key)
     if override:
         return override
     domain = public_domain()
@@ -210,7 +215,12 @@ def set_service_url(service: str, value: str) -> None:
 
 def service_links() -> list[dict[str, str]]:
     return [
-        {"key": key, "name": SERVICE_LABELS.get(key, key.title()), "url": service_url(key)}
+        {
+            "key": key,
+            "name": SERVICE_LABELS.get(key, key.title()),
+            "url": service_url(key),
+            "override": service_override(key),
+        }
         for key in SERVICE_KEYS
     ]
 
