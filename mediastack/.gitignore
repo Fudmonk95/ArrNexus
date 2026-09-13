@@ -1,0 +1,9 @@
+.env
+config/
+secrets/
+backups/
+*.backup
+*.bak
+*.tar
+*.tar.gz
+*.zst
