@@ -15,6 +15,7 @@ services:
       # calls, so capability gating happens inside the narrow Stack Agent.
       WRITE_ENABLED: ${MEDIASTACK_WRITE_ENABLED:-false}
       AGENT_TOKEN: ${MEDIASTACK_AGENT_TOKEN:-}
+      WRITE_ALLOWLIST: ${MEDIASTACK_WRITE_ALLOWLIST:-}
       GHCR_USERNAME: ${GHCR_USERNAME:-}
       GHCR_TOKEN: ${GHCR_TOKEN:-}
       STABILIZATION_SECONDS: ${MEDIASTACK_STABILIZATION_SECONDS:-10}
