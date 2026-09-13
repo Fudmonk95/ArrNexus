@@ -50,9 +50,9 @@
         <div class="widget-head"><div><span class="widget-kicker">Apps</span><h2>Media services</h2></div><a href="/mediastack">Manage</a></div>
         <div class="app-tile-grid">
           {% for service in services %}
-          {% if service.public_url %}<a class="app-tile status-{{ service.board_status }}" href="{{ service.public_url }}" target="_blank" rel="noopener">{% else %}<div class="app-tile status-{{ service.board_status }} disabled">{% endif %}
+          {% if service.public_url %}<a class="app-tile status-{{ service.board_status }}" data-service="{{ service.name }}" href="{{ service.public_url }}" target="_blank" rel="noopener">{% else %}<div class="app-tile status-{{ service.board_status }} disabled" data-service="{{ service.name }}">{% endif %}
             <div class="app-icon-wrap"><img src="{{ service.icon }}" alt="" loading="lazy"><span class="app-status-dot"></span></div>
-            <div class="app-tile-copy"><strong>{{ service.label }}</strong><span>{{ service.status_text or service.state }}</span></div>
+            <div class="app-tile-copy"><strong>{{ service.label }}</strong><span data-service-state>{{ service.status_text or service.state }}</span></div>
             {% if service.update_available %}<span class="app-update-dot" title="Update available"></span>{% endif %}
           {% if service.public_url %}</a>{% else %}</div>{% endif %}
           {% endfor %}
@@ -61,8 +61,8 @@
         {% elif item.kind == 'host-resources' %}
         <div class="widget-head"><div><span class="widget-kicker">Server</span><h2>System resources</h2></div><span class="widget-live-dot"></span></div>
         <div class="resource-gauges">
-          <div class="resource-gauge" style="--pct:{{ [metrics.cpu,100]|min }}"><div><strong data-cpu-value>{{ '%.1f'|format(metrics.cpu) }}%</strong><span>Container CPU</span></div></div>
-          <div class="resource-gauge memory" style="--pct:{{ metrics.memory }}"><div><strong data-memory-value>{{ '%.1f'|format(metrics.memory) }}%</strong><span>{{ metrics.memory_used }} / {{ metrics.memory_total }}</span></div></div>
+          <div class="resource-gauge" style="--angle:{{ ([metrics.cpu,100]|min) * 3.6 }}deg"><div><strong data-cpu-value>{{ '%.1f'|format(metrics.cpu) }}%</strong><span>Container CPU</span></div></div>
+          <div class="resource-gauge memory" style="--angle:{{ ([metrics.memory,100]|min) * 3.6 }}deg"><div><strong data-memory-value>{{ '%.1f'|format(metrics.memory) }}%</strong><span>{{ metrics.memory_used }} / {{ metrics.memory_total }}</span></div></div>
         </div>
         <div class="resource-chart-wrap"><canvas class="metric-chart" data-series="cpu" data-values='{{ metrics.cpu_history|tojson }}'></canvas><canvas class="metric-chart" data-series="memory" data-values='{{ metrics.memory_history|tojson }}'></canvas></div>
 
