@@ -5,6 +5,7 @@ REPO_DIR="${REPO_DIR:-/opt/arrnexus-mediastack-src}"
 TEST_NAME="${TEST_NAME:-arrnexus-mediastack-ui-test}"
 TEST_IMAGE="${TEST_IMAGE:-arrnexus:mediastack-ui-test}"
 TEST_PORT="${TEST_PORT:-8585}"
+TEST_BIND="${TEST_BIND:-127.0.0.1}"
 TEST_ROOT="${TEST_ROOT:-/opt/arrnexus-mediastack-test}"
 LIVE_DATA="${LIVE_DATA:-/mnt/appdata/arrnexus/data}"
 AGENT_NAME="${AGENT_NAME:-arrnexus-stack-agent}"
@@ -92,11 +93,11 @@ fi
 # Do not run ArrNexus lifespan/background automation in the test copy.
 # Uvicorn's --lifespan off means no request tracker, queue janitor, Magic Intake,
 # list automation, or other production background worker is started.
-echo "Starting isolated ArrNexus UI test on port $TEST_PORT..."
+echo "Starting isolated ArrNexus UI test on ${TEST_BIND}:${TEST_PORT}..."
 docker run -d \
   --name "$TEST_NAME" \
   --restart no \
-  -p "127.0.0.1:${TEST_PORT}:8000" \
+  -p "${TEST_BIND}:${TEST_PORT}:8000" \
   -e DB_PATH=/data/router.db \
   -e ARRNEXUS_SESSION_SECRET="$SESSION_SECRET" \
   -e ARRNEXUS_HTTPS_ONLY=false \
@@ -113,8 +114,6 @@ for network in "${AGENT_NETWORKS[@]}"; do
   docker network connect "$network" "$TEST_NAME" 2>/dev/null || true
 done
 
-# If the agent only has bridge, share bridge as a last resort. Container-name DNS
-# is not available on the default bridge, so a user-defined network is expected.
 if [[ ${#AGENT_NETWORKS[@]} -eq 0 ]]; then
   echo "No Stack Agent network found; stopping test container." >&2
   docker rm -f "$TEST_NAME" >/dev/null
@@ -153,6 +152,8 @@ echo
 echo "MediaStack UI test is ready."
 echo "Production ArrNexus was not stopped or recreated."
 echo "Background ArrNexus workers are disabled in this test container."
-echo "Open through an SSH tunnel or locally: http://127.0.0.1:${TEST_PORT}/mediastack"
-echo
-echo "If you want LAN access for the test, recreate it explicitly with a LAN bind; localhost-only is intentional for this first UI validation."
+if [[ "$TEST_BIND" == "127.0.0.1" ]]; then
+  echo "Open through an SSH tunnel or locally: http://127.0.0.1:${TEST_PORT}/mediastack"
+else
+  echo "Open in a browser using this server's address: http://<server-ip>:${TEST_PORT}/mediastack"
+fi
