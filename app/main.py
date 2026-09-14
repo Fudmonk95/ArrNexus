@@ -5,12 +5,13 @@ import base64
 import json
 import os
 import secrets
+import httpx
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -31,6 +32,9 @@ from . import pipeline
 from . import orchestrator
 from . import queue_janitor
 from . import magic_intake
+from . import mediastack
+from . import stack_setup
+from . import dashboard_boards
 from . import zurg
 from . import services
 
@@ -56,6 +60,9 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(queue_janitor.scan_loop(), name="queue-janitor"),
         asyncio.create_task(magic_intake.scan_loop(), name="magic-intake"),
         asyncio.create_task(magic_intake.verification_loop(), name="magic-intake-verifier"),
+        asyncio.create_task(mediastack.status_loop(), name="mediastack-status"),
+        asyncio.create_task(mediastack.metadata_loop(), name="mediastack-metadata"),
+        asyncio.create_task(mediastack.update_scheduler_loop(), name="mediastack-update-scheduler"),
         asyncio.create_task(media_lists.scheduler_loop(), name="media-list-scheduler"),
         asyncio.create_task(media_automation.scheduler_loop(), name="media-automation-scheduler"),
     ]
@@ -145,6 +152,8 @@ async def setup_submit(request: Request, username: str = Form(...), display_name
         uid = create_user(username, email, display_name, password)
         request.session["user_id"] = uid
         log_event("info", "auth", "setup", "Initial administrator created")
+        if os.getenv("MEDIASTACK_GUIDED_SETUP", "false").lower() in {"1", "true", "yes"}:
+            return _go("/stack-setup")
         return _go("/")
     except Exception as exc:
         _flash(request, str(exc), "error")
@@ -195,9 +204,32 @@ async def profile_save(request: Request, username: str = Form(...), display_name
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    # Dashboard rendering is intentionally cache-only. Slow providers, Zurg
-    # indexing and request correlation run in background tasks and can never
-    # block the web UI.
+    if (
+        os.getenv("MEDIASTACK_GUIDED_SETUP", "false").lower() in {"1", "true", "yes"}
+        and not stack_setup.state().get("completed")
+    ):
+        return _go("/stack-setup")
+
+    board_id = str(request.query_params.get("board") or dashboard_boards.home_board() or "overview")
+    board = dashboard_boards.get_board(board_id) or dashboard_boards.get_board("overview")
+    if board and board.get("id") != "overview":
+        try:
+            await mediastack.refresh_status()
+        except Exception:
+            pass
+        zurg_status = zurg.cached_status()
+        live = pipeline.cached_snapshot()
+        runtime = await dashboard_boards.runtime(
+            board,
+            stack=mediastack.cached_snapshot(),
+            live=live,
+            orchestrator=orchestrator.cached_state(),
+            janitor=queue_janitor.cached_state(),
+            zurg=zurg_status,
+        )
+        return _render(request, "dashboard_board.html", **runtime)
+
+    # The built-in Overview remains the original fast cache-only dashboard.
     zurg_status = zurg.cached_status()
     live = pipeline.cached_snapshot()
     return _render(
@@ -213,6 +245,195 @@ async def dashboard(request: Request):
         orchestrator=orchestrator.cached_state(),
         janitor=queue_janitor.cached_state(),
     )
+
+
+@app.get("/dashboard/boards", response_class=HTMLResponse)
+async def dashboard_boards_page(request: Request):
+    state = dashboard_boards.board_api()
+    return _render(
+        request,
+        "dashboard_boards.html",
+        boards=state["boards"],
+        home_board=state["home_board"],
+        widgets=state["widgets"],
+        public_domain=state["public_domain"],
+        service_links=state["service_links"],
+        spotify_public_url=state["spotify_public_url"],
+    )
+
+
+@app.get("/api/dashboard/boards")
+async def dashboard_boards_api(request: Request):
+    _require_user(request)
+    return dashboard_boards.board_api()
+
+
+@app.get("/api/dashboard/boards/{board_id}/runtime")
+async def dashboard_board_runtime_api(request: Request, board_id: str):
+    _require_user(request)
+    board = dashboard_boards.get_board(board_id)
+    if not board or board.get("id") == "overview":
+        raise HTTPException(404, "Dashboard board not found")
+    try:
+        await mediastack.refresh_status()
+    except Exception:
+        pass
+    state = await dashboard_boards.runtime(
+        board,
+        stack=mediastack.cached_snapshot(),
+        live=pipeline.cached_snapshot(),
+        orchestrator=orchestrator.cached_state(),
+        janitor=queue_janitor.cached_state(),
+        zurg=zurg.cached_status(),
+    )
+    return {
+        "ok": True,
+        "metrics": state.get("metrics") or {},
+        "services": state.get("services") or [],
+        "updates": state.get("updates") or [],
+    }
+
+
+@app.post("/api/dashboard/boards/{board_id}/layout")
+async def dashboard_board_layout_api(request: Request, board_id: str):
+    _require_user(request)
+    payload = await request.json()
+    try:
+        board = dashboard_boards.save_layout(board_id, payload if isinstance(payload, dict) else {})
+        return {"ok": True, "board": board}
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/dashboard/boards/{board_id}/items")
+async def dashboard_board_add_item_api(request: Request, board_id: str):
+    _require_user(request)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "JSON object required")
+    try:
+        item = dashboard_boards.add_item(
+            board_id,
+            str(payload.get("kind") or ""),
+            payload.get("options") if isinstance(payload.get("options"), dict) else {},
+        )
+        return {"ok": True, "item": item}
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/dashboard/boards/{board_id}/items/{item_id}/remove")
+async def dashboard_board_remove_item_api(request: Request, board_id: str, item_id: str):
+    _require_user(request)
+    try:
+        dashboard_boards.remove_item(board_id, item_id)
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/dashboard/jellyfin/image/{item_id}")
+async def dashboard_jellyfin_image(request: Request, item_id: str):
+    _require_user(request)
+    conn = get_connection("jellyfin")
+    if not conn.url or not conn.api_key:
+        raise HTTPException(404, "Jellyfin is not configured")
+    if not item_id or len(item_id) > 128:
+        raise HTTPException(400, "Invalid Jellyfin item id")
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(
+                conn.url.rstrip("/") + f"/Items/{item_id}/Images/Primary",
+                params={"maxWidth": 420, "quality": 86},
+                headers={"Authorization": f'MediaBrowser Token="{conn.api_key}"'},
+            )
+        if response.status_code >= 400 or not response.content:
+            raise HTTPException(404, "Jellyfin artwork unavailable")
+        return Response(
+            content=response.content,
+            media_type=response.headers.get("content-type", "image/jpeg"),
+            headers={"Cache-Control": "private, max-age=21600"},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Jellyfin artwork proxy failed: {exc}")
+
+
+@app.post("/dashboard/boards/settings")
+async def dashboard_boards_settings(request: Request):
+    _require_user(request)
+    form = await request.form()
+    domain = dashboard_boards.set_public_domain(str(form.get("public_domain") or ""))
+    for key in dashboard_boards.SERVICE_KEYS:
+        value = str(form.get(f"url_{key}") or "").strip()
+        dashboard_boards.set_service_url(key, value)
+    if domain:
+        _flash(request, f"Public service links saved for {domain}. ArrNexus HTTPS public URL is ready for Spotify.", "success")
+    else:
+        _flash(request, "Dashboard public links saved.", "success")
+    return _go("/dashboard/boards")
+
+
+
+@app.post("/dashboard/boards/appearance")
+async def dashboard_board_appearance(request: Request):
+    _require_user(request)
+    form = await request.form()
+    board_id = str(form.get("board_id") or "")
+    try:
+        dashboard_boards.save_appearance(board_id, {
+            "accent": str(form.get("accent") or "#8b5cf6"),
+            "columns": str(form.get("columns") or "12"),
+            "row_height": str(form.get("row_height") or "74"),
+            "panel_opacity": str(form.get("panel_opacity") or "0.82"),
+            "blur": str(form.get("blur") or "18"),
+            "radius": str(form.get("radius") or "18"),
+            "background": str(form.get("background") or ""),
+        })
+        _flash(request, "Dashboard appearance saved.", "success")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/dashboard/boards")
+
+
+@app.post("/dashboard/boards/save")
+async def dashboard_board_save(request: Request):
+    _require_user(request)
+    form = await request.form()
+    try:
+        board = dashboard_boards.save_board(
+            str(form.get("board_id") or ""),
+            str(form.get("name") or ""),
+            [str(x) for x in form.getlist("widgets")],
+            str(form.get("description") or ""),
+        )
+        _flash(request, f"Board {board['name']} saved.", "success")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/dashboard/boards")
+
+
+@app.post("/dashboard/boards/delete")
+async def dashboard_board_delete(request: Request, board_id: str = Form(...)):
+    _require_user(request)
+    try:
+        dashboard_boards.delete_board(board_id)
+        _flash(request, "Dashboard board deleted.", "success")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/dashboard/boards")
+
+
+@app.post("/dashboard/boards/home")
+async def dashboard_board_home(request: Request, board_id: str = Form(...)):
+    _require_user(request)
+    try:
+        dashboard_boards.set_home_board(board_id)
+        _flash(request, "Home dashboard updated.", "success")
+    except Exception as exc:
+        _flash(request, str(exc), "error")
+    return _go("/dashboard/boards")
 
 
 @app.get("/pipeline", response_class=HTMLResponse)
@@ -798,9 +1019,10 @@ async def music_page(request: Request, q: str = ""):
 
 @app.get("/music/settings", response_class=HTMLResponse)
 async def music_settings_page(request: Request):
-    public_url = setting_get("app.public_url", "") or settings.public_url
-    redirect_uri = music.spotify_redirect_uri(public_url, str(request.url))
+    stored_public_url = setting_get("app.public_url", "") or settings.public_url
+    redirect_uri = music.spotify_redirect_uri(stored_public_url, str(request.url))
     redirect_ok, redirect_message = music.spotify_redirect_validation(redirect_uri)
+    public_url = redirect_uri.removesuffix("/music/spotify/callback") if redirect_uri else stored_public_url
     return _render(
         request, "music_settings.html", client_id=setting_get("music.spotify.client_id"),
         market=setting_get("music.spotify.market", "GB"), configured=music.spotify_app_configured(),
@@ -821,6 +1043,23 @@ async def music_settings_save(request: Request, client_id: str = Form(""), clien
     return _go("/music/settings")
 
 
+
+@app.post("/music/spotify/test")
+async def spotify_test(request: Request):
+    _require_user(request)
+    result = await music.spotify_app_diagnostics()
+    stored_public_url = setting_get("app.public_url", "") or settings.public_url
+    redirect_uri = music.spotify_redirect_uri(stored_public_url, str(request.url))
+    redirect_ok, redirect_message = music.spotify_redirect_validation(redirect_uri)
+    if result.get("ok") and redirect_ok:
+        _flash(request, f"Spotify credentials are valid. OAuth callback ready: {redirect_uri}", "success")
+    elif not result.get("ok"):
+        _flash(request, f"Spotify credentials test failed: {result.get('message') or result.get('status')}", "error")
+    else:
+        _flash(request, f"Spotify credentials are valid, but OAuth needs attention: {redirect_message}", "error")
+    return _go("/music/settings")
+
+
 @app.get("/music/spotify/connect")
 async def spotify_connect(request: Request):
     user = _require_user(request)
@@ -830,6 +1069,30 @@ async def spotify_connect(request: Request):
     if not redirect_ok:
         _flash(request, f"Spotify cannot be linked yet. {redirect_message} Redirect URI: {redirect_uri or 'not configured'}", "error")
         return _go("/music/settings")
+
+    # OAuth state is deliberately tied to the browser session that starts the
+    # flow. Starting from a LAN/test hostname and returning through the public
+    # Cloudflare hostname creates a different browser cookie/session and makes
+    # the state check fail. Refuse that unsafe/ambiguous flow up front and tell
+    # the user which hostname to open instead.
+    redirect_host = (urlparse(redirect_uri).hostname or "").lower()
+    forwarded_host = str(request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
+    current_netloc = forwarded_host or request.url.netloc
+    try:
+        current_host = (urlparse("//" + current_netloc).hostname or "").lower()
+    except Exception:
+        current_host = (request.url.hostname or "").lower()
+    if redirect_host and current_host and redirect_host != current_host:
+        public_base = redirect_uri.removesuffix("/music/spotify/callback")
+        _flash(
+            request,
+            f"Open ArrNexus at {public_base} and press Link Spotify there. "
+            f"This browser session is on {current_netloc}, but Spotify returns to {redirect_host}; "
+            "using two different ArrNexus origins would fail the OAuth state check.",
+            "error",
+        )
+        return _go("/music/settings")
+
     state = secrets.token_urlsafe(24)
     request.session["spotify_state"] = state
     request.session["spotify_redirect_uri"] = redirect_uri
@@ -846,7 +1109,17 @@ async def spotify_callback(request: Request, code: str = "", state: str = "", er
     expected_state = request.session.pop("spotify_state", None)
     redirect_uri = request.session.pop("spotify_redirect_uri", "")
     if error or not code or state != expected_state:
-        _flash(request, error or "Spotify authorization state did not match.", "error")
+        if error:
+            message = error
+        elif state != expected_state:
+            message = (
+                "Spotify authorization state did not match. Start Link Spotify from the same HTTPS "
+                "ArrNexus hostname used by the callback; do not begin OAuth from a LAN IP/test origin "
+                "and return through a different ArrNexus instance."
+            )
+        else:
+            message = "Spotify authorization did not return an authorization code."
+        _flash(request, message, "error")
         return _go("/music")
     try:
         if not redirect_uri:
@@ -975,6 +1248,204 @@ async def automation_import(request: Request, library_name: str = Form(""), yaml
     except Exception as exc:
         _flash(request, str(exc), "error")
     return _go("/automation")
+
+
+@app.get("/mediastack", response_class=HTMLResponse)
+async def mediastack_page(request: Request):
+    try:
+        await mediastack.refresh_status()
+        await mediastack.refresh_jobs()
+    except Exception:
+        pass
+    return _render(request, "mediastack.html", stack=mediastack.cached_snapshot())
+
+
+@app.get("/api/mediastack")
+async def mediastack_api(request: Request):
+    _require_user(request)
+    return mediastack.cached_snapshot()
+
+
+@app.post("/api/mediastack/refresh")
+async def mediastack_refresh_api(request: Request):
+    _require_user(request)
+    await mediastack.refresh_status()
+    await mediastack.refresh_jobs()
+    return mediastack.cached_snapshot()
+
+
+@app.post("/api/mediastack/check-updates")
+async def mediastack_update_check_api(request: Request):
+    _require_user(request)
+    await mediastack.refresh_updates()
+    return mediastack.cached_snapshot()
+
+
+@app.post("/api/mediastack/refresh-configs")
+async def mediastack_config_refresh_api(request: Request):
+    _require_user(request)
+    await mediastack.refresh_configs()
+    return mediastack.cached_snapshot().get("configs") or {}
+
+
+@app.get("/api/mediastack/logs/{name}")
+async def mediastack_logs_api(request: Request, name: str, tail: int = 250):
+    _require_user(request)
+    try:
+        return await mediastack.logs(name, tail)
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.get("/api/mediastack/config")
+async def mediastack_config_api(request: Request, root: str, path: str):
+    _require_user(request)
+    try:
+        return await mediastack.config_file(root, path)
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.get("/api/mediastack/discovery")
+async def mediastack_discovery_api(request: Request):
+    _require_user(request)
+    try:
+        return await mediastack.discovery()
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.get("/api/mediastack/update-plan/{name}")
+async def mediastack_update_plan_api(request: Request, name: str):
+    _require_user(request)
+    try:
+        return await mediastack.update_plan(name)
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.post("/api/mediastack/actions/{name}/{action}")
+async def mediastack_action_api(request: Request, name: str, action: str):
+    _require_user(request)
+    if action == "update":
+        try:
+            return await mediastack.start_update(name)
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:1000] if exc.response is not None else str(exc)
+            raise HTTPException(exc.response.status_code if exc.response is not None else 502, detail)
+        except Exception as exc:
+            raise HTTPException(502, str(exc))
+    if action not in {"start", "stop", "restart"}:
+        raise HTTPException(400, "Unsupported MediaStack action")
+    try:
+        return await mediastack.lifecycle(name, action)
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:1000] if exc.response is not None else str(exc)
+        raise HTTPException(exc.response.status_code if exc.response is not None else 502, detail)
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.post("/api/mediastack/actions/{name}/update")
+async def mediastack_start_update_api(request: Request, name: str):
+    _require_user(request)
+    try:
+        return await mediastack.start_update(name)
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:1000] if exc.response is not None else str(exc)
+        raise HTTPException(exc.response.status_code if exc.response is not None else 502, detail)
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.get("/api/mediastack/jobs/{job_id}")
+async def mediastack_job_api(request: Request, job_id: str):
+    _require_user(request)
+    try:
+        return await mediastack.job(job_id)
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.get("/stack-setup", response_class=HTMLResponse)
+async def stack_setup_page(request: Request):
+    try:
+        await mediastack.refresh_status()
+    except Exception:
+        pass
+    stack = mediastack.cached_snapshot()
+    return _render(request, "stack_setup.html", setup=stack_setup.page_context(stack), stack=stack)
+
+
+@app.post("/api/stack-setup/preview")
+async def stack_setup_preview_api(request: Request):
+    _require_user(request)
+    payload = await request.json()
+    current = stack_setup.normalise(payload if isinstance(payload, dict) else {})
+    return {
+        "ok": True,
+        "state": current,
+        "plan": stack_setup.adoption_plan(mediastack.cached_snapshot(), current),
+    }
+
+
+@app.get("/api/stack-setup/recovery-compose")
+async def stack_setup_recovery_compose_api(request: Request):
+    _require_user(request)
+    text = stack_setup.recovery_compose(mediastack.cached_snapshot(), stack_setup.state())
+    return PlainTextResponse(
+        text,
+        media_type="text/yaml",
+        headers={"Content-Disposition": 'attachment; filename="arrnexus-mediastack-recovery.yml"'},
+    )
+
+
+@app.post("/stack-setup")
+async def stack_setup_save(request: Request):
+    _require_user(request)
+    form = await request.form()
+    selected = [str(value) for value in form.getlist("services")]
+    payload = {
+        "mode": str(form.get("mode") or "adopt"),
+        "selected_services": selected,
+        "stack_root": str(form.get("stack_root") or "/opt/arrnexus-mediastack"),
+        "zurg_mount_root": str(form.get("zurg_mount_root") or "/zurg_mnt"),
+        "config_strategy": str(form.get("config_strategy") or "keep-existing"),
+        "tz": str(form.get("tz") or "Europe/London"),
+        "puid": str(form.get("puid") or "1000"),
+        "pgid": str(form.get("pgid") or "1000"),
+        "jellyfin_gpu": str(form.get("jellyfin_gpu") or "auto"),
+        "update_mode": str(form.get("update_mode") or "review"),
+        "update_time": str(form.get("update_time") or "04:00"),
+        "rollback": bool(form.get("rollback")),
+        "stabilization_seconds": str(form.get("stabilization_seconds") or "30"),
+    }
+    action = str(form.get("action") or "save")
+    complete = action == "complete"
+    saved = stack_setup.save(payload, complete=complete)
+    policies = {
+        key: str(form.get(f"policy_{key}") or "")
+        for key in saved.get("selected_services") or []
+    }
+    stack_setup.save_service_policies(policies)
+
+    stack = mediastack.cached_snapshot()
+    plan = stack_setup.adoption_plan(stack, saved)
+    if complete and saved.get("mode") == "adopt":
+        names = [str(row.get("container") or "") for row in plan.get("services") or [] if row.get("present") and row.get("container")]
+        if stack.get("write_enabled") and names:
+            try:
+                await mediastack.adopt(names)
+                _flash(request, f"MediaStack setup saved. Adopted {len(names)} existing container(s).", "success")
+            except Exception as exc:
+                _flash(request, f"Setup saved, but adoption needs attention: {exc}", "error")
+        else:
+            _flash(request, "MediaStack setup saved. The Docker control channel is still locked, so no containers were changed.", "success")
+    elif complete and saved.get("mode") == "fresh":
+        _flash(request, "Fresh-install desired state saved. No production containers were replaced; the install executor can apply this plan when enabled.", "success")
+    else:
+        _flash(request, "MediaStack setup plan saved.", "success")
+    return _go("/stack-setup")
 
 
 @app.get("/logs", response_class=HTMLResponse)

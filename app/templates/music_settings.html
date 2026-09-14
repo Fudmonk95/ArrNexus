@@ -1,19 +1,24 @@
 {% extends "base.html" %}{% block title %}Music Settings · ArrNexus{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>Spotify settings</h1><p>Configure Spotify and the exact OAuth callback ArrNexus will use.</p></div><a class="button" href="/music">Back to Music Hub</a></div>
+<div class="page-head"><div><h1>Spotify settings</h1><p>Configure Spotify once, verify the app credentials, then link your ArrNexus user account.</p></div><a class="button" href="/music">Back to Music Hub</a></div>
 <div class="grid two">
-<section class="panel"><h2>Spotify application</h2><form method="post" class="stack">
-<label>Client ID<input name="client_id" value="{{ client_id }}"></label>
-<label>Client secret<input type="password" name="client_secret" placeholder="{{ 'Leave blank to keep current secret' if configured else 'Client secret' }}"></label>
+<section class="panel"><div class="panel-head"><div><h2>Spotify application</h2><span class="muted">Developer application credentials</span></div><span class="pill {{ 'good' if configured else 'warn' }}">{{ 'Configured' if configured else 'Not configured' }}</span></div><form method="post" class="stack">
+<label>Client ID<input name="client_id" value="{{ client_id }}" autocomplete="off"></label>
+<label>Client secret<input type="password" name="client_secret" placeholder="{{ 'Leave blank to keep current secret' if configured else 'Client secret' }}" autocomplete="new-password"></label>
 <label>Market<input name="market" value="{{ market }}" maxlength="2"></label>
-<label>ArrNexus public URL<input name="public_url" value="{{ public_url }}" placeholder="https://arrnexus.example.com"><span class="field-help">Use the HTTPS hostname that your browser can reach through Cloudflare/reverse proxy. Do not include /music/spotify/callback here.</span></label>
+<label>ArrNexus public URL<input name="public_url" value="{{ public_url }}" placeholder="https://arrnexus.cyberscott.co.uk"><span class="field-help">Use the public HTTPS hostname that reaches ArrNexus. If Dashboard Studio has a base domain, ArrNexus automatically prefers https://arrnexus.&lt;domain&gt; over an insecure LAN URL.</span></label>
 <button class="primary">Save Spotify settings</button>
-</form></section>
-<section class="panel"><div class="panel-head"><h2>Spotify redirect URI</h2><span class="pill {{ 'good' if redirect_ok else 'bad' }}">{{ 'Ready' if redirect_ok else 'Needs attention' }}</span></div>
-<p class="muted">Copy this exact URI into the Redirect URIs section of your Spotify developer application.</p>
-<div class="copy-row"><code id="spotify-redirect-uri" class="code-inline">{{ redirect_uri or 'Set a public URL first' }}</code><button type="button" data-copy="#spotify-redirect-uri">Copy</button></div>
+</form>
+<div class="inline-actions"><form method="post" action="/music/spotify/test"><button type="submit">Test Spotify credentials</button></form><a class="button" href="/dashboard/boards">Dashboard Studio / public domain</a></div>
+</section>
+<section class="panel"><div class="panel-head"><div><h2>OAuth callback</h2><span class="pill {{ 'good' if redirect_ok else 'bad' }}">{{ 'Ready' if redirect_ok else 'Needs attention' }}</span></div></div>
+<p class="muted">Register this exact URI in the <strong>Redirect URIs</strong> section of your Spotify developer application. The authorization request and Spotify application entry must match exactly.</p>
+<div class="copy-row"><code id="spotify-redirect-uri" class="code-inline">{{ redirect_uri or 'Set a public HTTPS URL first' }}</code><button type="button" data-copy="#spotify-redirect-uri">Copy</button></div>
 <p class="{{ 'good-text' if redirect_ok else 'error-text' }}">{{ redirect_message }}</p>
-{% if not redirect_ok %}<p class="muted small">A LAN callback such as <code>http://192.168.x.x:8484/...</code> is intentionally blocked before ArrNexus sends you to Spotify.</p>{% endif %}
+{% if redirect_ok %}<div class="notice success"><strong>Expected Spotify redirect</strong><br>{{ redirect_uri }}</div>{% else %}<p class="muted small">Spotify only permits HTTPS for normal hosts. Plain HTTP is limited to explicit loopback IP literals such as <code>127.0.0.1</code>; <code>localhost</code> and LAN IP callbacks are not accepted.</p>{% endif %}
 </section>
 </div>
+<section class="panel"><div class="panel-head"><div><h2>Linking checklist</h2><span class="muted">This prevents the common invalid_redirect_uri loop.</span></div></div>
+<div class="grid three"><div class="integration-card"><strong>1 · Public hostname</strong><span class="muted">ArrNexus must be reachable over HTTPS at the hostname shown above.</span></div><div class="integration-card"><strong>2 · Spotify app</strong><span class="muted">Add the exact callback URI above to the Spotify Developer Dashboard.</span></div><div class="integration-card"><strong>3 · Link account</strong><span class="muted">Return to Music Hub and press Connect Spotify. The callback uses the same URI for token exchange.</span></div></div>
+</section>
 {% endblock %}

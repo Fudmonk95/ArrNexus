@@ -1,0 +1,96 @@
+/* Dashboard v2 overflow/scroll hardening.
+   Widgets keep their rounded outer shell while data-heavy contents scroll inside. */
+
+.board-v2-widget{
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+  overflow:hidden;
+}
+
+.board-v2-widget > .widget-head{
+  flex:0 0 auto;
+}
+
+/* Data-heavy widget bodies must be allowed to shrink inside fixed grid rows. */
+.board-v2-widget > .app-tile-grid,
+.board-v2-widget > .stream-grid,
+.board-v2-widget > .poster-strip,
+.board-v2-widget > .visual-list,
+.board-v2-widget > .download-list,
+.board-v2-widget > .calendar-list,
+.board-v2-widget > .container-stat-grid,
+.board-v2-widget > .bookmark-grid,
+.board-v2-widget > .chip-cloud{
+  flex:1 1 auto;
+  min-height:0;
+  overflow:auto;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+  padding-right:5px;
+  padding-bottom:5px;
+}
+
+/* Recently-added cards wrap into rows; scroll vertically once the card is full. */
+.board-v2-widget.widget-recent-media > .poster-strip{
+  align-content:start;
+  overflow-x:hidden;
+  overflow-y:auto;
+}
+
+/* App and container cards should stay neatly packed while scrolling vertically. */
+.board-v2-widget.widget-app-launcher > .app-tile-grid,
+.board-v2-widget.widget-docker-stats > .container-stat-grid{
+  align-content:start;
+  overflow-x:hidden;
+  overflow-y:auto;
+}
+
+/* Lists are vertical by nature. */
+.board-v2-widget.widget-active-requests > .visual-list,
+.board-v2-widget.widget-downloads > .download-list,
+.board-v2-widget.widget-calendar > .calendar-list{
+  overflow-x:hidden;
+  overflow-y:auto;
+}
+
+/* Jellyfin sessions can exceed the allocated card height too. */
+.board-v2-widget.widget-jellyfin-streams > .stream-grid{
+  align-content:start;
+  overflow-x:hidden;
+  overflow-y:auto;
+}
+
+/* Embedded pages should use all remaining space rather than overflowing the card. */
+.board-v2-widget.widget-iframe > .board-iframe{
+  flex:1 1 auto;
+  min-height:0;
+  width:100%;
+}
+
+/* Make scrollability visible but unobtrusive. */
+.board-v2-widget :is(.app-tile-grid,.stream-grid,.poster-strip,.visual-list,.download-list,.calendar-list,.container-stat-grid,.bookmark-grid,.chip-cloud){
+  scrollbar-width:thin;
+  scrollbar-color:color-mix(in srgb,var(--board-accent) 65%,#64748b) rgba(255,255,255,.045);
+}
+
+.board-v2-widget :is(.app-tile-grid,.stream-grid,.poster-strip,.visual-list,.download-list,.calendar-list,.container-stat-grid,.bookmark-grid,.chip-cloud)::-webkit-scrollbar{
+  width:8px;
+  height:8px;
+}
+.board-v2-widget :is(.app-tile-grid,.stream-grid,.poster-strip,.visual-list,.download-list,.calendar-list,.container-stat-grid,.bookmark-grid,.chip-cloud)::-webkit-scrollbar-track{
+  background:rgba(255,255,255,.04);
+  border-radius:999px;
+}
+.board-v2-widget :is(.app-tile-grid,.stream-grid,.poster-strip,.visual-list,.download-list,.calendar-list,.container-stat-grid,.bookmark-grid,.chip-cloud)::-webkit-scrollbar-thumb{
+  background:color-mix(in srgb,var(--board-accent) 58%,#64748b);
+  border-radius:999px;
+}
+.board-v2-widget :is(.app-tile-grid,.stream-grid,.poster-strip,.visual-list,.download-list,.calendar-list,.container-stat-grid,.bookmark-grid,.chip-cloud)::-webkit-scrollbar-thumb:hover{
+  background:color-mix(in srgb,var(--board-accent) 78%,#94a3b8);
+}
+
+/* In edit mode, keep wheel scrolling available inside widget contents. */
+.arr-board-v2.editing .board-v2-widget > :is(.app-tile-grid,.stream-grid,.poster-strip,.visual-list,.download-list,.calendar-list,.container-stat-grid,.bookmark-grid,.chip-cloud){
+  pointer-events:auto;
+}

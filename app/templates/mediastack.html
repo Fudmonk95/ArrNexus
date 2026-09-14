@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}MediaStack · ArrNexus{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/mediastack.css?v={{ version }}">{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>MediaStack</h1>
+    <p>One control plane for the containers that power your media server.</p>
+  </div>
+  <div class="inline-actions no-top">
+    <a class="button secondary" href="/stack-setup">Setup / Manage Stack</a>
+    <button type="button" class="secondary" id="mediastack-refresh">Refresh</button>
+    <button type="button" class="primary" id="mediastack-updates">Check for Updates</button>
+  </div>
+</div>
+
+<div class="flash error" id="mediastack-offline" {% if stack.connected %}hidden{% endif %}>
+  <strong>Stack Agent unavailable.</strong>
+  <span id="mediastack-error">{{ stack.error or 'Waiting for the MediaStack agent to come online.' }}</span>
+</div>
+<div class="notice-card good-border" id="mediastack-online" {% if not stack.connected %}hidden{% endif %}>
+  <strong><span class="dot good"></span> Stack Agent connected</strong>
+  <p id="mediastack-control-message">{% if stack.write_enabled %}Monitoring and authenticated lifecycle controls are enabled. Updates use candidate health checks and automatic rollback.{% else %}Monitoring is active. Container-control actions are locked until the guided MediaStack setup enables the authenticated write channel.{% endif %}</p>
+</div>
+
+<div class="stat-grid mediastack-stats" id="mediastack-stats">
+  <div class="stat"><span>Services</span><strong data-stack-stat="services">{{ stack.summary.total }}</strong><small class="muted"><span data-stack-stat="running">{{ stack.summary.running }}</span> running</small></div>
+  <div class="stat"><span>Healthy</span><strong data-stack-stat="healthy">{{ stack.summary.healthy }}</strong><small class="muted"><span data-stack-stat="attention">{{ stack.summary.attention }}</span> need attention</small></div>
+  <div class="stat"><span>CPU</span><strong><span data-stack-stat="cpu">{{ '%.1f'|format(stack.summary.cpu_percent) }}</span>%</strong><small class="muted">container total</small></div>
+  <div class="stat"><span>RAM</span><strong data-stack-stat="ram">{{ stack.summary.memory_used_human }}</strong><small class="muted">of <span data-stack-stat="ram-total">{{ stack.summary.memory_total_human }}</span></small></div>
+  <div class="stat"><span>Updates</span><strong data-stack-stat="updates">{{ stack.summary.updates }}</strong><small class="muted">image digest changes</small></div>
+</div>
+
+<section class="panel">
+  <div class="panel-head">
+    <div><h2>Docker Host</h2><span class="muted" id="mediastack-last-update">Last sample {{ stack.updated_at or 'not yet available' }}</span></div>
+    <span class="pill {{ 'good' if stack.connected else 'bad' }}" id="mediastack-agent-state">{{ 'Connected' if stack.connected else 'Offline' }}</span>
+  </div>
+  <div class="runtime-grid" id="mediastack-host">
+    <div><span class="muted">Operating system</span><strong data-host="os">{{ stack.system.operating_system or '—' }}</strong></div>
+    <div><span class="muted">Docker</span><strong data-host="docker">{{ stack.system.docker_version or '—' }}</strong></div>
+    <div><span class="muted">CPUs</span><strong data-host="cpus">{{ stack.system.cpus or '—' }}</strong></div>
+    <div><span class="muted">Architecture</span><strong data-host="arch">{{ stack.system.architecture or '—' }}</strong></div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <div><h2>Services</h2><span class="muted">Health, resources, mounts, image versions and controlled lifecycle actions.</span></div>
+    <span class="muted" id="mediastack-updates-checked">Updates checked {{ stack.updates_checked_at or 'not yet' }}</span>
+  </div>
+  <div class="mediastack-service-grid" id="mediastack-services">
+  {% for service in stack.services %}
+    <article class="mediastack-service" data-service-name="{{ service.name }}">
+      <div class="mediastack-service-head">
+        <div class="mediastack-service-title"><span class="dot {{ service.status_class }}"></span><div><strong>{{ service.name }}</strong><span class="muted mono">{{ service.image }}</span></div></div>
+        <div class="head-status">
+          {% if service.update_available %}<span class="pill warn">Update</span>{% elif service.update.checkable %}<span class="pill good">Current</span>{% endif %}
+          {% if service.resource_attention %}<span class="pill {{ service.resource_class }}">Resources</span>{% endif %}
+          <span class="pill {{ service.status_class }}">{{ service.status_text }}</span>
+        </div>
+      </div>
+      {% if service.resource_alerts %}<div class="resource-alert">{{ service.resource_alerts|join(' · ') }}</div>{% endif %}
+      <div class="mediastack-meters">
+        <div><div class="meter-label"><span>CPU</span><strong>{{ '%.2f'|format(service.cpu_percent or 0) }}%</strong></div><div class="meter"><span style="width:{{ [service.cpu_percent or 0, 100]|min }}%"></span></div></div>
+        <div><div class="meter-label"><span>RAM</span><strong>{{ service.memory_human }}</strong></div><div class="meter"><span style="width:{{ [service.memory_percent or 0, 100]|min }}%"></span></div></div>
+      </div>
+      <div class="mediastack-service-meta"><span>RX <b>{{ service.network_rx_human }}</b></span><span>TX <b>{{ service.network_tx_human }}</b></span><span>Restarts <b>{{ service.restart_count }}</b></span></div>
+      <div class="inline-actions no-top stack-card-actions">
+        <button type="button" class="secondary" data-stack-logs="{{ service.name }}">Logs</button>
+        <details class="mediastack-mounts"><summary>Mounts ({{ service.mounts|length }})</summary><div class="mediastack-mount-list">{% for mount in service.mounts %}<div><span class="mono">{{ mount.source }}</span><b>→</b><span class="mono">{{ mount.destination }}</span><em>{{ mount.propagation or mount.mode or '' }}</em></div>{% else %}<p class="muted small">No bind mounts reported.</p>{% endfor %}</div></details>
+        {% if stack.write_enabled %}
+          {% if service.state == 'running' %}<button type="button" class="secondary" data-stack-action="restart" data-stack-name="{{ service.name }}">Restart</button><button type="button" class="secondary danger-outline" data-stack-action="stop" data-stack-name="{{ service.name }}">Stop</button>{% else %}<button type="button" class="secondary" data-stack-action="start" data-stack-name="{{ service.name }}">Start</button>{% endif %}
+          {% if service.update_available %}<button type="button" class="primary" data-stack-update="{{ service.name }}">Update</button>{% endif %}
+        {% endif %}
+      </div>
+    </article>
+  {% else %}<p class="empty">No managed containers reported yet.</p>{% endfor %}
+  </div>
+</section>
+
+<section class="panel" id="mediastack-jobs-panel">
+  <div class="panel-head"><div><h2>Management Jobs</h2><span class="muted">Updates retain the previous container until the candidate is healthy.</span></div></div>
+  <div id="mediastack-jobs" class="stack-jobs">
+    {% for job in stack.jobs[:10] %}<div class="stack-job"><strong>{{ job.name }}</strong><span>{{ job.type }} · {{ job.stage }}</span><span>{{ job.message or '' }}</span><span class="pill {{ 'good' if job.status == 'complete' else ('bad' if job.status == 'failed' else 'warn') }}">{{ job.status }}</span></div>{% else %}<p class="empty">No management jobs yet.</p>{% endfor %}
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><div><h2>Configuration Files</h2><span class="muted">Read-only viewer. Common keys, tokens, usernames and passwords are masked by the Stack Agent.</span></div><button type="button" class="secondary" id="mediastack-config-refresh">Rescan Configs</button></div>
+  <div class="mediastack-config-grid" id="mediastack-configs">
+    {% for file in stack.configs.files %}<button type="button" class="mediastack-config-file" data-config-root="{{ file.root }}" data-config-path="{{ file.path }}"><span class="mono">{{ file.root }}/{{ file.path }}</span><small>{{ file.size }} bytes</small></button>{% else %}<p class="empty">No supported config files indexed yet.</p>{% endfor %}
+  </div>
+</section>
+
+<div class="magic-modal" id="mediastack-modal" hidden aria-hidden="true">
+  <div class="magic-modal-backdrop" data-stack-modal-close></div>
+  <section class="magic-modal-card mediastack-modal-card" role="dialog" aria-modal="true" aria-labelledby="mediastack-modal-title">
+    <div class="panel-head"><div><h2 id="mediastack-modal-title">MediaStack</h2><span class="muted mono" id="mediastack-modal-subtitle"></span></div><button type="button" class="secondary" data-stack-modal-close>Close</button></div>
+    <div id="mediastack-modal-body"><pre class="code mediastack-code">Loading…</pre></div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const modal=document.getElementById('mediastack-modal'),modalTitle=document.getElementById('mediastack-modal-title'),modalSubtitle=document.getElementById('mediastack-modal-subtitle'),modalBody=document.getElementById('mediastack-modal-body');
+  const humanBytes=value=>{let n=Number(value||0);const u=['B','KiB','MiB','GiB','TiB'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++;}return i===0?`${Math.round(n)} ${u[i]}`:`${n.toFixed(1)} ${u[i]}`;};
+  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const openModal=(title,subtitle,html='<pre class="code mediastack-code">Loading…</pre>')=>{modalTitle.textContent=title;modalSubtitle.textContent=subtitle||'';modalBody.innerHTML=html;modal.hidden=false;modal.setAttribute('aria-hidden','false');document.body.classList.add('modal-open');};
+  const closeModal=()=>{modal.hidden=true;modal.setAttribute('aria-hidden','true');document.body.classList.remove('modal-open');};
+  document.querySelectorAll('[data-stack-modal-close]').forEach(el=>el.addEventListener('click',closeModal));
+  async function request(url,options={}){const res=await fetch(url,{credentials:'same-origin',...options});const data=await res.json().catch(()=>({}));if(!res.ok)throw new Error(data.detail||data.error||`HTTP ${res.status}`);return data;}
+
+  function serviceCard(s,writeEnabled){const state=s.status_class||'bad';const update=s.update_available?'<span class="pill warn">Update</span>':(s.update&&s.update.checkable?'<span class="pill good">Current</span>':'');const pressure=s.resource_attention?`<span class="pill ${esc(s.resource_class||'warn')}">Resources</span>`:'';const alert=(s.resource_alerts||[]).length?`<div class="resource-alert">${(s.resource_alerts||[]).map(esc).join(' · ')}</div>`:'';const mounts=(s.mounts||[]).map(m=>`<div><span class="mono">${esc(m.source)}</span><b>→</b><span class="mono">${esc(m.destination)}</span><em>${esc(m.propagation||m.mode||'')}</em></div>`).join('')||'<p class="muted small">No bind mounts reported.</p>';let controls='';if(writeEnabled){controls=s.state==='running'?`<button type="button" class="secondary" data-stack-action="restart" data-stack-name="${esc(s.name)}">Restart</button><button type="button" class="secondary danger-outline" data-stack-action="stop" data-stack-name="${esc(s.name)}">Stop</button>`:`<button type="button" class="secondary" data-stack-action="start" data-stack-name="${esc(s.name)}">Start</button>`;if(s.update_available)controls+=`<button type="button" class="primary" data-stack-update="${esc(s.name)}">Update</button>`;}return `<article class="mediastack-service" data-service-name="${esc(s.name)}"><div class="mediastack-service-head"><div class="mediastack-service-title"><span class="dot ${state}"></span><div><strong>${esc(s.name)}</strong><span class="muted mono">${esc(s.image)}</span></div></div><div class="head-status">${update}${pressure}<span class="pill ${state}">${esc(s.status_text||s.state)}</span></div></div>${alert}<div class="mediastack-meters"><div><div class="meter-label"><span>CPU</span><strong>${Number(s.cpu_percent||0).toFixed(2)}%</strong></div><div class="meter"><span style="width:${Math.min(Number(s.cpu_percent||0),100)}%"></span></div></div><div><div class="meter-label"><span>RAM</span><strong>${esc(s.memory_human||humanBytes(s.memory_used))}</strong></div><div class="meter"><span style="width:${Math.min(Number(s.memory_percent||0),100)}%"></span></div></div></div><div class="mediastack-service-meta"><span>RX <b>${esc(s.network_rx_human||humanBytes(s.network_rx))}</b></span><span>TX <b>${esc(s.network_tx_human||humanBytes(s.network_tx))}</b></span><span>Restarts <b>${Number(s.restart_count||0)}</b></span></div><div class="inline-actions no-top stack-card-actions"><button type="button" class="secondary" data-stack-logs="${esc(s.name)}">Logs</button><details class="mediastack-mounts"><summary>Mounts (${(s.mounts||[]).length})</summary><div class="mediastack-mount-list">${mounts}</div></details>${controls}</div></article>`;}
+  function renderJobs(jobs){document.getElementById('mediastack-jobs').innerHTML=(jobs||[]).slice(0,10).map(j=>{const cls=j.status==='complete'?'good':(j.status==='failed'?'bad':'warn');return `<div class="stack-job"><strong>${esc(j.name||'MediaStack')}</strong><span>${esc(j.type||'job')} · ${esc(j.stage||j.status||'')}</span><span>${esc(j.message||'')}</span><span class="pill ${cls}">${esc(j.status||'unknown')}</span></div>`;}).join('')||'<p class="empty">No management jobs yet.</p>';}
+  function render(data){const q=(name,value)=>{const el=document.querySelector(`[data-stack-stat="${name}"]`);if(el)el.textContent=value;};q('services',data.summary?.total??0);q('running',data.summary?.running??0);q('healthy',data.summary?.healthy??0);q('attention',data.summary?.attention??0);q('cpu',Number(data.summary?.cpu_percent||0).toFixed(1));q('ram',data.summary?.memory_used_human||'—');q('ram-total',data.summary?.memory_total_human||'—');q('updates',data.summary?.updates??0);document.getElementById('mediastack-services').innerHTML=(data.services||[]).map(s=>serviceCard(s,!!data.write_enabled)).join('')||'<p class="empty">No managed containers reported yet.</p>';document.getElementById('mediastack-last-update').textContent=`Last sample ${data.updated_at||'not yet available'}`;document.getElementById('mediastack-updates-checked').textContent=`Updates checked ${data.updates_checked_at||'not yet'}`;const h=data.system||{};[['os',h.operating_system],['docker',h.docker_version],['cpus',h.cpus],['arch',h.architecture]].forEach(([key,value])=>{const el=document.querySelector(`[data-host="${key}"]`);if(el)el.textContent=value||'—';});const badge=document.getElementById('mediastack-agent-state');badge.textContent=data.connected?'Connected':'Offline';badge.className=`pill ${data.connected?'good':'bad'}`;document.getElementById('mediastack-online').hidden=!data.connected;document.getElementById('mediastack-offline').hidden=!!data.connected;if(data.connected)document.getElementById('mediastack-control-message').textContent=data.write_enabled?'Monitoring and authenticated lifecycle controls are enabled. Updates use candidate health checks and automatic rollback.':'Monitoring is active. Container-control actions are locked until the guided MediaStack setup enables the authenticated write channel.';renderJobs(data.jobs||[]);bindDynamic();}
+  async function refresh(){render(await request('/api/mediastack/refresh',{method:'POST'}));}
+  async function pollJob(jobId,name){openModal(`${name} update`,'Guarded update job',`<div class="stack-job-progress"><div class="spinner"></div><h3 id="stack-job-stage">Queued</h3><p class="muted" id="stack-job-message">Waiting for Stack Agent…</p><pre class="code" id="stack-job-detail"></pre></div>`);for(let i=0;i<180;i++){const payload=await request(`/api/mediastack/jobs/${encodeURIComponent(jobId)}`);const j=payload.job||{};const stage=document.getElementById('stack-job-stage'),msg=document.getElementById('stack-job-message'),detail=document.getElementById('stack-job-detail');if(stage)stage.textContent=j.stage||j.status||'Working';if(msg)msg.textContent=j.message||'';if(detail)detail.textContent=j.error?`Error: ${j.error}${j.rollback_error?`\nRollback: ${j.rollback_error}`:''}`:'';if(j.status==='complete'||j.status==='failed'){const spinner=document.querySelector('.spinner');if(spinner)spinner.remove();await refresh();return;}await new Promise(r=>setTimeout(r,5000));}}
+  function bindDynamic(){document.querySelectorAll('[data-stack-logs]').forEach(btn=>{if(btn.dataset.bound)return;btn.dataset.bound='1';btn.addEventListener('click',async()=>{const name=btn.dataset.stackLogs;openModal(`${name} logs`,'Latest 250 lines');try{const data=await request(`/api/mediastack/logs/${encodeURIComponent(name)}?tail=250`);modalBody.innerHTML=`<pre class="code mediastack-code">${esc(data.content||'(no log output)')}</pre>`;}catch(e){modalBody.textContent=e.message;}});});document.querySelectorAll('[data-config-root][data-config-path]').forEach(btn=>{if(btn.dataset.bound)return;btn.dataset.bound='1';btn.addEventListener('click',async()=>{const root=btn.dataset.configRoot,path=btn.dataset.configPath;openModal('Configuration',`${root}/${path}`);try{const data=await request(`/api/mediastack/config?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`);modalBody.innerHTML=`<pre class="code mediastack-code">${esc(data.content||'')}</pre>`;}catch(e){modalBody.textContent=e.message;}});});document.querySelectorAll('[data-stack-action]').forEach(btn=>{if(btn.dataset.bound)return;btn.dataset.bound='1';btn.addEventListener('click',async()=>{const action=btn.dataset.stackAction,name=btn.dataset.stackName;if(!confirm(`${action.toUpperCase()} ${name}?`))return;btn.disabled=true;try{await request(`/api/mediastack/actions/${encodeURIComponent(name)}/${action}`,{method:'POST'});await refresh();}catch(e){alert(e.message);}finally{btn.disabled=false;}});});document.querySelectorAll('[data-stack-update]').forEach(btn=>{if(btn.dataset.bound)return;btn.dataset.bound='1';btn.addEventListener('click',async()=>{const name=btn.dataset.stackUpdate;btn.disabled=true;try{const plan=await request(`/api/mediastack/update-plan/${encodeURIComponent(name)}`);const steps=(plan.steps||[]).map(x=>`<li>${esc(x)}</li>`).join('');openModal(`Update ${name}`,plan.image||'',`<div class="update-plan"><p>This is a guarded replacement, not a blind restart. ArrNexus pulls the candidate first and retains the existing container for rollback until the replacement stabilizes.</p><ul>${steps}</ul>${plan.registry_error?`<div class="flash error">Registry check: ${esc(plan.registry_error)}</div>`:''}<div class="inline-actions"><button type="button" class="primary" id="confirm-stack-update">Run guarded update</button><button type="button" class="secondary" data-stack-plan-cancel>Cancel</button></div></div>`);document.querySelector('[data-stack-plan-cancel]').addEventListener('click',closeModal);document.getElementById('confirm-stack-update').addEventListener('click',async e=>{e.currentTarget.disabled=true;try{const queued=await request(`/api/mediastack/actions/${encodeURIComponent(name)}/update`,{method:'POST'});await pollJob(queued.job_id,name);}catch(err){modalBody.innerHTML=`<div class="flash error">${esc(err.message)}</div>`;}});}catch(e){alert(e.message);}finally{btn.disabled=false;}});});}
+  bindDynamic();
+  document.getElementById('mediastack-refresh').addEventListener('click',async e=>{const b=e.currentTarget;b.disabled=true;b.textContent='Refreshing…';try{await refresh();}catch(err){alert(err.message);}finally{b.disabled=false;b.textContent='Refresh';}});
+  document.getElementById('mediastack-updates').addEventListener('click',async e=>{const b=e.currentTarget;b.disabled=true;b.textContent='Checking…';try{render(await request('/api/mediastack/check-updates',{method:'POST'}));}catch(err){alert(err.message);}finally{b.disabled=false;b.textContent='Check for Updates';}});
+  document.getElementById('mediastack-config-refresh').addEventListener('click',async e=>{const b=e.currentTarget;b.disabled=true;b.textContent='Scanning…';try{const data=await request('/api/mediastack/refresh-configs',{method:'POST'});document.getElementById('mediastack-configs').innerHTML=(data.files||[]).map(f=>`<button type="button" class="mediastack-config-file" data-config-root="${esc(f.root)}" data-config-path="${esc(f.path)}"><span class="mono">${esc(f.root)}/${esc(f.path)}</span><small>${Number(f.size||0)} bytes</small></button>`).join('')||'<p class="empty">No supported config files indexed yet.</p>';bindDynamic();}catch(err){alert(err.message);}finally{b.disabled=false;b.textContent='Rescan Configs';}});
+  setInterval(async()=>{try{render(await request('/api/mediastack'));}catch(_){}},10000);
+})();
+</script>
+{% endblock %}

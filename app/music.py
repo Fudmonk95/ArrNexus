@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import time
 from urllib.parse import urlencode, quote_plus, urlparse
 
@@ -18,32 +19,100 @@ SPOTIFY_USER_SCOPES = (
 )
 
 
+def _loopback_host(host: str) -> bool:
+    host = str(host or "").strip("[]").lower()
+    if host in {"127.0.0.1", "::1"}:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except Exception:
+        return False
+
+
+def _dns_hostname(host: str) -> bool:
+    host = str(host or "").strip("[]").lower()
+    if not host or host == "localhost":
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except Exception:
+        return "." in host
+
+
+def _valid_spotify_base(base: str) -> str:
+    value = str(base or "").strip().rstrip("/")
+    if not value:
+        return ""
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return ""
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme == "https" and host:
+        return value
+    if parsed.scheme == "http" and _loopback_host(host):
+        return value
+    return ""
 
 
 def spotify_redirect_uri(public_url: str = "", request_url: str = "") -> str:
-    base = str(public_url or "").strip().rstrip("/")
-    if not base and request_url:
-        parsed = urlparse(str(request_url))
-        base = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
-    return f"{base}/music/spotify/callback" if base else ""
+    """Return a Spotify-compliant callback URI.
+
+    Spotify requires HTTPS for every non-loopback callback. ArrNexus may sit
+    behind Cloudflare/reverse proxies where the internal request arrives over
+    HTTP, so an insecure LAN/public_url must never win over the configured
+    dashboard public domain or a public DNS hostname.
+    """
+    explicit = _valid_spotify_base(public_url)
+    if explicit:
+        return f"{explicit}/music/spotify/callback"
+
+    domain = setting_get("dashboard.public_domain", "").strip().lower()
+    if domain:
+        domain = domain.removeprefix("https://").removeprefix("http://").strip("/")
+        if domain:
+            return f"https://arrnexus.{domain}/music/spotify/callback"
+
+    if request_url:
+        try:
+            parsed = urlparse(str(request_url))
+            host = (parsed.hostname or "").lower()
+            if parsed.scheme == "https" and parsed.netloc:
+                return f"https://{parsed.netloc}/music/spotify/callback"
+            if parsed.scheme == "http" and _loopback_host(host) and parsed.netloc:
+                return f"http://{parsed.netloc}/music/spotify/callback"
+            # Reverse proxies commonly terminate TLS before ArrNexus. If the
+            # browser reached a proper DNS hostname, prefer the external HTTPS
+            # form rather than leaking the internal HTTP scheme into OAuth.
+            if parsed.netloc and _dns_hostname(host):
+                return f"https://{parsed.netloc}/music/spotify/callback"
+        except Exception:
+            pass
+    return ""
 
 
 def spotify_redirect_validation(redirect_uri: str) -> tuple[bool, str]:
     uri = str(redirect_uri or "").strip()
     if not uri:
-        return False, "Set an ArrNexus public URL before linking Spotify."
+        return False, "Set an HTTPS ArrNexus public URL or Dashboard public domain before linking Spotify."
     try:
         parsed = urlparse(uri)
     except Exception:
         return False, "The Spotify redirect URI is invalid."
     host = (parsed.hostname or "").lower()
+    if parsed.path.rstrip("/") != "/music/spotify/callback":
+        return False, "The Spotify callback path must be /music/spotify/callback."
     if parsed.scheme == "https" and host:
-        return True, "Ready"
-    if parsed.scheme == "http" and host in {"127.0.0.1", "localhost", "::1"}:
-        return True, "Ready (loopback HTTP)"
+        return True, "Ready — register this exact HTTPS URI in Spotify."
+    if parsed.scheme == "http" and _loopback_host(host):
+        return True, "Ready (loopback HTTP)."
+    if host == "localhost":
+        return False, "Spotify no longer accepts localhost; use 127.0.0.1 for loopback testing or your HTTPS ArrNexus hostname."
     if parsed.scheme == "http":
-        return False, "Spotify requires HTTPS for non-loopback callback addresses. Configure an HTTPS ArrNexus public URL."
-    return False, "Spotify requires an HTTPS callback URL (or an HTTP loopback URL)."
+        return False, "Spotify requires HTTPS for non-loopback callback addresses. Configure your ArrNexus Cloudflare/reverse-proxy hostname."
+    return False, "Spotify requires an HTTPS callback URL (or an HTTP loopback IP literal)."
+
 
 def beatport_search_url(query: str) -> str:
     return "https://www.beatport.com/search?q=" + quote_plus(str(query or "").strip())
@@ -61,8 +130,9 @@ def spotify_authorize_url(user_id: int, state: str, redirect_uri: str) -> str:
     cid = setting_get("music.spotify.client_id", "")
     if not cid:
         raise RuntimeError("Spotify Client ID is not configured")
-    if not redirect_uri:
-        raise RuntimeError("Spotify redirect URI is not configured")
+    ok, message = spotify_redirect_validation(redirect_uri)
+    if not ok:
+        raise RuntimeError(message)
     return "https://accounts.spotify.com/authorize?" + urlencode({
         "client_id": cid,
         "response_type": "code",
@@ -71,6 +141,43 @@ def spotify_authorize_url(user_id: int, state: str, redirect_uri: str) -> str:
         "scope": " ".join(SPOTIFY_USER_SCOPES),
         "show_dialog": "false",
     })
+
+
+async def spotify_app_diagnostics() -> dict:
+    """Validate the Spotify application credentials without exposing them."""
+    cid = setting_get("music.spotify.client_id", "").strip()
+    secret = setting_get("music.spotify.client_secret", "").strip()
+    if not cid or not secret:
+        return {"ok": False, "status": "not_configured", "message": "Spotify Client ID and Client Secret are required."}
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            response = await client.post(
+                "https://accounts.spotify.com/api/token",
+                auth=(cid, secret),
+                data={"grant_type": "client_credentials"},
+            )
+        if response.status_code >= 400:
+            detail = ""
+            try:
+                payload = response.json()
+                detail = str(payload.get("error_description") or payload.get("error") or "")
+            except Exception:
+                detail = response.text[:180]
+            return {
+                "ok": False,
+                "status": "credentials_rejected",
+                "http_status": response.status_code,
+                "message": detail or f"Spotify rejected the application credentials (HTTP {response.status_code}).",
+            }
+        payload = response.json()
+        return {
+            "ok": bool(payload.get("access_token")),
+            "status": "ready",
+            "message": "Spotify application credentials are valid.",
+            "expires_in": int(payload.get("expires_in") or 0),
+        }
+    except Exception as exc:
+        return {"ok": False, "status": "network_error", "message": f"Could not reach Spotify: {exc}"}
 
 
 async def _spotify_app_token() -> str:
@@ -95,12 +202,21 @@ async def spotify_exchange_code(user_id: int, code: str, redirect_uri: str) -> d
     cid = setting_get("music.spotify.client_id", ""); secret = setting_get("music.spotify.client_secret", "")
     if not cid or not secret:
         raise RuntimeError("Spotify application credentials are not configured")
+    ok, message = spotify_redirect_validation(redirect_uri)
+    if not ok:
+        raise RuntimeError(message)
     async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
         r = await client.post("https://accounts.spotify.com/api/token", auth=(cid, secret), data={
             "grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri,
         })
     if r.status_code >= 400:
-        raise RuntimeError(f"Spotify authorization failed: {r.text[:300]}")
+        detail = r.text[:300]
+        try:
+            payload = r.json()
+            detail = str(payload.get("error_description") or payload.get("error") or detail)
+        except Exception:
+            pass
+        raise RuntimeError(f"Spotify authorization failed: {detail}")
     data = r.json(); refresh = str(data.get("refresh_token") or ""); access = str(data.get("access_token") or "")
     if refresh: setting_set(f"music.spotify.user.{int(user_id)}.refresh_token", refresh, True)
     setting_set(f"music.spotify.user.{int(user_id)}.scope", str(data.get("scope") or ""))

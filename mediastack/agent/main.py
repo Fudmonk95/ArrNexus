@@ -1,31 +1,79 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import re
+import secrets
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 
 DOCKER_SOCKET = os.getenv("DOCKER_SOCKET", "/var/run/docker.sock")
 CONFIG_ROOT = Path(os.getenv("CONFIG_ROOT", "/stack-config"))
+STATE_ROOT = Path(os.getenv("STATE_ROOT", "/state"))
 STACK_LABEL = os.getenv("STACK_LABEL", "arrnexus.mediastack=true")
 WATCH_CONTAINERS = {
     item.strip()
     for item in os.getenv("WATCH_CONTAINERS", "").split(",")
     if item.strip()
 }
-UPDATE_TIMEOUT = float(os.getenv("UPDATE_TIMEOUT", "8"))
+UPDATE_TIMEOUT = float(os.getenv("UPDATE_TIMEOUT", "12"))
+WRITE_REQUESTED = os.getenv("WRITE_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+AGENT_TOKEN = os.getenv("AGENT_TOKEN", "").strip()
+WRITE_ENABLED = WRITE_REQUESTED and bool(AGENT_TOKEN)
+WRITE_ALLOWLIST = {
+    item.strip()
+    for item in os.getenv("WRITE_ALLOWLIST", "").split(",")
+    if item.strip()
+}
+GHCR_USERNAME = os.getenv("GHCR_USERNAME", "").strip()
+GHCR_TOKEN = os.getenv("GHCR_TOKEN", "").strip()
+STABILIZATION_SECONDS = max(3, int(os.getenv("STABILIZATION_SECONDS", "10")))
+HEALTH_TIMEOUT_SECONDS = max(20, int(os.getenv("HEALTH_TIMEOUT_SECONDS", "120")))
 
-app = FastAPI(title="ArrNexus MediaStack Agent", version="0.2.0")
+app = FastAPI(title="ArrNexus MediaStack Agent", version="1.0.0")
+
+_JOBS: dict[str, dict[str, Any]] = {}
+_JOB_LOCK = asyncio.Lock()
+_SERVICE_LOCKS: dict[str, asyncio.Lock] = {}
+
+_CONFIG_EXCLUDES = (
+    "archive-layouts/",
+    "archive_layouts/",
+    "cache/",
+    "logs/",
+    "log/",
+    "metadata/",
+    "tmp/",
+    "temp/",
+)
 
 
-def docker_client() -> httpx.AsyncClient:
+def _ensure_state_root() -> None:
+    STATE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        STATE_ROOT.chmod(0o700)
+    except OSError:
+        pass
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def docker_client(timeout: float = 15.0) -> httpx.AsyncClient:
     transport = httpx.AsyncHTTPTransport(uds=DOCKER_SOCKET)
-    return httpx.AsyncClient(transport=transport, base_url="http://docker", timeout=10.0)
+    return httpx.AsyncClient(
+        transport=transport,
+        base_url="http://docker",
+        timeout=httpx.Timeout(timeout, connect=min(timeout, 5.0)),
+    )
 
 
 def _config_roots() -> dict[str, Path]:
@@ -33,8 +81,6 @@ def _config_roots() -> dict[str, Path]:
 
     CONFIG_ROOTS format:
       zurg=/config-roots/zurg;sonarr=/config-roots/sonarr
-
-    The normal consolidated MediaStack uses CONFIG_ROOT=/stack-config instead.
     """
     raw = os.getenv("CONFIG_ROOTS", "").strip()
     roots: dict[str, Path] = {}
@@ -52,6 +98,42 @@ def _config_roots() -> dict[str, Path]:
     return roots
 
 
+def _adopted_names() -> set[str]:
+    path = STATE_ROOT / "adopted.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {str(x) for x in data if str(x).strip()} if isinstance(data, list) else set()
+    except Exception:
+        return set()
+
+
+def _save_adopted(names: set[str]) -> None:
+    _ensure_state_root()
+    path = STATE_ROOT / "adopted.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(sorted(names), indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    path.chmod(0o600)
+
+
+def _require_write(request: Request) -> None:
+    if not WRITE_ENABLED:
+        reason = "write actions are disabled"
+        if WRITE_REQUESTED and not AGENT_TOKEN:
+            reason = "write actions require AGENT_TOKEN"
+        raise HTTPException(403, reason)
+    supplied = request.headers.get("authorization", "")
+    expected = f"Bearer {AGENT_TOKEN}"
+    if not secrets.compare_digest(supplied, expected):
+        raise HTTPException(401, "invalid MediaStack agent token")
+
+
+def _require_service_write(request: Request, name: str) -> None:
+    _require_write(request)
+    if WRITE_ALLOWLIST and name not in WRITE_ALLOWLIST:
+        raise HTTPException(403, f"{name} is not in the MediaStack write allowlist")
+
+
 def _cpu_percent(stats: dict[str, Any]) -> float:
     cpu = stats.get("cpu_stats") or {}
     pre = stats.get("precpu_stats") or {}
@@ -66,7 +148,8 @@ def _cpu_percent(stats: dict[str, Any]) -> float:
 def _memory(stats: dict[str, Any]) -> tuple[int, int, float]:
     mem = stats.get("memory_stats") or {}
     usage = int(mem.get("usage") or 0)
-    cache = int((mem.get("stats") or {}).get("cache") or 0)
+    stat = mem.get("stats") or {}
+    cache = int(stat.get("cache") or stat.get("inactive_file") or 0)
     used = max(0, usage - cache)
     limit = int(mem.get("limit") or 0)
     pct = round((used / limit) * 100.0, 2) if limit else 0.0
@@ -86,7 +169,6 @@ def _parse_image(image: str) -> tuple[str, str, str]:
     else:
         registry = "registry-1.docker.io"
         repo = image if "/" in image else f"library/{image}"
-
     return registry, repo, tag
 
 
@@ -103,7 +185,10 @@ async def _registry_digest(image: str) -> str | None:
             ]
         )
     }
-    async with httpx.AsyncClient(follow_redirects=True, timeout=UPDATE_TIMEOUT) as client:
+    auth: tuple[str, str] | None = None
+    if registry == "ghcr.io" and GHCR_USERNAME and GHCR_TOKEN:
+        auth = (GHCR_USERNAME, GHCR_TOKEN)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=UPDATE_TIMEOUT, auth=auth) as client:
         response = await client.head(url, headers=headers)
         if response.status_code == 401:
             challenge = response.headers.get("www-authenticate", "")
@@ -116,6 +201,7 @@ async def _registry_digest(image: str) -> str | None:
             token_resp = await client.get(
                 realm,
                 params={k: v for k, v in {"service": params.get("service"), "scope": params.get("scope")}.items() if v},
+                auth=auth,
             )
             token_resp.raise_for_status()
             payload = token_resp.json()
@@ -137,7 +223,7 @@ def _is_managed(container: dict[str, Any]) -> bool:
     labels = container.get("Labels") or {}
     label_key, _, label_value = STACK_LABEL.partition("=")
     labelled = label_key in labels and (not label_value or str(labels.get(label_key)) == label_value)
-    return labelled or name in WATCH_CONTAINERS
+    return labelled or name in WATCH_CONTAINERS or name in _adopted_names()
 
 
 async def _container_row(client: httpx.AsyncClient, container: dict[str, Any]) -> dict[str, Any]:
@@ -165,6 +251,8 @@ async def _container_row(client: httpx.AsyncClient, container: dict[str, Any]) -
 
     mounts = [
         {
+            "type": m.get("Type"),
+            "name": m.get("Name"),
             "source": m.get("Source"),
             "destination": m.get("Destination"),
             "mode": m.get("Mode"),
@@ -185,6 +273,8 @@ async def _container_row(client: httpx.AsyncClient, container: dict[str, Any]) -
                 }
             )
 
+    networks = sorted(((detail.get("NetworkSettings") or {}).get("Networks") or {}).keys())
+    labels = (detail.get("Config") or {}).get("Labels") or {}
     return {
         "id": cid[:12],
         "name": name,
@@ -203,7 +293,11 @@ async def _container_row(client: httpx.AsyncClient, container: dict[str, Any]) -
         "network_tx": sum(int(v.get("tx_bytes") or 0) for v in (stats.get("networks") or {}).values()),
         "mounts": mounts,
         "ports": ports,
-        "labels": (detail.get("Config") or {}).get("Labels") or {},
+        "networks": networks,
+        "labels": labels,
+        "compose_project": labels.get("com.docker.compose.project") or "",
+        "compose_service": labels.get("com.docker.compose.service") or "",
+        "managed": _is_managed(container),
     }
 
 
@@ -224,6 +318,328 @@ async def _find_managed(client: httpx.AsyncClient, name: str) -> dict[str, Any]:
     raise HTTPException(404, "Managed container not found")
 
 
+async def _inspect(client: httpx.AsyncClient, cid: str) -> dict[str, Any]:
+    response = await client.get(f"/containers/{cid}/json")
+    response.raise_for_status()
+    return response.json()
+
+
+def _registry_auth_header(image: str) -> str | None:
+    registry, _, _ = _parse_image(image)
+    payload: dict[str, str] | None = None
+    if registry == "ghcr.io" and GHCR_USERNAME and GHCR_TOKEN:
+        payload = {
+            "username": GHCR_USERNAME,
+            "password": GHCR_TOKEN,
+            "serveraddress": "ghcr.io",
+        }
+    if payload is None:
+        return None
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+    return encoded.rstrip("=")
+
+
+async def _pull_image(client: httpx.AsyncClient, image: str) -> dict[str, Any]:
+    registry, repo, tag = _parse_image(image)
+    from_image = repo if registry == "registry-1.docker.io" else f"{registry}/{repo}"
+    headers: dict[str, str] = {}
+    auth_header = _registry_auth_header(image)
+    if auth_header:
+        headers["X-Registry-Auth"] = auth_header
+    async with docker_client(timeout=600.0) as pull_client:
+        response = await pull_client.post(
+            "/images/create",
+            params={"fromImage": from_image, "tag": tag},
+            headers=headers,
+        )
+        response.raise_for_status()
+        text = response.text
+    last: dict[str, Any] = {}
+    for line in text.splitlines():
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        last = payload
+        if payload.get("error"):
+            raise RuntimeError(str(payload.get("error")))
+    image_resp = await client.get(f"/images/{image}/json")
+    image_resp.raise_for_status()
+    image_detail = image_resp.json()
+    return {
+        "image": image,
+        "image_id": image_detail.get("Id"),
+        "repo_digests": image_detail.get("RepoDigests") or [],
+        "last_status": last.get("status") if isinstance(last, dict) else "",
+    }
+
+
+_CONFIG_KEYS = {
+    "Hostname", "Domainname", "User", "AttachStdin", "AttachStdout", "AttachStderr",
+    "ExposedPorts", "Tty", "OpenStdin", "StdinOnce", "Env", "Cmd", "Healthcheck",
+    "ArgsEscaped", "Image", "Volumes", "WorkingDir", "Entrypoint", "NetworkDisabled",
+    "MacAddress", "OnBuild", "Labels", "StopSignal", "StopTimeout", "Shell",
+}
+
+_HOST_KEYS = {
+    "Binds", "ContainerIDFile", "LogConfig", "NetworkMode", "PortBindings",
+    "RestartPolicy", "AutoRemove", "VolumeDriver", "VolumesFrom", "ConsoleSize",
+    "CapAdd", "CapDrop", "CgroupnsMode", "Dns", "DnsOptions", "DnsSearch",
+    "ExtraHosts", "GroupAdd", "IpcMode", "Cgroup", "Links", "OomScoreAdj",
+    "PidMode", "Privileged", "PublishAllPorts", "ReadonlyRootfs", "SecurityOpt",
+    "StorageOpt", "Tmpfs", "UTSMode", "UsernsMode", "ShmSize", "Sysctls",
+    "Runtime", "Isolation", "CpuShares", "Memory", "NanoCpus", "CgroupParent",
+    "BlkioWeight", "BlkioWeightDevice", "BlkioDeviceReadBps", "BlkioDeviceWriteBps",
+    "BlkioDeviceReadIOps", "BlkioDeviceWriteIOps", "CpuPeriod", "CpuQuota",
+    "CpuRealtimePeriod", "CpuRealtimeRuntime", "CpusetCpus", "CpusetMems",
+    "Devices", "DeviceCgroupRules", "DeviceRequests", "MemoryReservation",
+    "MemorySwap", "MemorySwappiness", "OomKillDisable", "PidsLimit", "Ulimits",
+    "CpuCount", "CpuPercent", "IOMaximumIOps", "IOMaximumBandwidth", "MaskedPaths",
+    "ReadonlyPaths", "Init", "Mounts",
+}
+
+
+def _clone_body(detail: dict[str, Any], image: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    source_config = detail.get("Config") or {}
+    source_host = detail.get("HostConfig") or {}
+    config = {key: source_config.get(key) for key in _CONFIG_KEYS if key in source_config}
+    host = {key: source_host.get(key) for key in _HOST_KEYS if key in source_host}
+    config["Image"] = image
+
+    binds = list(host.get("Binds") or [])
+    bound_targets = {
+        str(entry).split(":", 2)[1]
+        for entry in binds
+        if isinstance(entry, str) and ":" in entry
+    }
+    for mount in detail.get("Mounts") or []:
+        if mount.get("Type") != "volume" or not mount.get("Name") or not mount.get("Destination"):
+            continue
+        target = str(mount.get("Destination"))
+        if target in bound_targets:
+            continue
+        mode = "rw" if bool(mount.get("RW", True)) else "ro"
+        binds.append(f"{mount.get('Name')}:{target}:{mode}")
+        bound_targets.add(target)
+    if binds:
+        host["Binds"] = binds
+
+    labels = dict(config.get("Labels") or {})
+    for label in list(labels):
+        if label.startswith("com.docker.compose.") or label.startswith("io.portainer."):
+            labels.pop(label, None)
+    labels["arrnexus.mediastack"] = "true"
+    labels["arrnexus.managed"] = "true"
+    config["Labels"] = labels
+
+    endpoints: dict[str, Any] = {}
+    original_networks = ((detail.get("NetworkSettings") or {}).get("Networks") or {})
+    for network_name, settings in original_networks.items():
+        endpoint: dict[str, Any] = {}
+        aliases = [
+            alias
+            for alias in (settings.get("Aliases") or [])
+            if alias and alias not in {detail.get("Id"), detail.get("Name", "").lstrip("/")}
+            and not str(alias).startswith(str(detail.get("Id") or "")[:12])
+        ]
+        if aliases:
+            endpoint["Aliases"] = aliases
+        if settings.get("IPAMConfig"):
+            endpoint["IPAMConfig"] = settings.get("IPAMConfig")
+        if settings.get("Links"):
+            endpoint["Links"] = settings.get("Links")
+        if settings.get("DriverOpts"):
+            endpoint["DriverOpts"] = settings.get("DriverOpts")
+        if settings.get("MacAddress"):
+            endpoint["MacAddress"] = settings.get("MacAddress")
+        if settings.get("GwPriority") is not None:
+            endpoint["GwPriority"] = settings.get("GwPriority")
+        endpoints[network_name] = endpoint
+
+    body = dict(config)
+    body["HostConfig"] = host
+    if endpoints:
+        body["NetworkingConfig"] = {"EndpointsConfig": endpoints}
+    return body, original_networks
+
+
+async def _disconnect_networks(client: httpx.AsyncClient, cid: str, networks: dict[str, Any]) -> None:
+    for network_name in networks:
+        response = await client.post(
+            f"/networks/{network_name}/disconnect",
+            json={"Container": cid, "Force": True},
+        )
+        if response.status_code not in {200, 204, 404}:
+            response.raise_for_status()
+
+
+async def _reconnect_networks(client: httpx.AsyncClient, cid: str, networks: dict[str, Any]) -> None:
+    for network_name, settings in networks.items():
+        endpoint: dict[str, Any] = {}
+        aliases = [a for a in (settings.get("Aliases") or []) if a and not str(a).startswith(cid[:12])]
+        if aliases:
+            endpoint["Aliases"] = aliases
+        if settings.get("IPAMConfig"):
+            endpoint["IPAMConfig"] = settings.get("IPAMConfig")
+        payload = {"Container": cid}
+        if endpoint:
+            payload["EndpointConfig"] = endpoint
+        response = await client.post(f"/networks/{network_name}/connect", json=payload)
+        if response.status_code not in {200, 201, 204, 403, 409}:
+            response.raise_for_status()
+
+
+async def _wait_ready(client: httpx.AsyncClient, cid: str, timeout: int = HEALTH_TIMEOUT_SECONDS) -> dict[str, Any]:
+    started = time.monotonic()
+    running_since: float | None = None
+    last_state: dict[str, Any] = {}
+    while time.monotonic() - started < timeout:
+        detail = await _inspect(client, cid)
+        state = detail.get("State") or {}
+        last_state = state
+        if not state.get("Running"):
+            if state.get("Status") in {"exited", "dead"}:
+                raise RuntimeError(f"container exited with code {state.get('ExitCode')}")
+            await asyncio.sleep(2)
+            continue
+
+        if running_since is None:
+            running_since = time.monotonic()
+
+        health = (state.get("Health") or {}).get("Status")
+        if health == "healthy":
+            if time.monotonic() - running_since >= min(STABILIZATION_SECONDS, 5):
+                return state
+        elif health == "unhealthy":
+            if time.monotonic() - running_since > max(15, STABILIZATION_SECONDS):
+                raise RuntimeError("container healthcheck is unhealthy")
+        elif not health and time.monotonic() - running_since >= STABILIZATION_SECONDS:
+            return state
+        await asyncio.sleep(2)
+    raise RuntimeError(f"container did not stabilize within {timeout}s (last state={last_state.get('Status')})")
+
+
+def _snapshot_path(job_id: str, name: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", name)
+    folder = STATE_ROOT / "snapshots" / job_id
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f"{safe}.inspect.json"
+
+
+async def _job_update(job_id: str, **updates: Any) -> None:
+    async with _JOB_LOCK:
+        job = _JOBS.get(job_id)
+        if job is None:
+            return
+        job.update(updates)
+        job["updated_at"] = _now()
+        try:
+            _ensure_state_root()
+            jobs_dir = STATE_ROOT / "jobs"
+            jobs_dir.mkdir(parents=True, exist_ok=True)
+            (jobs_dir / f"{job_id}.json").write_text(json.dumps(job, indent=2) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+
+async def _run_update(job_id: str, name: str) -> None:
+    lock = _SERVICE_LOCKS.setdefault(name, asyncio.Lock())
+    async with lock:
+        old_id = ""
+        backup_name = ""
+        new_id = ""
+        old_networks: dict[str, Any] = {}
+        async with docker_client(timeout=60.0) as client:
+            try:
+                await _job_update(job_id, status="running", stage="inspect", message="Inspecting current container")
+                row = await _find_managed(client, name)
+                old_id = row["Id"]
+                old_detail = await _inspect(client, old_id)
+                image = str((old_detail.get("Config") or {}).get("Image") or "")
+                if not image:
+                    raise RuntimeError("container has no image reference")
+
+                snapshot = _snapshot_path(job_id, name)
+                snapshot.write_text(json.dumps(old_detail, indent=2) + "\n", encoding="utf-8")
+                snapshot.chmod(0o600)
+                old_image_id = str(old_detail.get("Image") or "")
+
+                await _job_update(job_id, stage="pull", image=image, old_image_id=old_image_id, message=f"Pulling {image}")
+                pulled = await _pull_image(client, image)
+                new_image_id = str(pulled.get("image_id") or "")
+                await _job_update(job_id, new_image_id=new_image_id, pulled=pulled)
+
+                if new_image_id and old_image_id and new_image_id == old_image_id:
+                    await _job_update(job_id, status="complete", stage="complete", changed=False, message="Already current")
+                    return
+
+                body, old_networks = _clone_body(old_detail, image)
+                await _job_update(job_id, stage="stop", message=f"Stopping {name}")
+                stop = await client.post(f"/containers/{old_id}/stop", params={"t": "30"})
+                if stop.status_code not in {204, 304}:
+                    stop.raise_for_status()
+
+                backup_name = f"{name}-arrnexus-rollback-{int(time.time())}"
+                rename = await client.post(f"/containers/{old_id}/rename", params={"name": backup_name})
+                rename.raise_for_status()
+                await _disconnect_networks(client, old_id, old_networks)
+
+                await _job_update(job_id, stage="create", backup_container=backup_name, message="Creating replacement container")
+                create = await client.post("/containers/create", params={"name": name}, json=body)
+                if create.status_code >= 400:
+                    raise RuntimeError(f"Docker create failed: {create.text[:800]}")
+                new_id = str(create.json().get("Id") or "")
+                if not new_id:
+                    raise RuntimeError("Docker did not return a replacement container id")
+
+                start = await client.post(f"/containers/{new_id}/start")
+                if start.status_code not in {204, 304}:
+                    start.raise_for_status()
+
+                await _job_update(job_id, stage="health", new_container_id=new_id[:12], message="Waiting for replacement to stabilize")
+                ready = await _wait_ready(client, new_id)
+
+                remove_old = await client.delete(f"/containers/{old_id}", params={"v": "false", "force": "true"})
+                if remove_old.status_code not in {204, 404}:
+                    remove_old.raise_for_status()
+
+                await _job_update(
+                    job_id,
+                    status="complete",
+                    stage="complete",
+                    changed=True,
+                    health=(ready.get("Health") or {}).get("Status"),
+                    message=f"{name} updated successfully",
+                    finished_at=_now(),
+                )
+            except Exception as exc:
+                await _job_update(job_id, status="rollback", stage="rollback", error=str(exc), message="Update failed; attempting rollback")
+                rollback_error = ""
+                try:
+                    if new_id:
+                        await client.delete(f"/containers/{new_id}", params={"v": "false", "force": "true"})
+                    if old_id and backup_name:
+                        rename = await client.post(f"/containers/{old_id}/rename", params={"name": name})
+                        if rename.status_code >= 400 and rename.status_code != 409:
+                            rename.raise_for_status()
+                        await _reconnect_networks(client, old_id, old_networks)
+                        start = await client.post(f"/containers/{old_id}/start")
+                        if start.status_code not in {204, 304}:
+                            start.raise_for_status()
+                        await _wait_ready(client, old_id, timeout=min(HEALTH_TIMEOUT_SECONDS, 90))
+                except Exception as rollback_exc:
+                    rollback_error = str(rollback_exc)
+                await _job_update(
+                    job_id,
+                    status="failed",
+                    stage="failed",
+                    rollback_ok=not bool(rollback_error),
+                    rollback_error=rollback_error,
+                    message="Update failed; rollback completed" if not rollback_error else "Update and rollback both need attention",
+                    finished_at=_now(),
+                )
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     try:
@@ -233,11 +649,42 @@ async def health() -> dict[str, Any]:
         return {
             "ok": True,
             "docker": True,
+            "version": app.version,
+            "write_requested": WRITE_REQUESTED,
+            "write_enabled": WRITE_ENABLED,
+            "write_reason": "enabled" if WRITE_ENABLED else ("missing AGENT_TOKEN" if WRITE_REQUESTED and not AGENT_TOKEN else "disabled"),
             "config_roots": {name: str(path) for name, path in _config_roots().items()},
             "watch_containers": sorted(WATCH_CONTAINERS),
+            "adopted_containers": sorted(_adopted_names()),
+            "write_allowlist": sorted(WRITE_ALLOWLIST),
         }
     except Exception as exc:
         return {"ok": False, "docker": False, "error": str(exc)}
+
+
+@app.get("/api/capabilities")
+async def capabilities() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "read": True,
+        "write_requested": WRITE_REQUESTED,
+        "write_enabled": WRITE_ENABLED,
+        "write_allowlist": sorted(WRITE_ALLOWLIST),
+        "actions": {
+            "start": WRITE_ENABLED,
+            "stop": WRITE_ENABLED,
+            "restart": WRITE_ENABLED,
+            "update": WRITE_ENABLED,
+            "adopt": WRITE_ENABLED,
+        },
+        "safe_update": {
+            "pull_before_stop": True,
+            "inspect_snapshot": True,
+            "replacement_health_check": True,
+            "automatic_container_rollback": True,
+            "volumes_removed": False,
+        },
+    }
 
 
 @app.get("/api/system")
@@ -262,12 +709,29 @@ async def system_info() -> dict[str, Any]:
 
 @app.get("/api/containers")
 async def containers(all_containers: bool = Query(False, alias="all")) -> dict[str, Any]:
-    async with docker_client() as client:
+    async with docker_client(timeout=20.0) as client:
         raw = await _raw_containers(client, True)
         if not all_containers:
             raw = [row for row in raw if _is_managed(row)]
         rows = await asyncio.gather(*[_container_row(client, c) for c in raw])
     return {"ok": True, "services": sorted(rows, key=lambda row: row["name"])}
+
+
+@app.get("/api/discovery")
+async def discovery() -> dict[str, Any]:
+    data = await containers(True)
+    managed = [row for row in data["services"] if row.get("managed")]
+    unmanaged = [row for row in data["services"] if not row.get("managed")]
+    projects: dict[str, list[str]] = {}
+    for row in data["services"]:
+        project = str(row.get("compose_project") or "standalone")
+        projects.setdefault(project, []).append(str(row.get("name") or ""))
+    return {
+        "ok": True,
+        "managed": managed,
+        "unmanaged": unmanaged,
+        "projects": {key: sorted(value) for key, value in sorted(projects.items())},
+    }
 
 
 @app.get("/api/updates")
@@ -303,6 +767,133 @@ async def updates() -> dict[str, Any]:
     return {"ok": True, "services": rows}
 
 
+@app.get("/api/update-plan/{name}")
+async def update_plan(name: str) -> dict[str, Any]:
+    async with docker_client() as client:
+        row = await _find_managed(client, name)
+        detail = await _inspect(client, row["Id"])
+        image = str((detail.get("Config") or {}).get("Image") or "")
+        current_image_id = str(detail.get("Image") or "")
+        remote_digest = None
+        registry_error = ""
+        try:
+            remote_digest = await _registry_digest(image)
+        except Exception as exc:
+            registry_error = str(exc)
+        return {
+            "ok": True,
+            "name": _container_name(row),
+            "image": image,
+            "current_image_id": current_image_id,
+            "remote_digest": remote_digest,
+            "registry_error": registry_error,
+            "running": bool((detail.get("State") or {}).get("Running")),
+            "health": ((detail.get("State") or {}).get("Health") or {}).get("Status"),
+            "restart_count": int(detail.get("RestartCount") or 0),
+            "mounts": detail.get("Mounts") or [],
+            "networks": sorted(((detail.get("NetworkSettings") or {}).get("Networks") or {}).keys()),
+            "write_enabled": WRITE_ENABLED,
+            "steps": [
+                "snapshot Docker inspect data",
+                "pull replacement image before stopping the service",
+                "stop and retain old container as rollback candidate",
+                "create replacement with the same ports, mounts, limits, devices and networks",
+                "require replacement to stabilize",
+                "remove rollback container only after success",
+            ],
+        }
+
+
+@app.post("/api/adopt")
+async def adopt(request: Request) -> dict[str, Any]:
+    _require_write(request)
+    payload = await request.json()
+    names = payload.get("names") or []
+    if not isinstance(names, list):
+        raise HTTPException(400, "names must be a list")
+    async with docker_client() as client:
+        all_rows = await _raw_containers(client, True)
+        existing = {_container_name(row) for row in all_rows}
+    selected = {str(name).strip() for name in names if str(name).strip() in existing}
+    if not selected:
+        raise HTTPException(400, "no matching containers were supplied")
+    adopted = _adopted_names() | selected
+    _save_adopted(adopted)
+    return {"ok": True, "adopted": sorted(adopted)}
+
+
+@app.post("/api/lifecycle/{name}/{action}")
+async def lifecycle_action(name: str, action: str, request: Request) -> dict[str, Any]:
+    _require_service_write(request, name)
+    action = action.lower()
+    if action not in {"start", "stop", "restart"}:
+        raise HTTPException(400, "unsupported lifecycle action")
+    async with docker_client(timeout=60.0) as client:
+        row = await _find_managed(client, name)
+        cid = row["Id"]
+        if action == "start":
+            response = await client.post(f"/containers/{cid}/start")
+            allowed = {204, 304}
+        elif action == "stop":
+            response = await client.post(f"/containers/{cid}/stop", params={"t": "30"})
+            allowed = {204, 304}
+        else:
+            response = await client.post(f"/containers/{cid}/restart", params={"t": "30"})
+            allowed = {204}
+        if response.status_code not in allowed:
+            response.raise_for_status()
+    return {"ok": True, "name": _container_name(row), "action": action}
+
+
+@app.post("/api/actions/{name}/update")
+async def start_update(name: str, request: Request) -> dict[str, Any]:
+    _require_service_write(request, name)
+    async with docker_client() as client:
+        row = await _find_managed(client, name)
+        canonical = _container_name(row)
+
+    lock = _SERVICE_LOCKS.setdefault(canonical, asyncio.Lock())
+    if lock.locked():
+        raise HTTPException(409, f"{canonical} already has an active management action")
+
+    job_id = secrets.token_hex(10)
+    async with _JOB_LOCK:
+        _JOBS[job_id] = {
+            "id": job_id,
+            "type": "update",
+            "name": canonical,
+            "status": "queued",
+            "stage": "queued",
+            "message": "Queued",
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+    asyncio.create_task(_run_update(job_id, canonical), name=f"mediastack-update-{canonical}-{job_id[:6]}")
+    return {"ok": True, "job_id": job_id, "status": "queued", "name": canonical}
+
+
+@app.get("/api/jobs")
+async def jobs() -> dict[str, Any]:
+    async with _JOB_LOCK:
+        rows = sorted(_JOBS.values(), key=lambda x: x.get("created_at") or "", reverse=True)
+    return {"ok": True, "jobs": rows[:100]}
+
+
+@app.get("/api/jobs/{job_id}")
+async def job(job_id: str) -> dict[str, Any]:
+    async with _JOB_LOCK:
+        current = _JOBS.get(job_id)
+    if current:
+        return {"ok": True, "job": current}
+    path = STATE_ROOT / "jobs" / f"{job_id}.json"
+    if path.is_file():
+        try:
+            return {"ok": True, "job": json.loads(path.read_text(encoding="utf-8"))}
+        except Exception:
+            pass
+    raise HTTPException(404, "job not found")
+
+
 def _redact(text: str) -> str:
     keys = r"api[_-]?key|token|password|passwd|secret|username|user_name"
     text = re.sub(
@@ -318,14 +909,26 @@ def _redact(text: str) -> str:
     return text
 
 
+def _config_ignored(root_name: str, rel: Path) -> bool:
+    normalized = str(rel).replace("\\", "/").lower().lstrip("/")
+    if any(normalized.startswith(prefix) for prefix in _CONFIG_EXCLUDES):
+        return True
+    if root_name == "zurg" and "archive-layouts/" in normalized:
+        return True
+    return False
+
+
 @app.get("/api/configs")
 async def configs() -> dict[str, Any]:
     allowed = {".yml", ".yaml", ".json", ".xml", ".conf", ".ini", ".toml", ".properties"}
     files: list[dict[str, Any]] = []
     roots = _config_roots()
+    per_root_limit = 200
+    total_limit = 1000
     for root_name, root in roots.items():
         if not root.exists():
             continue
+        root_count = 0
         for path in root.rglob("*"):
             if not path.is_file() or path.suffix.lower() not in allowed:
                 continue
@@ -334,10 +937,13 @@ async def configs() -> dict[str, Any]:
                 rel = path.relative_to(root)
             except (OSError, ValueError):
                 continue
+            if _config_ignored(root_name, rel):
+                continue
             files.append({"root": root_name, "path": str(rel), "size": size})
-            if len(files) >= 2000:
+            root_count += 1
+            if root_count >= per_root_limit or len(files) >= total_limit:
                 break
-        if len(files) >= 2000:
+        if len(files) >= total_limit:
             break
     return {
         "ok": True,

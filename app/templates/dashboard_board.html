@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}{{ board.name }} · ArrNexus{% endblock %}
+{% block content %}
+<div class="arr-board-v2" data-board-id="{{ board.id }}" data-columns="{{ board.appearance.columns }}" data-row-height="{{ board.appearance.row_height }}" style="--board-accent:{{ board.appearance.accent }};--board-opacity:{{ board.appearance.panel_opacity }};--board-blur:{{ board.appearance.blur }}px;--board-radius:{{ board.appearance.radius }}px;--board-columns:{{ board.appearance.columns }};--board-row-height:{{ board.appearance.row_height }}px;--board-background:{{ board.appearance.background }};">
+  <div class="board-backdrop"></div>
+  <div class="board-v2-content">
+    <header class="board-v2-header">
+      <div class="board-switcher">
+        {% for item in boards %}
+        <a class="board-v2-tab {% if item.id == board.id %}active{% endif %}" href="/{% if item.id != 'overview' %}?board={{ item.id }}{% endif %}">{{ item.name }}</a>
+        {% endfor %}
+      </div>
+      <div class="board-v2-actions">
+        <span class="board-live"><i></i> Live</span>
+        <button type="button" class="button" id="board-edit-toggle">Edit board</button>
+        <button type="button" class="primary board-edit-only" id="board-add-widget">+ Add widget</button>
+        <a class="button" href="/dashboard/boards">Board settings</a>
+      </div>
+    </header>
+
+    <div class="board-v2-titlebar">
+      <div>
+        <p class="board-eyebrow">ARRNEXUS DASHBOARD</p>
+        <h1>{{ board.name }}</h1>
+        <p>{{ board.description or 'Your media server at a glance.' }}</p>
+      </div>
+      <div class="board-title-stats">
+        <div><span>Running</span><strong data-live-running>{{ metrics.running }}/{{ metrics.total }}</strong></div>
+        <div><span>Updates</span><strong data-live-updates>{{ metrics.updates }}</strong></div>
+        <div><span>Domain</span><strong>{{ public_domain or 'Local' }}</strong></div>
+      </div>
+    </div>
+
+    <div class="board-edit-banner board-edit-only">
+      <strong>Edit mode</strong>
+      <span>Drag cards to reorder them, pull the corner handle to resize, or add/remove widgets. Changes save when you leave edit mode.</span>
+    </div>
+
+    <div class="board-v2-grid" id="board-grid">
+      {% for item in board['items'] %}
+      <section class="board-v2-widget widget-{{ item.kind }}" data-widget-id="{{ item.id }}" data-kind="{{ item.kind }}" data-w="{{ item.w }}" data-h="{{ item.h }}" style="grid-column:span {{ item.w }};grid-row:span {{ item.h }};">
+        <div class="widget-edit-chrome board-edit-only">
+          <span class="widget-drag-handle" title="Drag widget">⠿</span>
+          <span class="widget-kind">{{ (widget_catalogue|selectattr('key','equalto',item.kind)|list|first).name if (widget_catalogue|selectattr('key','equalto',item.kind)|list) else item.kind }}</span>
+          <button type="button" class="widget-remove" title="Remove widget">×</button>
+        </div>
+        <div class="widget-resize-handle board-edit-only" title="Resize"></div>
+
+        {% if item.kind == 'app-launcher' %}
+        <div class="widget-head"><div><span class="widget-kicker">Apps</span><h2>Media services</h2></div><a href="/mediastack">Manage</a></div>
+        <div class="app-tile-grid">
+          {% for service in services %}
+          {% if service.public_url %}<a class="app-tile status-{{ service.board_status }}" data-service="{{ service.name }}" href="{{ service.public_url }}" target="_blank" rel="noopener">{% else %}<div class="app-tile status-{{ service.board_status }} disabled" data-service="{{ service.name }}">{% endif %}
+            <div class="app-icon-wrap"><img src="{{ service.icon }}" alt="" loading="lazy"><span class="app-status-dot"></span></div>
+            <div class="app-tile-copy"><strong>{{ service.label }}</strong><span data-service-state>{{ service.status_text or service.state }}</span></div>
+            {% if service.update_available %}<span class="app-update-dot" title="Update available"></span>{% endif %}
+          {% if service.public_url %}</a>{% else %}</div>{% endif %}
+          {% endfor %}
+        </div>
+
+        {% elif item.kind == 'host-resources' %}
+        <div class="widget-head"><div><span class="widget-kicker">Server</span><h2>System resources</h2></div><span class="widget-live-dot"></span></div>
+        <div class="resource-gauges">
+          <div class="resource-gauge" style="--angle:{{ ([metrics.cpu,100]|min) * 3.6 }}deg"><div><strong data-cpu-value>{{ '%.1f'|format(metrics.cpu) }}%</strong><span>Container CPU</span></div></div>
+          <div class="resource-gauge memory" style="--angle:{{ ([metrics.memory,100]|min) * 3.6 }}deg"><div><strong data-memory-value>{{ '%.1f'|format(metrics.memory) }}%</strong><span>{{ metrics.memory_used }} / {{ metrics.memory_total }}</span></div></div>
+        </div>
+        <div class="resource-chart-wrap"><canvas class="metric-chart" data-series="cpu" data-values='{{ metrics.cpu_history|tojson }}'></canvas><canvas class="metric-chart" data-series="memory" data-values='{{ metrics.memory_history|tojson }}'></canvas></div>
+
+        {% elif item.kind == 'clock' %}
+        <div class="clock-widget"><div class="clock-time" data-board-clock>--:--</div><div class="clock-date" data-board-date>Loading date…</div></div>
+
+        {% elif item.kind == 'jellyfin-streams' %}
+        <div class="widget-head"><div><span class="widget-kicker">Jellyfin</span><h2>Now playing</h2></div>{% set jf = (service_links|selectattr('key','equalto','jellyfin')|list) %}{% if jf and jf[0].url %}<a href="{{ jf[0].url }}" target="_blank">Open Jellyfin ↗</a>{% endif %}</div>
+        {% if jellyfin_sessions %}
+        <div class="stream-grid">
+          {% for session in jellyfin_sessions %}
+          <article class="stream-card">
+            <div class="stream-art" {% if session.image %}style="background-image:linear-gradient(180deg,transparent,rgba(2,6,12,.9)),url('{{ session.image }}')"{% endif %}></div>
+            <div class="stream-copy"><span class="pill {{ 'warn' if session.transcoding else 'good' }}">{{ 'Transcoding' if session.transcoding else ('Paused' if session.paused else 'Direct play') }}</span><h3>{{ session.series or session.title }}</h3>{% if session.series %}<p>{{ session.title }}</p>{% endif %}<small>{{ session.user }} · {{ session.client }}{% if session.transcoding and session.video_codec %} · {{ session.video_codec|upper }}{% endif %}</small><div class="progress-track"><span style="width:{{ session.progress }}%"></span></div></div>
+          </article>
+          {% endfor %}
+        </div>
+        {% else %}<div class="visual-empty"><div class="empty-icon">▶</div><strong>Nothing playing</strong><span>Active Jellyfin sessions will appear here automatically.</span></div>{% endif %}
+
+        {% elif item.kind == 'recent-media' %}
+        <div class="widget-head"><div><span class="widget-kicker">Jellyfin</span><h2>Recently added</h2></div><span class="muted">Latest movies & episodes</span></div>
+        {% if recent_media %}<div class="poster-strip">{% for media in recent_media %}<article class="poster-card"><div class="poster-art">{% if media.image %}<img src="{{ media.image }}" alt="" loading="lazy">{% endif %}<span>{{ media.type }}</span></div><strong>{{ media.series or media.title }}</strong>{% if media.series %}<small>{{ media.title }}</small>{% elif media.year %}<small>{{ media.year }}</small>{% endif %}</article>{% endfor %}</div>{% else %}<div class="visual-empty"><strong>No recent media available</strong></div>{% endif %}
+
+        {% elif item.kind == 'active-requests' %}
+        <div class="widget-head"><div><span class="widget-kicker">Requests</span><h2>Active requests</h2></div><a href="/pipeline">Pipeline ↗</a></div>
+        {% if active_requests %}<div class="visual-list">{% for row in active_requests %}<div class="visual-row"><div class="request-icon">{{ (row.media_type or row.type or 'M')[:1]|upper }}</div><div class="grow"><strong>{{ row.title }}</strong><span>{{ row.service or row.source or 'ArrNexus' }}{% if row.year %} · {{ row.year }}{% endif %}</span></div><span class="stage stage-{{ row.stage }}">{{ row.stage_label or row.stage }}</span></div>{% endfor %}</div>{% else %}<div class="visual-empty"><div class="empty-icon">✓</div><strong>Request queue is clear</strong><span>New Seerr requests will appear here.</span></div>{% endif %}
+
+        {% elif item.kind == 'downloads' %}
+        <div class="widget-head"><div><span class="widget-kicker">Acquisition</span><h2>Downloads</h2></div><span class="muted">Sonarr · Radarr · Lidarr</span></div>
+        {% if downloads %}<div class="download-list">{% for download in downloads %}<div class="download-row"><div class="download-top"><strong>{{ download.title }}</strong><span>{{ download.service }}</span></div><div class="progress-track thick"><span style="width:{{ download.progress }}%"></span></div><div class="download-meta"><span>{{ download.status }}</span><strong>{{ download.progress }}%</strong><span>{{ download.timeleft or '—' }}</span></div></div>{% endfor %}</div>{% else %}<div class="visual-empty"><div class="empty-icon">↓</div><strong>No active downloads</strong><span>The Arr queues are currently clear.</span></div>{% endif %}
+
+        {% elif item.kind == 'calendar' %}
+        <div class="widget-head"><div><span class="widget-kicker">Upcoming</span><h2>Media calendar</h2></div><span class="muted">Next 14 days</span></div>
+        {% if calendar %}<div class="calendar-list">{% for event in calendar %}<div class="calendar-row"><div class="calendar-service {{ event.service|lower }}">{{ event.service[:1] }}</div><div class="grow"><strong>{{ event.title }}</strong><span>{{ event.subtitle }}</span></div><time>{{ event.date[:10] if event.date else 'TBA' }}</time></div>{% endfor %}</div>{% else %}<div class="visual-empty"><div class="empty-icon">▦</div><strong>No upcoming items returned</strong></div>{% endif %}
+
+        {% elif item.kind == 'docker-stats' %}
+        <div class="widget-head"><div><span class="widget-kicker">MediaStack</span><h2>Container resources</h2></div><a href="/mediastack">Control plane ↗</a></div>
+        <div class="container-stat-grid">{% for service in services %}<div class="container-stat"><img src="{{ service.icon }}" alt="" loading="lazy"><div class="container-stat-main"><div><strong>{{ service.label }}</strong><span class="status-text {{ service.board_status }}">{{ service.status_text or service.state }}</span></div><div class="dual-bars"><label><span>CPU {{ service.cpu_percent|default(0) }}%</span><i><b style="width:{{ [service.cpu_percent|default(0),100]|min }}%"></b></i></label><label><span>RAM {{ service.memory_percent|default(0) }}%</span><i><b style="width:{{ [service.memory_percent|default(0),100]|min }}%"></b></i></label></div></div></div>{% endfor %}</div>
+
+        {% elif item.kind == 'updates' %}
+        <div class="widget-head"><div><span class="widget-kicker">MediaStack</span><h2>Updates</h2></div><a href="/mediastack">Manage ↗</a></div>
+        <div class="hero-number">{{ updates|length }}</div><p class="muted">container{{ '' if updates|length == 1 else 's' }} with an update available</p>{% if updates %}<div class="chip-cloud">{% for service in updates %}<span><img src="{{ service_icon(service.name) if service_icon is defined else '' }}" alt="">{{ service.name }}</span>{% endfor %}</div>{% endif %}
+
+        {% elif item.kind == 'missing-queue' %}
+        <div class="widget-head"><div><span class="widget-kicker">ArrNexus</span><h2>Recovery</h2></div></div>
+        <div class="stat-quad"><a href="/missing-media"><span>Missing</span><strong>{{ orchestrator.summary.missing|default(0) }}</strong></a><a href="/missing-media"><span>Searching</span><strong>{{ orchestrator.summary.searching|default(0) }}</strong></a><a href="/queue-janitor"><span>Queue</span><strong>{{ (janitor.summary.warning|default(0)) + (janitor.summary.actionable|default(0)) }}</strong></a><a href="/queue-janitor"><span>Attention</span><strong>{{ janitor.summary.attention|default(0) }}</strong></a></div>
+
+        {% elif item.kind == 'zurg-health' %}
+        <div class="widget-head"><div><span class="widget-kicker">Storage</span><h2>Zurg</h2></div><a href="/zurg">Details ↗</a></div>
+        <div class="zurg-hero"><div class="zurg-orb {{ 'good' if zurg.readable else 'bad' }}"></div><div><strong>{{ 'Mounted & readable' if zurg.readable else 'Unavailable' }}</strong><span>{{ zurg.counts.movies|default(0) }} movies · {{ zurg.counts.shows|default(0) }} shows</span></div></div><div class="zurg-mini"><span>Unplayable <strong>{{ zurg.counts['__unplayable__']|default(0) }}</strong></span><span>Cache <strong>{{ zurg.storage.size_human if zurg.storage else '—' }}</strong></span></div>
+
+        {% elif item.kind == 'bookmarks' %}
+        <div class="widget-head"><div><span class="widget-kicker">Links</span><h2>{{ item.options.title or 'Bookmarks' }}</h2></div></div>
+        <div class="bookmark-grid">{% for link in (item.options.links or []) %}{% set bits = link.split('|',1) %}<a href="{{ bits[1] if bits|length > 1 else bits[0] }}" target="_blank" rel="noopener"><span>{{ (bits[0] or 'Link')[:1]|upper }}</span><strong>{{ bits[0] }}</strong></a>{% else %}<div class="visual-empty"><span>Add this widget again and enter bookmarks as Name|URL entries.</span></div>{% endfor %}</div>
+
+        {% elif item.kind == 'note' %}
+        <div class="note-widget"><span class="widget-kicker">Note</span><h2>{{ item.options.title or 'Note' }}</h2><p>{{ item.options.text or 'Edit mode → add a Note widget to create a dashboard note.' }}</p></div>
+
+        {% elif item.kind == 'iframe' %}
+        <div class="widget-head"><div><span class="widget-kicker">Embedded</span><h2>{{ item.options.title or 'Embedded page' }}</h2></div>{% if item.options.url %}<a href="{{ item.options.url }}" target="_blank">Open ↗</a>{% endif %}</div>{% if item.options.url %}<iframe class="board-iframe" src="{{ item.options.url }}" loading="lazy" referrerpolicy="no-referrer"></iframe>{% else %}<div class="visual-empty"><span>Add an Embedded page widget and provide a URL.</span></div>{% endif %}
+        {% endif %}
+      </section>
+      {% endfor %}
+    </div>
+  </div>
+
+  <dialog id="widget-catalogue" class="widget-catalogue-dialog">
+    <div class="catalogue-head"><div><span class="widget-kicker">Dashboard v2</span><h2>Add a widget</h2><p>Build this board the way you want it.</p></div><button type="button" class="dialog-close" aria-label="Close">×</button></div>
+    <div class="catalogue-search"><input id="widget-search" placeholder="Search widgets…" autocomplete="off"></div>
+    <div class="widget-catalogue-grid">
+      {% for widget in widget_catalogue %}
+      <button type="button" class="catalogue-widget" data-add-kind="{{ widget.key }}" data-category="{{ widget.category }}" data-name="{{ widget.name|lower }}">
+        <span class="catalogue-icon">{% if widget.category == 'Media' %}▶{% elif widget.category == 'System' %}⌁{% elif widget.category == 'Apps' %}◫{% elif widget.category == 'ArrNexus' %}◇{% else %}＋{% endif %}</span>
+        <strong>{{ widget.name }}</strong><small>{{ widget.description }}</small><em>{{ widget.category }}</em>
+      </button>
+      {% endfor %}
+    </div>
+  </dialog>
+</div>
+{% endblock %}

@@ -6,6 +6,10 @@
   <title>{% block title %}ArrNexus{% endblock %}</title>
   <link rel="icon" href="/static/arrnexus-icon.png">
   <link rel="stylesheet" href="/static/app.css?v={{ version }}">
+  <link rel="stylesheet" href="/static/dashboard_boards.css?v={{ version }}">
+  <link rel="stylesheet" href="/static/dashboard_color_v2.css?v={{ version }}">
+  <link rel="stylesheet" href="/static/dashboard_scroll_fix.css?v={{ version }}">
+  <link rel="stylesheet" href="/static/dashboard_editor_v2.css?v={{ version }}">
   {% block head %}{% endblock %}
 </head>
 <body>
@@ -16,12 +20,15 @@
     <div class="version">v{{ version }}</div>
     <nav>
       <a href="/" class="{% if request.url.path == '/' %}active{% endif %}">Dashboard</a>
+      <a href="/dashboard/boards" class="{% if request.url.path.startswith('/dashboard/boards') %}active{% endif %}">Boards</a>
       <a href="/pipeline" class="{% if request.url.path.startswith('/pipeline') %}active{% endif %}">Live Requests</a>
       <a href="/missing-media" class="{% if request.url.path.startswith('/missing-media') %}active{% endif %}">Missing Media</a>
       <a href="/queue-janitor" class="{% if request.url.path.startswith('/queue-janitor') %}active{% endif %}">Queue Janitor</a>
       <a href="/magic-intake" class="{% if request.url.path.startswith('/magic-intake') %}active{% endif %}">Magic Intake</a>
       <a href="/zurg" class="{% if request.url.path.startswith('/zurg') %}active{% endif %}">Zurg</a>
       <a href="/arr-services" class="{% if request.url.path.startswith('/arr-services') %}active{% endif %}">Arr Services</a>
+      <a href="/mediastack" class="{% if request.url.path == '/mediastack' %}active{% endif %}">MediaStack</a>
+      <a href="/stack-setup" class="{% if request.url.path.startswith('/stack-setup') %}active{% endif %}">Stack Setup</a>
       <a href="/lists" class="{% if request.url.path.startswith('/lists') %}active{% endif %}">List Import</a>
       <a href="/music" class="{% if request.url.path.startswith('/music') %}active{% endif %}">Music Hub</a>
       <a href="/automation" class="{% if request.url.path.startswith('/automation') %}active{% endif %}">Media Automation</a>
@@ -43,6 +50,9 @@
   </main>
 {% if user %}</div>{% endif %}
 <script src="/static/app.js?v={{ version }}"></script>
+<script src="/static/dashboard_boards.js?v={{ version }}"></script>
+<script src="/static/dashboard_editor_v2.js?v={{ version }}"></script>
 {% block scripts %}{% endblock %}
+<script src="/static/stack_setup_v1.js?v={{ version }}"></script>
 </body>
 </html>

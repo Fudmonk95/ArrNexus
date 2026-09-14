@@ -1,0 +1,30 @@
+/* ArrNexus Dashboard v2 layout editor — make edit/drag/resize obvious and usable. */
+.arr-board-v2 .board-v2-titlebar{position:relative}
+.board-layout-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-left:auto}
+.board-layout-actions #board-edit-toggle{min-height:40px;padding:9px 15px;font-weight:900;border-color:color-mix(in srgb,var(--board-accent) 48%,#40516b);background:linear-gradient(135deg,color-mix(in srgb,var(--board-accent) 28%,#152238),#17263c);box-shadow:0 8px 24px color-mix(in srgb,var(--board-accent) 16%,transparent)}
+.arr-board-v2.editing .board-layout-actions #board-edit-toggle{background:linear-gradient(135deg,var(--board-accent),#2563eb)!important;border-color:rgba(255,255,255,.25)!important;color:#fff!important}
+.board-layout-actions #board-add-widget{min-height:40px}
+
+.arr-board-v2.editing .board-v2-grid{outline:1px dashed color-mix(in srgb,var(--board-accent) 35%,transparent);outline-offset:10px;border-radius:16px}
+.arr-board-v2.editing .board-v2-widget{overflow:visible!important;box-shadow:0 18px 50px rgba(0,0,0,.28),0 0 0 1px color-mix(in srgb,var(--board-accent) 30%,transparent);cursor:default}
+.arr-board-v2.editing .board-v2-widget:hover{box-shadow:0 22px 65px rgba(0,0,0,.34),0 0 0 2px color-mix(in srgb,var(--board-accent) 55%,transparent)}
+
+.arr-board-v2.editing .widget-edit-chrome{height:36px;display:flex!important;align-items:center;gap:8px;padding:5px 8px;background:linear-gradient(90deg,rgba(7,14,25,.97),color-mix(in srgb,var(--board-accent) 13%,rgba(7,14,25,.97)));border-color:color-mix(in srgb,var(--board-accent) 40%,rgba(255,255,255,.16))}
+.arr-board-v2.editing .widget-drag-handle{display:inline-flex;align-items:center;gap:6px;width:auto;height:25px;padding:0 8px;border-radius:7px;background:color-mix(in srgb,var(--board-accent) 18%,rgba(255,255,255,.06));color:#fff;font-size:0;cursor:grab;user-select:none}
+.arr-board-v2.editing .widget-drag-handle:before{content:'⠿  MOVE';font-size:10px;font-weight:900;letter-spacing:.08em}
+.arr-board-v2.editing .widget-drag-handle:active{cursor:grabbing}
+.arr-board-v2.editing .widget-kind{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#c8d5e7}
+.arr-board-v2.editing .widget-remove{display:grid!important;place-items:center;width:26px;height:26px;border-radius:7px!important;background:rgba(255,80,100,.12)!important}
+
+/* Large, unmistakable resize grip. Existing JS converts drag distance into grid spans. */
+.arr-board-v2.editing .widget-resize-handle{display:block!important;right:-8px;bottom:-8px;width:38px;height:38px;border-radius:10px 0 10px 0;background:linear-gradient(135deg,transparent 42%,color-mix(in srgb,var(--board-accent) 70%,#fff) 43% 52%,transparent 53% 60%,color-mix(in srgb,var(--board-accent) 88%,#fff) 61%);cursor:nwse-resize;box-shadow:0 5px 18px rgba(0,0,0,.35);touch-action:none}
+.arr-board-v2.editing .widget-resize-handle:before,.arr-board-v2.editing .widget-resize-handle:after{display:none}
+.arr-board-v2.editing .board-v2-widget:after{content:attr(data-w) ' × ' attr(data-h);position:absolute;right:34px;bottom:7px;z-index:13;padding:3px 7px;border-radius:999px;background:rgba(4,9,18,.88);border:1px solid rgba(255,255,255,.1);color:#b8c7da;font-size:9px;font-weight:800;pointer-events:none}
+
+.board-editor-help{display:none;align-items:center;gap:12px;position:sticky;top:10px;z-index:40;margin:0 0 16px;padding:10px 13px;border-radius:12px;border:1px solid color-mix(in srgb,var(--board-accent) 40%,rgba(255,255,255,.12));background:rgba(5,11,21,.94);backdrop-filter:blur(16px);box-shadow:0 12px 35px rgba(0,0,0,.3);font-size:11px;color:#b7c7da}
+.arr-board-v2.editing .board-editor-help{display:flex}
+.board-editor-help strong{color:#fff}
+.board-editor-help .edit-tip{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border-radius:8px;background:rgba(255,255,255,.05)}
+.board-editor-help .edit-dot{width:7px;height:7px;border-radius:50%;background:var(--board-accent);box-shadow:0 0 10px var(--board-accent)}
+
+@media(max-width:780px){.board-v2-titlebar{align-items:flex-start;flex-direction:column}.board-layout-actions{margin-left:0;width:100%;justify-content:flex-start}.board-editor-help{flex-wrap:wrap}.arr-board-v2.editing .widget-resize-handle{width:44px;height:44px}}
