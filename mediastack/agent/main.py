@@ -1239,17 +1239,57 @@ def _config_ignored(root_name: str, rel: Path) -> bool:
     return False
 
 
-@app.get("/api/configs")
-async def configs() -> dict[str, Any]:
+def _config_candidate_score(root_name: str, rel: Path) -> tuple[int, int, str]:
+    """Rank a service's most useful human-editable configuration file.
+
+    MediaStack should present one service card, not hundreds of generated
+    XML/JSON/YAML files.  Lower scores win; path depth is used as the second
+    tiebreaker so top-level configs are preferred.
+    """
+    normalized = str(rel).replace("\\", "/").lower()
+    base = rel.name.lower()
+    preferred: dict[str, tuple[str, ...]] = {
+        "zurg": ("config.yml", "config.yaml"),
+        "sonarr": ("config.xml",),
+        "radarr": ("config.xml",),
+        "lidarr": ("config.xml",),
+        "prowlarr": ("config.xml",),
+        "whisparr": ("config.xml",),
+        "jellyfin": ("system.xml", "network.xml", "encoding.xml"),
+        "seerrng": ("settings.json", "config.json"),
+        "bazarr": ("config.yaml", "config.yml", "config.ini"),
+        "neutarr": ("config.json", "settings.json", "config.yml", "config.yaml"),
+        "maintainerr": ("settings.json", "config.json"),
+        "profilarr": ("config.yml", "config.yaml", "settings.json"),
+        "homarr": ("settings.json", "config.json"),
+        "arrnexus": ("settings.json", "config.json"),
+    }
+    wanted = preferred.get(root_name, ())
+    if base in wanted:
+        return (wanted.index(base), len(rel.parts), normalized)
+    generic = (
+        "config.yml",
+        "config.yaml",
+        "config.json",
+        "config.xml",
+        "settings.json",
+        "settings.yml",
+        "settings.yaml",
+        "settings.xml",
+        "application.yml",
+        "application.yaml",
+        "application.json",
+    )
+    if base in generic:
+        return (20 + generic.index(base), len(rel.parts), normalized)
+    return (100, len(rel.parts), normalized)
+
+
+def _primary_config(root_name: str, root: Path) -> dict[str, Any]:
     allowed = {".yml", ".yaml", ".json", ".xml", ".conf", ".ini", ".toml", ".properties"}
-    files: list[dict[str, Any]] = []
-    roots = _config_roots()
-    per_root_limit = 200
-    total_limit = 1000
-    for root_name, root in roots.items():
-        if not root.exists():
-            continue
-        root_count = 0
+    candidates: list[tuple[tuple[int, int, str], Path, int]] = []
+    file_count = 0
+    if root.exists():
         for path in root.rglob("*"):
             if not path.is_file() or path.suffix.lower() not in allowed:
                 continue
@@ -1260,16 +1300,61 @@ async def configs() -> dict[str, Any]:
                 continue
             if _config_ignored(root_name, rel):
                 continue
-            files.append({"root": root_name, "path": str(rel), "size": size})
-            root_count += 1
-            if root_count >= per_root_limit or len(files) >= total_limit:
+            file_count += 1
+            # Avoid choosing giant generated files as the primary config.
+            if size <= 512 * 1024:
+                candidates.append((_config_candidate_score(root_name, rel), rel, size))
+            if file_count >= 500:
                 break
-        if len(files) >= total_limit:
-            break
+
+    if not candidates:
+        return {
+            "root": root_name,
+            "path": "",
+            "size": 0,
+            "available": False,
+            "file_count": file_count,
+        }
+
+    _, rel, size = min(candidates, key=lambda item: item[0])
+    return {
+        "root": root_name,
+        "path": str(rel),
+        "size": size,
+        "available": True,
+        "file_count": file_count,
+    }
+
+
+@app.get("/api/configs")
+async def configs() -> dict[str, Any]:
+    roots = _config_roots()
+
+    # One row per managed service.  Services without a readable plaintext
+    # config still get a card so the Configuration section matches the service
+    # inventory rather than the number of files found on disk.
+    service_names = sorted(WATCH_CONTAINERS | set(roots.keys()) | _adopted_names())
+    service_names = [name for name in service_names if name != "arrnexus-stack-agent"]
+
+    files: list[dict[str, Any]] = []
+    for name in service_names:
+        root = roots.get(name)
+        if root is None:
+            files.append({
+                "root": name,
+                "path": "",
+                "size": 0,
+                "available": False,
+                "file_count": 0,
+            })
+            continue
+        files.append(_primary_config(name, root))
+
     return {
         "ok": True,
         "roots": {name: str(path) for name, path in roots.items()},
-        "files": sorted(files, key=lambda x: (x["root"], x["path"])),
+        "files": files,
+        "service_count": len(files),
     }
 
 
