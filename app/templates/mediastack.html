@@ -95,9 +95,15 @@
 </section>
 
 <section class="panel">
-  <div class="panel-head"><div><h2>Configuration Files</h2><span class="muted">Read-only viewer. Common keys, tokens, usernames and passwords are masked by the Stack Agent.</span></div><button type="button" class="secondary" id="mediastack-config-refresh">Rescan Configs</button></div>
+  <div class="panel-head"><div><h2>Service Configurations</h2><span class="muted">One entry per managed service. The primary readable config is shown when available; secrets are masked.</span></div><button type="button" class="secondary" id="mediastack-config-refresh">Rescan Configs</button></div>
   <div class="mediastack-config-grid" id="mediastack-configs">
-    {% for file in stack.configs.files %}<button type="button" class="mediastack-config-file" data-config-root="{{ file.root }}" data-config-path="{{ file.path }}"><span class="mono">{{ file.root }}/{{ file.path }}</span><small>{{ file.size }} bytes</small></button>{% else %}<p class="empty">No supported config files indexed yet.</p>{% endfor %}
+    {% for file in stack.configs.files %}
+      {% if file.available %}
+      <button type="button" class="mediastack-config-file" data-config-root="{{ file.root }}" data-config-path="{{ file.path }}"><strong>{{ file.root }}</strong><span class="mono">{{ file.path }}</span><small>{{ file.size }} bytes · {{ file.file_count }} readable config file{{ '' if file.file_count == 1 else 's' }}</small></button>
+      {% else %}
+      <div class="mediastack-config-file unavailable"><strong>{{ file.root }}</strong><span class="muted">No readable primary config</span><small>{{ file.file_count }} indexed config file{{ '' if file.file_count == 1 else 's' }}</small></div>
+      {% endif %}
+    {% else %}<p class="empty">No managed service configurations indexed yet.</p>{% endfor %}
   </div>
 </section>
 
@@ -283,7 +289,7 @@
   bindDynamic();
   document.getElementById('mediastack-refresh').addEventListener('click',async e=>{const b=e.currentTarget;b.disabled=true;b.textContent='Refreshing…';try{await refresh();}catch(err){alert(err.message);}finally{b.disabled=false;b.textContent='Refresh';}});
   document.getElementById('mediastack-updates').addEventListener('click',async e=>{const b=e.currentTarget;b.disabled=true;b.textContent='Checking…';try{render(await request('/api/mediastack/check-updates',{method:'POST'}));}catch(err){alert(err.message);}finally{b.disabled=false;b.textContent='Check for Updates';}});
-  document.getElementById('mediastack-config-refresh').addEventListener('click',async e=>{const b=e.currentTarget;b.disabled=true;b.textContent='Scanning…';try{const data=await request('/api/mediastack/refresh-configs',{method:'POST'});document.getElementById('mediastack-configs').innerHTML=(data.files||[]).map(f=>`<button type="button" class="mediastack-config-file" data-config-root="${esc(f.root)}" data-config-path="${esc(f.path)}"><span class="mono">${esc(f.root)}/${esc(f.path)}</span><small>${Number(f.size||0)} bytes</small></button>`).join('')||'<p class="empty">No supported config files indexed yet.</p>';bindDynamic();}catch(err){alert(err.message);}finally{b.disabled=false;b.textContent='Rescan Configs';}});
+  document.getElementById('mediastack-config-refresh').addEventListener('click',async e=>{const b=e.currentTarget;b.disabled=true;b.textContent='Scanning…';try{const data=await request('/api/mediastack/refresh-configs',{method:'POST'});document.getElementById('mediastack-configs').innerHTML=(data.files||[]).map(f=>f.available?`<button type="button" class="mediastack-config-file" data-config-root="${esc(f.root)}" data-config-path="${esc(f.path)}"><strong>${esc(f.root)}</strong><span class="mono">${esc(f.path)}</span><small>${Number(f.size||0)} bytes · ${Number(f.file_count||0)} readable config file${Number(f.file_count||0)===1?'':'s'}</small></button>`:`<div class="mediastack-config-file unavailable"><strong>${esc(f.root)}</strong><span class="muted">No readable primary config</span><small>${Number(f.file_count||0)} indexed config file${Number(f.file_count||0)===1?'':'s'}</small></div>`).join('')||'<p class="empty">No managed service configurations indexed yet.</p>';bindDynamic();}catch(err){alert(err.message);}finally{b.disabled=false;b.textContent='Rescan Configs';}});
   setInterval(async()=>{try{render(await request('/api/mediastack'));}catch(_){}},10000);
 })();
 </script>
