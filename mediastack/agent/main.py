@@ -761,15 +761,18 @@ async def _run_resource_update(job_id: str, name: str, cpu_cores: float, memory_
                                 f"Requested RAM limit is below current usage ({round(used / 1024 / 1024)} MiB)"
                             )
 
+                # Docker validates Memory and MemorySwap together during a live
+                # container update. Always submit both values so moving from an
+                # unlimited/default container to a finite RAM cap cannot be
+                # rejected because of the container's previous swap setting.
+                #
+                # MemorySwap == Memory means no additional swap above the RAM
+                # limit. When the user selects Unlimited, reset both to 0.
                 update_body: dict[str, Any] = {
                     "NanoCpus": int(round(cpu_cores * 1_000_000_000)) if cpu_cores else 0,
                     "Memory": int(memory_bytes),
+                    "MemorySwap": int(memory_bytes) if memory_bytes else 0,
                 }
-                current_swap = int(host_config.get("MemorySwap") or 0)
-                if memory_bytes == 0 and current_swap > 0:
-                    update_body["MemorySwap"] = 0
-                elif memory_bytes and current_swap > 0 and current_swap < memory_bytes:
-                    update_body["MemorySwap"] = memory_bytes
 
                 await _job_update(
                     job_id,
