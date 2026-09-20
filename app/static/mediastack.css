@@ -15,3 +15,7 @@
 .resource-suggestion{padding:10px 12px;border:1px solid rgba(80,190,170,.28);border-radius:9px;background:rgba(31,142,120,.08);color:#cfece5}
 @media(max-width:760px){.resource-editor-summary{grid-template-columns:1fr 1fr}.resource-form-grid{grid-template-columns:1fr}}
 @media(max-width:520px){.resource-editor-summary{grid-template-columns:1fr}}
+
+.mediastack-config-file strong{display:block;color:#dce7f5;margin-bottom:3px}
+.mediastack-config-file.unavailable{display:flex;flex-direction:column;align-items:flex-start;padding:10px 12px;border:1px solid rgba(36,51,76,.7);border-radius:8px;background:rgba(8,17,31,.35);opacity:.78}
+.mediastack-config-file.unavailable small{color:var(--muted);margin-top:3px}
