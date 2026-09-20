@@ -80,6 +80,11 @@ def _resource_pressure(item: dict[str, Any]) -> tuple[str, list[str]]:
             severity = "warn"
         alerts.append(f"{restart_count} historical container restarts")
 
+    if item.get("resource_policy_drift"):
+        if severity == "good":
+            severity = "warn"
+        alerts.append("Resource policy drift")
+
     return severity, alerts
 
 
@@ -108,6 +113,16 @@ def _decorate_service(row: dict[str, Any], update_map: dict[str, dict[str, Any]]
             "resource_attention": bool(resource_alerts),
             "memory_human": _human_bytes(item.get("memory_used")),
             "memory_limit_human": _human_bytes(item.get("memory_limit")),
+            "memory_limit_configured_human": (
+                _human_bytes(item.get("memory_limit_configured"))
+                if int(item.get("memory_limit_configured") or 0) > 0
+                else "Unlimited"
+            ),
+            "cpu_limit_human": (
+                f"{float(item.get('cpu_limit_cores') or 0):g} cores"
+                if float(item.get("cpu_limit_cores") or 0) > 0
+                else "Unlimited"
+            ),
             "network_rx_human": _human_bytes(item.get("network_rx")),
             "network_tx_human": _human_bytes(item.get("network_tx")),
             "update": update,
@@ -352,6 +367,26 @@ async def update_plan(name: str) -> dict[str, Any]:
 async def lifecycle(name: str, action: str) -> dict[str, Any]:
     result = await _post(f"/api/lifecycle/{name}/{action}", timeout=15.0)
     log_event("info", "mediastack", "lifecycle_queued", f"{action.title()} queued for {name}", result)
+    return result
+
+
+async def resource_state(name: str) -> dict[str, Any]:
+    return await _get(f"/api/resources/{name}", timeout=15.0)
+
+
+async def set_resources(name: str, cpu_cores: float, memory_mib: float) -> dict[str, Any]:
+    result = await _post(
+        f"/api/resources/{name}",
+        json_payload={"cpu_cores": cpu_cores, "memory_mib": memory_mib},
+        timeout=15.0,
+    )
+    log_event(
+        "info",
+        "mediastack",
+        "resource_change_queued",
+        f"Resource limit change queued for {name}",
+        {"cpu_cores": cpu_cores, "memory_mib": memory_mib, **result},
+    )
     return result
 
 
