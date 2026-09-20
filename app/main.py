@@ -1324,6 +1324,37 @@ async def mediastack_update_plan_api(request: Request, name: str):
         raise HTTPException(502, str(exc))
 
 
+@app.get("/api/mediastack/resources/{name}")
+async def mediastack_resource_state_api(request: Request, name: str):
+    _require_user(request)
+    try:
+        return await mediastack.resource_state(name)
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:1000] if exc.response is not None else str(exc)
+        raise HTTPException(exc.response.status_code if exc.response is not None else 502, detail)
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.post("/api/mediastack/resources/{name}")
+async def mediastack_resource_update_api(request: Request, name: str):
+    _require_user(request)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "JSON object required")
+    try:
+        cpu_cores = float(payload.get("cpu_cores") or 0)
+        memory_mib = float(payload.get("memory_mib") or 0)
+        return await mediastack.set_resources(name, cpu_cores, memory_mib)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "cpu_cores and memory_mib must be numeric")
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:1000] if exc.response is not None else str(exc)
+        raise HTTPException(exc.response.status_code if exc.response is not None else 502, detail)
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
 @app.post("/api/mediastack/actions/{name}/{action}")
 async def mediastack_action_api(request: Request, name: str, action: str):
     _require_user(request)

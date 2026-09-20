@@ -55,6 +55,26 @@ _CONFIG_EXCLUDES = (
 )
 
 
+_RESOURCE_RECOMMENDATIONS: dict[str, tuple[float, int]] = {
+    "zurg": (4.0, 12288),
+    "jellyfin": (4.0, 4096),
+    "arrnexus": (2.0, 2048),
+    "sonarr": (2.0, 2048),
+    "radarr": (2.0, 2048),
+    "lidarr": (1.5, 1536),
+    "prowlarr": (1.5, 1024),
+    "bazarr": (1.5, 1024),
+    "whisparr": (1.5, 1536),
+    "seerrng": (1.0, 1024),
+    "lidarr-postgres": (1.0, 2048),
+    "homarr": (0.5, 512),
+    "maintainerr": (0.5, 512),
+    "neutarr": (0.5, 512),
+    "profilarr": (0.5, 512),
+    "profilarr-parser": (0.5, 512),
+}
+
+
 def _ensure_state_root() -> None:
     STATE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
@@ -114,6 +134,47 @@ def _save_adopted(names: set[str]) -> None:
     tmp.write_text(json.dumps(sorted(names), indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
     path.chmod(0o600)
+
+
+def _resource_policy_path() -> Path:
+    return STATE_ROOT / "resource-policies.json"
+
+
+def _resource_policies() -> dict[str, dict[str, Any]]:
+    try:
+        data = json.loads(_resource_policy_path().read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for name, value in data.items():
+            if not isinstance(value, dict):
+                continue
+            out[str(name)] = {
+                "cpu_cores": float(value.get("cpu_cores") or 0),
+                "memory_bytes": int(value.get("memory_bytes") or 0),
+                "updated_at": str(value.get("updated_at") or ""),
+            }
+        return out
+    except Exception:
+        return {}
+
+
+def _save_resource_policies(policies: dict[str, dict[str, Any]]) -> None:
+    _ensure_state_root()
+    path = _resource_policy_path()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(policies, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    path.chmod(0o600)
+
+
+def _resource_recommendation(name: str) -> dict[str, Any]:
+    cpu, memory_mib = _RESOURCE_RECOMMENDATIONS.get(name, (1.0, 1024))
+    return {
+        "cpu_cores": cpu,
+        "memory_mib": memory_mib,
+        "memory_bytes": memory_mib * 1024 * 1024,
+    }
 
 
 def _require_write(request: Request) -> None:
@@ -275,6 +336,16 @@ async def _container_row(client: httpx.AsyncClient, container: dict[str, Any]) -
 
     networks = sorted(((detail.get("NetworkSettings") or {}).get("Networks") or {}).keys())
     labels = (detail.get("Config") or {}).get("Labels") or {}
+    host_config = detail.get("HostConfig") or {}
+    nano_cpus = int(host_config.get("NanoCpus") or 0)
+    configured_memory = int(host_config.get("Memory") or 0)
+    cpu_limit_cores = round(nano_cpus / 1_000_000_000, 3) if nano_cpus else 0.0
+    policy = _resource_policies().get(name) or {}
+    policy_cpu = float(policy.get("cpu_cores") or 0)
+    policy_memory = int(policy.get("memory_bytes") or 0)
+    policy_drift = bool(policy) and (
+        abs(policy_cpu - cpu_limit_cores) > 0.001 or policy_memory != configured_memory
+    )
     return {
         "id": cid[:12],
         "name": name,
@@ -289,6 +360,11 @@ async def _container_row(client: httpx.AsyncClient, container: dict[str, Any]) -
         "memory_used": used,
         "memory_limit": limit,
         "memory_percent": mem_pct,
+        "cpu_limit_cores": cpu_limit_cores,
+        "memory_limit_configured": configured_memory,
+        "resource_policy": policy,
+        "resource_policy_drift": policy_drift,
+        "resource_recommendation": _resource_recommendation(name),
         "network_rx": sum(int(v.get("rx_bytes") or 0) for v in (stats.get("networks") or {}).values()),
         "network_tx": sum(int(v.get("tx_bytes") or 0) for v in (stats.get("networks") or {}).values()),
         "mounts": mounts,
@@ -640,6 +716,102 @@ async def _run_update(job_id: str, name: str) -> None:
                 )
 
 
+async def _run_resource_update(job_id: str, name: str, cpu_cores: float, memory_bytes: int) -> None:
+    lock = _SERVICE_LOCKS.setdefault(name, asyncio.Lock())
+    async with lock:
+        async with docker_client(timeout=60.0) as client:
+            try:
+                await _job_update(
+                    job_id,
+                    status="running",
+                    stage="validate",
+                    message=f"Validating resource limits for {name}",
+                )
+                row = await _find_managed(client, name)
+                cid = row["Id"]
+                detail = await _inspect(client, cid)
+                host_config = detail.get("HostConfig") or {}
+
+                info_resp = await client.get("/info")
+                info_resp.raise_for_status()
+                info = info_resp.json()
+                host_cpus = int(info.get("NCPU") or 1)
+                host_memory = int(info.get("MemTotal") or 0)
+
+                if cpu_cores < 0:
+                    raise RuntimeError("CPU limit cannot be negative")
+                if cpu_cores and cpu_cores < 0.1:
+                    raise RuntimeError("CPU limit must be at least 0.1 cores, or 0 for unlimited")
+                if cpu_cores > host_cpus:
+                    raise RuntimeError(f"CPU limit cannot exceed Docker host capacity ({host_cpus} cores)")
+                if memory_bytes < 0:
+                    raise RuntimeError("RAM limit cannot be negative")
+                if memory_bytes and memory_bytes < 128 * 1024 * 1024:
+                    raise RuntimeError("RAM limit must be at least 128 MiB, or 0 for unlimited")
+                if host_memory and memory_bytes > host_memory:
+                    raise RuntimeError("RAM limit cannot exceed Docker host memory")
+
+                state = detail.get("State") or {}
+                if memory_bytes and state.get("Running"):
+                    stats_resp = await client.get(f"/containers/{cid}/stats", params={"stream": "false"})
+                    if stats_resp.status_code == 200:
+                        used, _, _ = _memory(stats_resp.json())
+                        if used >= memory_bytes:
+                            raise RuntimeError(
+                                f"Requested RAM limit is below current usage ({round(used / 1024 / 1024)} MiB)"
+                            )
+
+                # Docker validates Memory and MemorySwap together during a live
+                # container update. Always submit both values so moving from an
+                # unlimited/default container to a finite RAM cap cannot be
+                # rejected because of the container's previous swap setting.
+                #
+                # MemorySwap == Memory means no additional swap above the RAM
+                # limit. When the user selects Unlimited, reset both to 0.
+                update_body: dict[str, Any] = {
+                    "NanoCpus": int(round(cpu_cores * 1_000_000_000)) if cpu_cores else 0,
+                    "Memory": int(memory_bytes),
+                    "MemorySwap": int(memory_bytes) if memory_bytes else 0,
+                }
+
+                await _job_update(
+                    job_id,
+                    stage="apply",
+                    message=f"Applying CPU/RAM limits to {name}",
+                    requested={"cpu_cores": cpu_cores, "memory_bytes": memory_bytes},
+                )
+                response = await client.post(f"/containers/{cid}/update", json=update_body)
+                if response.status_code != 200:
+                    raise RuntimeError(f"Docker resource update failed: {response.text[:800]}")
+
+                policies = _resource_policies()
+                policies[name] = {
+                    "cpu_cores": cpu_cores,
+                    "memory_bytes": memory_bytes,
+                    "updated_at": _now(),
+                }
+                _save_resource_policies(policies)
+
+                await _job_update(
+                    job_id,
+                    status="complete",
+                    stage="complete",
+                    message=f"{name} resource limits applied",
+                    cpu_cores=cpu_cores,
+                    memory_bytes=memory_bytes,
+                    finished_at=_now(),
+                )
+            except Exception as exc:
+                await _job_update(
+                    job_id,
+                    status="failed",
+                    stage="failed",
+                    error=str(exc),
+                    message=f"{name} resource limit change failed",
+                    finished_at=_now(),
+                )
+
+
 async def _run_lifecycle(job_id: str, name: str, action: str) -> None:
     lock = _SERVICE_LOCKS.setdefault(name, asyncio.Lock())
     async with lock:
@@ -734,6 +906,7 @@ async def capabilities() -> dict[str, Any]:
             "stop": WRITE_ENABLED,
             "restart": WRITE_ENABLED,
             "update": WRITE_ENABLED,
+            "resources": WRITE_ENABLED,
             "adopt": WRITE_ENABLED,
         },
         "safe_update": {
@@ -879,6 +1052,83 @@ async def adopt(request: Request) -> dict[str, Any]:
     adopted = _adopted_names() | selected
     _save_adopted(adopted)
     return {"ok": True, "adopted": sorted(adopted)}
+
+
+@app.get("/api/resources/{name}")
+async def resource_state(name: str) -> dict[str, Any]:
+    async with docker_client(timeout=20.0) as client:
+        row = await _find_managed(client, name)
+        service = await _container_row(client, row)
+        info_resp = await client.get("/info")
+        info_resp.raise_for_status()
+        info = info_resp.json()
+    return {
+        "ok": True,
+        "name": service["name"],
+        "cpu_percent": service.get("cpu_percent") or 0,
+        "memory_used": service.get("memory_used") or 0,
+        "cpu_limit_cores": service.get("cpu_limit_cores") or 0,
+        "memory_limit_bytes": service.get("memory_limit_configured") or 0,
+        "policy": service.get("resource_policy") or {},
+        "policy_drift": bool(service.get("resource_policy_drift")),
+        "recommendation": service.get("resource_recommendation") or {},
+        "host_cpus": int(info.get("NCPU") or 0),
+        "host_memory": int(info.get("MemTotal") or 0),
+        "write_enabled": WRITE_ENABLED,
+    }
+
+
+@app.post("/api/resources/{name}")
+async def resource_update(name: str, request: Request) -> dict[str, Any]:
+    _require_write(request)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "JSON object required")
+
+    try:
+        cpu_cores = float(payload.get("cpu_cores") or 0)
+        memory_mib = float(payload.get("memory_mib") or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "cpu_cores and memory_mib must be numeric") from exc
+
+    if memory_mib < 0:
+        raise HTTPException(400, "memory_mib cannot be negative")
+    memory_bytes = int(round(memory_mib * 1024 * 1024))
+
+    async with docker_client() as client:
+        row = await _find_managed(client, name)
+        canonical = _container_name(row)
+
+    lock = _SERVICE_LOCKS.setdefault(canonical, asyncio.Lock())
+    if lock.locked():
+        raise HTTPException(409, f"{canonical} already has an active management action")
+
+    job_id = secrets.token_hex(10)
+    async with _JOB_LOCK:
+        _JOBS[job_id] = {
+            "id": job_id,
+            "type": "resources",
+            "name": canonical,
+            "status": "queued",
+            "stage": "queued",
+            "message": "Resource change queued",
+            "requested": {"cpu_cores": cpu_cores, "memory_bytes": memory_bytes},
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+
+    asyncio.create_task(
+        _run_resource_update(job_id, canonical, cpu_cores, memory_bytes),
+        name=f"mediastack-resources-{canonical}-{job_id[:6]}",
+    )
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "status": "queued",
+        "name": canonical,
+        "cpu_cores": cpu_cores,
+        "memory_bytes": memory_bytes,
+    }
 
 
 @app.post("/api/lifecycle/{name}/{action}")

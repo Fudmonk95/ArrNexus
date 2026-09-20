@@ -68,9 +68,15 @@
         <div><div class="meter-label"><span>RAM</span><strong>{{ service.memory_human }}</strong></div><div class="meter"><span style="width:{{ [service.memory_percent or 0, 100]|min }}%"></span></div></div>
       </div>
       <div class="mediastack-service-meta"><span>RX <b>{{ service.network_rx_human }}</b></span><span>TX <b>{{ service.network_tx_human }}</b></span><span>Restarts <b>{{ service.restart_count }}</b></span></div>
+      <div class="mediastack-resource-summary">
+        <span>CPU limit <b>{{ service.cpu_limit_human }}</b></span>
+        <span>RAM limit <b>{{ service.memory_limit_configured_human }}</b></span>
+        {% if service.resource_policy_drift %}<span class="pill warn">Policy drift</span>{% endif %}
+      </div>
       <div class="inline-actions no-top stack-card-actions">
         <button type="button" class="secondary" data-stack-logs="{{ service.name }}">Logs</button>
         <details class="mediastack-mounts"><summary>Mounts ({{ service.mounts|length }})</summary><div class="mediastack-mount-list">{% for mount in service.mounts %}<div><span class="mono">{{ mount.source }}</span><b>→</b><span class="mono">{{ mount.destination }}</span><em>{{ mount.propagation or mount.mode or '' }}</em></div>{% else %}<p class="muted small">No bind mounts reported.</p>{% endfor %}</div></details>
+        {% if stack.write_enabled %}<button type="button" class="secondary" data-stack-resource="{{ service.name }}">Resources</button>{% endif %}
         {% if service_write_allowed %}
           {% if service.state == 'running' %}<button type="button" class="secondary" data-stack-action="restart" data-stack-name="{{ service.name }}">Restart</button><button type="button" class="secondary danger-outline" data-stack-action="stop" data-stack-name="{{ service.name }}">Stop</button>{% else %}<button type="button" class="secondary" data-stack-action="start" data-stack-name="{{ service.name }}">Start</button>{% endif %}
           {% if service.update_available %}<button type="button" class="primary" data-stack-update="{{ service.name }}">Update</button>{% endif %}
@@ -111,7 +117,7 @@
   const humanBytes=value=>{let n=Number(value||0);const u=['B','KiB','MiB','GiB','TiB'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++;}return i===0?`${Math.round(n)} ${u[i]}`:`${n.toFixed(1)} ${u[i]}`;};
   const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const activeActions=new Map();
-  const actionText=action=>({start:'Starting…',stop:'Stopping…',restart:'Restarting…',update:'Updating…'}[action]||'Working…');
+  const actionText=action=>({start:'Starting…',stop:'Stopping…',restart:'Restarting…',update:'Updating…',resources:'Applying limits…'}[action]||'Working…');
   function setCardState(name,text,cls='warn'){const card=[...document.querySelectorAll('[data-service-name]')].find(el=>el.dataset.serviceName===name);const pill=card?.querySelector('[data-stack-state]');if(pill){pill.className=`pill ${cls}`;pill.textContent=text;}}
   function markAction(name,action){const text=actionText(action);activeActions.set(name,text);setCardState(name,text,'warn');}
   function clearAction(name){activeActions.delete(name);}
@@ -120,7 +126,40 @@
   document.querySelectorAll('[data-stack-modal-close]').forEach(el=>el.addEventListener('click',closeModal));
   async function request(url,options={}){const res=await fetch(url,{credentials:'same-origin',...options});const data=await res.json().catch(()=>({}));if(!res.ok)throw new Error(data.detail||data.error||`HTTP ${res.status}`);return data;}
 
-  function serviceCard(s,writeEnabled,writeAllowlist){const state=s.status_class||'bad';const update=s.update_available?'<span class="pill warn">Update</span>':(s.update&&s.update.checkable?'<span class="pill good">Current</span>':'');const allowed=writeEnabled&&(!(writeAllowlist||[]).length||(writeAllowlist||[]).includes(s.name));const protectedPill=writeEnabled&&!allowed?'<span class="pill warn">Protected</span>':'';const pressure=s.resource_attention?`<span class="pill ${esc(s.resource_class||'warn')}">Resources</span>`:'';const alert=(s.resource_alerts||[]).length?`<div class="resource-alert">${(s.resource_alerts||[]).map(esc).join(' · ')}</div>`:'';const mounts=(s.mounts||[]).map(m=>`<div><span class="mono">${esc(m.source)}</span><b>→</b><span class="mono">${esc(m.destination)}</span><em>${esc(m.propagation||m.mode||'')}</em></div>`).join('')||'<p class="muted small">No bind mounts reported.</p>';let controls='';if(allowed){controls=s.state==='running'?`<button type="button" class="secondary" data-stack-action="restart" data-stack-name="${esc(s.name)}">Restart</button><button type="button" class="secondary danger-outline" data-stack-action="stop" data-stack-name="${esc(s.name)}">Stop</button>`:`<button type="button" class="secondary" data-stack-action="start" data-stack-name="${esc(s.name)}">Start</button>`;if(s.update_available)controls+=`<button type="button" class="primary" data-stack-update="${esc(s.name)}">Update</button>`;}return `<article class="mediastack-service" data-service-name="${esc(s.name)}"><div class="mediastack-service-head"><div class="mediastack-service-title"><span class="dot ${state}"></span><div><strong>${esc(s.name)}</strong><span class="muted mono">${esc(s.image)}</span></div></div><div class="head-status">${update}${pressure}${protectedPill}<span class="pill ${state}" data-stack-state>${esc(s.status_text||s.state)}</span></div></div>${alert}<div class="mediastack-meters"><div><div class="meter-label"><span>CPU</span><strong>${Number(s.cpu_percent||0).toFixed(2)}%</strong></div><div class="meter"><span style="width:${Math.min(Number(s.cpu_percent||0),100)}%"></span></div></div><div><div class="meter-label"><span>RAM</span><strong>${esc(s.memory_human||humanBytes(s.memory_used))}</strong></div><div class="meter"><span style="width:${Math.min(Number(s.memory_percent||0),100)}%"></span></div></div></div><div class="mediastack-service-meta"><span>RX <b>${esc(s.network_rx_human||humanBytes(s.network_rx))}</b></span><span>TX <b>${esc(s.network_tx_human||humanBytes(s.network_tx))}</b></span><span>Restarts <b>${Number(s.restart_count||0)}</b></span></div><div class="inline-actions no-top stack-card-actions"><button type="button" class="secondary" data-stack-logs="${esc(s.name)}">Logs</button><details class="mediastack-mounts"><summary>Mounts (${(s.mounts||[]).length})</summary><div class="mediastack-mount-list">${mounts}</div></details>${controls}</div></article>`;}
+  function serviceCard(s,writeEnabled,writeAllowlist){
+    const state=s.status_class||'bad';
+    const update=s.update_available?'<span class="pill warn">Update</span>':(s.update&&s.update.checkable?'<span class="pill good">Current</span>':'');
+    const allowed=writeEnabled&&(!(writeAllowlist||[]).length||(writeAllowlist||[]).includes(s.name));
+    const protectedPill=writeEnabled&&!allowed?'<span class="pill warn">Protected</span>':'';
+    const pressure=s.resource_attention?`<span class="pill ${esc(s.resource_class||'warn')}">Resources</span>`:'';
+    const drift=s.resource_policy_drift?'<span class="pill warn">Policy drift</span>':'';
+    const alert=(s.resource_alerts||[]).length?`<div class="resource-alert">${(s.resource_alerts||[]).map(esc).join(' · ')}</div>`:'';
+    const mounts=(s.mounts||[]).map(m=>`<div><span class="mono">${esc(m.source)}</span><b>→</b><span class="mono">${esc(m.destination)}</span><em>${esc(m.propagation||m.mode||'')}</em></div>`).join('')||'<p class="muted small">No bind mounts reported.</p>';
+    const cpuLimit=Number(s.cpu_limit_cores||0)>0?`${Number(s.cpu_limit_cores).toFixed(Number(s.cpu_limit_cores)%1?1:0)} cores`:'Unlimited';
+    const ramLimit=Number(s.memory_limit_configured||0)>0?humanBytes(s.memory_limit_configured):'Unlimited';
+    let controls=`<button type="button" class="secondary" data-stack-logs="${esc(s.name)}">Logs</button><details class="mediastack-mounts"><summary>Mounts (${(s.mounts||[]).length})</summary><div class="mediastack-mount-list">${mounts}</div></details>`;
+    if(writeEnabled)controls+=`<button type="button" class="secondary" data-stack-resource="${esc(s.name)}">Resources</button>`;
+    if(allowed){
+      controls+=s.state==='running'
+        ?`<button type="button" class="secondary" data-stack-action="restart" data-stack-name="${esc(s.name)}">Restart</button><button type="button" class="secondary danger-outline" data-stack-action="stop" data-stack-name="${esc(s.name)}">Stop</button>`
+        :`<button type="button" class="secondary" data-stack-action="start" data-stack-name="${esc(s.name)}">Start</button>`;
+      if(s.update_available)controls+=`<button type="button" class="primary" data-stack-update="${esc(s.name)}">Update</button>`;
+    }
+    return `<article class="mediastack-service" data-service-name="${esc(s.name)}">
+      <div class="mediastack-service-head">
+        <div class="mediastack-service-title"><span class="dot ${state}"></span><div><strong>${esc(s.name)}</strong><span class="muted mono">${esc(s.image)}</span></div></div>
+        <div class="head-status">${update}${pressure}${protectedPill}<span class="pill ${state}" data-stack-state>${esc(s.status_text||s.state)}</span></div>
+      </div>
+      ${alert}
+      <div class="mediastack-meters">
+        <div><div class="meter-label"><span>CPU</span><strong>${Number(s.cpu_percent||0).toFixed(2)}%</strong></div><div class="meter"><span style="width:${Math.min(Number(s.cpu_percent||0),100)}%"></span></div></div>
+        <div><div class="meter-label"><span>RAM</span><strong>${esc(s.memory_human||humanBytes(s.memory_used))}</strong></div><div class="meter"><span style="width:${Math.min(Number(s.memory_percent||0),100)}%"></span></div></div>
+      </div>
+      <div class="mediastack-service-meta"><span>RX <b>${esc(s.network_rx_human||humanBytes(s.network_rx))}</b></span><span>TX <b>${esc(s.network_tx_human||humanBytes(s.network_tx))}</b></span><span>Restarts <b>${Number(s.restart_count||0)}</b></span></div>
+      <div class="mediastack-resource-summary"><span>CPU limit <b>${esc(cpuLimit)}</b></span><span>RAM limit <b>${esc(ramLimit)}</b></span>${drift}</div>
+      <div class="inline-actions no-top stack-card-actions">${controls}</div>
+    </article>`;
+  }
   function renderJobs(jobs){document.getElementById('mediastack-jobs').innerHTML=(jobs||[]).slice(0,10).map(j=>{const cls=j.status==='complete'?'good':(j.status==='failed'?'bad':'warn');return `<div class="stack-job"><strong>${esc(j.name||'MediaStack')}</strong><span>${esc(j.type||'job')} · ${esc(j.stage||j.status||'')}</span><span>${esc(j.message||'')}</span><span class="pill ${cls}">${esc(j.status||'unknown')}</span></div>`;}).join('')||'<p class="empty">No management jobs yet.</p>';}
   function render(data){const q=(name,value)=>{const el=document.querySelector(`[data-stack-stat="${name}"]`);if(el)el.textContent=value;};q('services',data.summary?.total??0);q('running',data.summary?.running??0);q('healthy',data.summary?.healthy??0);q('attention',data.summary?.attention??0);q('cpu',Number(data.summary?.cpu_percent||0).toFixed(1));q('ram',data.summary?.memory_used_human||'—');q('ram-total',data.summary?.memory_total_human||'—');q('updates',data.summary?.updates??0);document.getElementById('mediastack-services').innerHTML=(data.services||[]).map(s=>serviceCard(s,!!data.write_enabled,data.write_allowlist||[])).join('')||'<p class="empty">No managed containers reported yet.</p>';for(const [name,text] of activeActions.entries())setCardState(name,text,'warn');document.getElementById('mediastack-last-update').textContent=`Last sample ${data.updated_at||'not yet available'}`;document.getElementById('mediastack-updates-checked').textContent=`Updates checked ${data.updates_checked_at||'not yet'}`;const h=data.system||{};[['os',h.operating_system],['docker',h.docker_version],['cpus',h.cpus],['arch',h.architecture]].forEach(([key,value])=>{const el=document.querySelector(`[data-host="${key}"]`);if(el)el.textContent=value||'—';});const badge=document.getElementById('mediastack-agent-state');badge.textContent=data.connected?'Connected':'Offline';badge.className=`pill ${data.connected?'good':'bad'}`;document.getElementById('mediastack-online').hidden=!data.connected;document.getElementById('mediastack-offline').hidden=!!data.connected;if(data.connected)document.getElementById('mediastack-control-message').textContent=data.write_enabled?'Monitoring and authenticated lifecycle controls are enabled. Updates use candidate health checks and automatic rollback.':'Monitoring is active. Container-control actions are locked until the guided MediaStack setup enables the authenticated write channel.';renderJobs(data.jobs||[]);bindDynamic();}
   async function refresh(){render(await request('/api/mediastack/refresh',{method:'POST'}));}
@@ -166,7 +205,81 @@
     clearAction(name);await refresh();
     const detail=document.getElementById('stack-job-detail');if(detail)detail.textContent='Update is still running; check Management Jobs.';
   }
-  function bindDynamic(){document.querySelectorAll('[data-stack-logs]').forEach(btn=>{if(btn.dataset.bound)return;btn.dataset.bound='1';btn.addEventListener('click',async()=>{const name=btn.dataset.stackLogs;openModal(`${name} logs`,'Latest 250 lines');try{const data=await request(`/api/mediastack/logs/${encodeURIComponent(name)}?tail=250`);modalBody.innerHTML=`<pre class="code mediastack-code">${esc(data.content||'(no log output)')}</pre>`;}catch(e){modalBody.textContent=e.message;}});});document.querySelectorAll('[data-config-root][data-config-path]').forEach(btn=>{if(btn.dataset.bound)return;btn.dataset.bound='1';btn.addEventListener('click',async()=>{const root=btn.dataset.configRoot,path=btn.dataset.configPath;openModal('Configuration',`${root}/${path}`);try{const data=await request(`/api/mediastack/config?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`);modalBody.innerHTML=`<pre class="code mediastack-code">${esc(data.content||'')}</pre>`;}catch(e){modalBody.textContent=e.message;}});});document.querySelectorAll('[data-stack-action]').forEach(btn=>{if(btn.dataset.bound)return;btn.dataset.bound='1';btn.addEventListener('click',async()=>{const action=btn.dataset.stackAction,name=btn.dataset.stackName;if(!confirm(`${action.toUpperCase()} ${name}?`))return;const original=btn.textContent;btn.disabled=true;btn.textContent=actionText(action);markAction(name,action);try{const queued=await request(`/api/mediastack/actions/${encodeURIComponent(name)}/${action}`,{method:'POST'});if(queued.job_id)await pollLifecycleJob(queued.job_id,name,action);else await refresh();}catch(e){clearAction(name);try{await refresh();}catch(_){}alert(e.message);}finally{btn.disabled=false;btn.textContent=original;}});});document.querySelectorAll('[data-stack-update]').forEach(btn=>{if(btn.dataset.bound)return;btn.dataset.bound='1';btn.addEventListener('click',async()=>{const name=btn.dataset.stackUpdate;btn.disabled=true;try{const plan=await request(`/api/mediastack/update-plan/${encodeURIComponent(name)}`);const steps=(plan.steps||[]).map(x=>`<li>${esc(x)}</li>`).join('');openModal(`Update ${name}`,plan.image||'',`<div class="update-plan"><p>This is a guarded replacement, not a blind restart. ArrNexus pulls the candidate first and retains the existing container for rollback until the replacement stabilizes.</p><ul>${steps}</ul>${plan.registry_error?`<div class="flash error">Registry check: ${esc(plan.registry_error)}</div>`:''}<div class="inline-actions"><button type="button" class="primary" id="confirm-stack-update">Run guarded update</button><button type="button" class="secondary" data-stack-plan-cancel>Cancel</button></div></div>`);document.querySelector('[data-stack-plan-cancel]').addEventListener('click',closeModal);document.getElementById('confirm-stack-update').addEventListener('click',async e=>{e.currentTarget.disabled=true;try{const queued=await request(`/api/mediastack/actions/${encodeURIComponent(name)}/update`,{method:'POST'});await pollJob(queued.job_id,name);}catch(err){modalBody.innerHTML=`<div class="flash error">${esc(err.message)}</div>`;}});}catch(e){alert(e.message);}finally{btn.disabled=false;}});});}
+  async function pollResourceJob(jobId,name){
+    markAction(name,'resources');
+    openModal(`${name} resources`,'Applying live Docker limits',`<div class="stack-job-progress"><div class="spinner"></div><h3 id="stack-job-stage">Queued</h3><p class="muted" id="stack-job-message">Waiting for Stack Agent…</p><pre class="code" id="stack-job-detail"></pre></div>`);
+    for(let i=0;i<120;i++){
+      const payload=await request(`/api/mediastack/jobs/${encodeURIComponent(jobId)}`);
+      const j=payload.job||{};
+      const stage=document.getElementById('stack-job-stage'),msg=document.getElementById('stack-job-message'),detail=document.getElementById('stack-job-detail');
+      if(stage)stage.textContent=j.stage||j.status||'Working';
+      if(msg)msg.textContent=j.message||'';
+      if(detail)detail.textContent=j.error?`Error: ${j.error}`:'';
+      if(j.status==='complete'||j.status==='failed'){
+        const spinner=document.querySelector('.spinner');if(spinner)spinner.remove();
+        clearAction(name);
+        await refresh();
+        if(j.status==='complete'){
+          if(stage)stage.textContent='Applied';
+          if(msg)msg.textContent=j.message||'Resource limits applied';
+        }
+        return;
+      }
+      await new Promise(r=>setTimeout(r,1000));
+    }
+    clearAction(name);await refresh();
+  }
+
+  async function openResourceEditor(name){
+    openModal(`Resources · ${name}`,'Live CPU and RAM limits');
+    try{
+      const s=await request(`/api/mediastack/resources/${encodeURIComponent(name)}`);
+      const currentCpu=Number(s.cpu_limit_cores||0);
+      const currentMem=Math.round(Number(s.memory_limit_bytes||0)/1048576);
+      const rec=s.recommendation||{};
+      const used=humanBytes(s.memory_used||0);
+      const hostRam=humanBytes(s.host_memory||0);
+      modalBody.innerHTML=`<div class="resource-editor">
+        <div class="resource-editor-summary">
+          <div><span>Current CPU</span><strong>${currentCpu?currentCpu+' cores':'Unlimited'}</strong></div>
+          <div><span>Current RAM</span><strong>${currentMem?currentMem+' MiB':'Unlimited'}</strong></div>
+          <div><span>Usage now</span><strong>${Number(s.cpu_percent||0).toFixed(1)}% · ${esc(used)}</strong></div>
+          <div><span>Host capacity</span><strong>${Number(s.host_cpus||0)} cores · ${esc(hostRam)}</strong></div>
+        </div>
+        ${s.policy_drift?'<div class="flash error">Saved resource policy does not match the current Docker limits. Applying the values below will bring it back under MediaStack control.</div>':''}
+        <div class="resource-form-grid">
+          <label><span>CPU cores</span><input id="resource-cpu" type="number" min="0" step="0.1" value="${currentCpu}"><small>0 = unlimited</small></label>
+          <label><span>RAM (MiB)</span><input id="resource-ram" type="number" min="0" step="128" value="${currentMem}"><small>0 = unlimited · current use ${esc(used)}</small></label>
+        </div>
+        <div class="resource-suggestion">Suggested starting point: <b>${Number(rec.cpu_cores||0)} CPU / ${Number(rec.memory_mib||0)} MiB RAM</b></div>
+        <div class="inline-actions">
+          <button type="button" class="secondary" id="resource-suggested">Use suggested</button>
+          <button type="button" class="secondary" id="resource-unlimited">Unlimited</button>
+          <button type="button" class="primary" id="resource-apply">Apply limits</button>
+        </div>
+        <p class="muted small">Limits are applied live through Docker. Guarded MediaStack updates preserve the current limits. A later external redeploy that changes them will be shown as policy drift.</p>
+      </div>`;
+      const cpu=document.getElementById('resource-cpu'),ram=document.getElementById('resource-ram'),apply=document.getElementById('resource-apply');
+      document.getElementById('resource-suggested').addEventListener('click',()=>{cpu.value=Number(rec.cpu_cores||0);ram.value=Number(rec.memory_mib||0);});
+      document.getElementById('resource-unlimited').addEventListener('click',()=>{cpu.value=0;ram.value=0;});
+      apply.addEventListener('click',async()=>{
+        const cpuValue=Number(cpu.value||0),ramValue=Number(ram.value||0);
+        if(cpuValue<0||ramValue<0){alert('CPU and RAM limits cannot be negative.');return;}
+        apply.disabled=true;apply.textContent='Applying…';
+        try{
+          const queued=await request(`/api/mediastack/resources/${encodeURIComponent(name)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cpu_cores:cpuValue,memory_mib:ramValue})});
+          await pollResourceJob(queued.job_id,name);
+        }catch(err){
+          apply.disabled=false;apply.textContent='Apply limits';
+          modalBody.insertAdjacentHTML('afterbegin',`<div class="flash error">${esc(err.message)}</div>`);
+        }
+      });
+    }catch(err){
+      modalBody.innerHTML=`<div class="flash error">${esc(err.message)}</div>`;
+    }
+  }
+
+  function bindDynamic(){document.querySelectorAll('[data-stack-logs]').forEach(btn=>{if(btn.dataset.bound)return;btn.dataset.bound='1';btn.addEventListener('click',async()=>{const name=btn.dataset.stackLogs;openModal(`${name} logs`,'Latest 250 lines');try{const data=await request(`/api/mediastack/logs/${encodeURIComponent(name)}?tail=250`);modalBody.innerHTML=`<pre class="code mediastack-code">${esc(data.content||'(no log output)')}</pre>`;}catch(e){modalBody.textContent=e.message;}});});document.querySelectorAll('[data-config-root][data-config-path]').forEach(btn=>{if(btn.dataset.bound)return;btn.dataset.bound='1';btn.addEventListener('click',async()=>{const root=btn.dataset.configRoot,path=btn.dataset.configPath;openModal('Configuration',`${root}/${path}`);try{const data=await request(`/api/mediastack/config?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`);modalBody.innerHTML=`<pre class="code mediastack-code">${esc(data.content||'')}</pre>`;}catch(e){modalBody.textContent=e.message;}});});document.querySelectorAll('[data-stack-resource]').forEach(btn=>{if(btn.dataset.bound)return;btn.dataset.bound='1';btn.addEventListener('click',()=>openResourceEditor(btn.dataset.stackResource));});document.querySelectorAll('[data-stack-action]').forEach(btn=>{if(btn.dataset.bound)return;btn.dataset.bound='1';btn.addEventListener('click',async()=>{const action=btn.dataset.stackAction,name=btn.dataset.stackName;if(!confirm(`${action.toUpperCase()} ${name}?`))return;const original=btn.textContent;btn.disabled=true;btn.textContent=actionText(action);markAction(name,action);try{const queued=await request(`/api/mediastack/actions/${encodeURIComponent(name)}/${action}`,{method:'POST'});if(queued.job_id)await pollLifecycleJob(queued.job_id,name,action);else await refresh();}catch(e){clearAction(name);try{await refresh();}catch(_){}alert(e.message);}finally{btn.disabled=false;btn.textContent=original;}});});document.querySelectorAll('[data-stack-update]').forEach(btn=>{if(btn.dataset.bound)return;btn.dataset.bound='1';btn.addEventListener('click',async()=>{const name=btn.dataset.stackUpdate;btn.disabled=true;try{const plan=await request(`/api/mediastack/update-plan/${encodeURIComponent(name)}`);const steps=(plan.steps||[]).map(x=>`<li>${esc(x)}</li>`).join('');openModal(`Update ${name}`,plan.image||'',`<div class="update-plan"><p>This is a guarded replacement, not a blind restart. ArrNexus pulls the candidate first and retains the existing container for rollback until the replacement stabilizes.</p><ul>${steps}</ul>${plan.registry_error?`<div class="flash error">Registry check: ${esc(plan.registry_error)}</div>`:''}<div class="inline-actions"><button type="button" class="primary" id="confirm-stack-update">Run guarded update</button><button type="button" class="secondary" data-stack-plan-cancel>Cancel</button></div></div>`);document.querySelector('[data-stack-plan-cancel]').addEventListener('click',closeModal);document.getElementById('confirm-stack-update').addEventListener('click',async e=>{e.currentTarget.disabled=true;try{const queued=await request(`/api/mediastack/actions/${encodeURIComponent(name)}/update`,{method:'POST'});await pollJob(queued.job_id,name);}catch(err){modalBody.innerHTML=`<div class="flash error">${esc(err.message)}</div>`;}});}catch(e){alert(e.message);}finally{btn.disabled=false;}});});}
   bindDynamic();
   document.getElementById('mediastack-refresh').addEventListener('click',async e=>{const b=e.currentTarget;b.disabled=true;b.textContent='Refreshing…';try{await refresh();}catch(err){alert(err.message);}finally{b.disabled=false;b.textContent='Refresh';}});
   document.getElementById('mediastack-updates').addEventListener('click',async e=>{const b=e.currentTarget;b.disabled=true;b.textContent='Checking…';try{render(await request('/api/mediastack/check-updates',{method:'POST'}));}catch(err){alert(err.message);}finally{b.disabled=false;b.textContent='Check for Updates';}});
