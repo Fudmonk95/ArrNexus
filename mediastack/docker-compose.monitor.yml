@@ -6,6 +6,9 @@ services:
       context: ./agent
     container_name: arrnexus-stack-agent
     restart: unless-stopped
+    networks:
+      - default
+      - arrnexus-v11
     environment:
       DOCKER_SOCKET: /var/run/docker.sock
       STACK_LABEL: arrnexus.mediastack=true
@@ -54,8 +57,13 @@ services:
       - /home/renegademonk/docker/neutarr/config:/config-roots/neutarr:ro
       - /home/renegademonk/docker/maintainerr/data:/config-roots/maintainerr:ro
       - /home/renegademonk/docker/profilarr/config:/config-roots/profilarr:ro
-      - /mnt/appdata/DUMB-metadata/homarr:/config-roots/homarr:ro
+      - /home/renegademonk/docker/homarr/appdata:/config-roots/homarr:ro
     ports:
       # Host-local only. ArrNexus reaches the agent over a shared Docker
       # network; no browser should talk to this port directly.
       - "127.0.0.1:${STACK_AGENT_PORT:-8787}:8787"
+
+networks:
+  arrnexus-v11:
+    external: true
+    name: arrnexus-v11_default

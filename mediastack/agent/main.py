@@ -640,6 +640,65 @@ async def _run_update(job_id: str, name: str) -> None:
                 )
 
 
+async def _run_lifecycle(job_id: str, name: str, action: str) -> None:
+    lock = _SERVICE_LOCKS.setdefault(name, asyncio.Lock())
+    async with lock:
+        async with docker_client(timeout=120.0) as client:
+            try:
+                await _job_update(
+                    job_id,
+                    status="running",
+                    stage=action,
+                    message=f"{action.title()}ing {name}",
+                )
+                row = await _find_managed(client, name)
+                cid = row["Id"]
+
+                if action == "start":
+                    response = await client.post(f"/containers/{cid}/start")
+                    allowed = {204, 304}
+                elif action == "stop":
+                    response = await client.post(f"/containers/{cid}/stop", params={"t": "30"})
+                    allowed = {204, 304}
+                elif action == "restart":
+                    response = await client.post(f"/containers/{cid}/restart", params={"t": "30"})
+                    allowed = {204}
+                else:
+                    raise RuntimeError(f"unsupported lifecycle action: {action}")
+
+                if response.status_code not in allowed:
+                    response.raise_for_status()
+
+                if action in {"start", "restart"}:
+                    await _job_update(
+                        job_id,
+                        stage="stabilizing",
+                        message=f"Waiting for {name} to stabilize",
+                    )
+                    ready = await _wait_ready(client, cid)
+                    health = (ready.get("Health") or {}).get("Status")
+                else:
+                    health = None
+
+                await _job_update(
+                    job_id,
+                    status="complete",
+                    stage="complete",
+                    health=health,
+                    message=f"{name} {action} completed",
+                    finished_at=_now(),
+                )
+            except Exception as exc:
+                await _job_update(
+                    job_id,
+                    status="failed",
+                    stage="failed",
+                    error=str(exc),
+                    message=f"{name} {action} failed",
+                    finished_at=_now(),
+                )
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     try:
@@ -737,15 +796,16 @@ async def discovery() -> dict[str, Any]:
 @app.get("/api/updates")
 async def updates() -> dict[str, Any]:
     data = await containers(False)
-    rows: list[dict[str, Any]] = []
-    for service in data["services"]:
-        image = service["image"]
-        try:
-            remote = await _registry_digest(image)
-            local_matches = [d for d in service.get("local_digests") or [] if "@sha256:" in d]
-            local_hashes = {d.rsplit("@", 1)[-1] for d in local_matches}
-            rows.append(
-                {
+    semaphore = asyncio.Semaphore(4)
+
+    async def check_service(service: dict[str, Any]) -> dict[str, Any]:
+        async with semaphore:
+            image = service["image"]
+            try:
+                remote = await _registry_digest(image)
+                local_matches = [d for d in service.get("local_digests") or [] if "@sha256:" in d]
+                local_hashes = {d.rsplit("@", 1)[-1] for d in local_matches}
+                return {
                     "name": service["name"],
                     "image": image,
                     "remote_digest": remote,
@@ -753,17 +813,16 @@ async def updates() -> dict[str, Any]:
                     "update_available": bool(remote and local_hashes and remote not in local_hashes),
                     "checkable": remote is not None,
                 }
-            )
-        except Exception as exc:
-            rows.append(
-                {
+            except Exception as exc:
+                return {
                     "name": service["name"],
                     "image": image,
                     "checkable": False,
                     "error": str(exc),
                     "update_available": False,
                 }
-            )
+
+    rows = await asyncio.gather(*(check_service(service) for service in data["services"]))
     return {"ok": True, "services": rows}
 
 
@@ -828,21 +887,33 @@ async def lifecycle_action(name: str, action: str, request: Request) -> dict[str
     action = action.lower()
     if action not in {"start", "stop", "restart"}:
         raise HTTPException(400, "unsupported lifecycle action")
-    async with docker_client(timeout=60.0) as client:
+
+    async with docker_client() as client:
         row = await _find_managed(client, name)
-        cid = row["Id"]
-        if action == "start":
-            response = await client.post(f"/containers/{cid}/start")
-            allowed = {204, 304}
-        elif action == "stop":
-            response = await client.post(f"/containers/{cid}/stop", params={"t": "30"})
-            allowed = {204, 304}
-        else:
-            response = await client.post(f"/containers/{cid}/restart", params={"t": "30"})
-            allowed = {204}
-        if response.status_code not in allowed:
-            response.raise_for_status()
-    return {"ok": True, "name": _container_name(row), "action": action}
+        canonical = _container_name(row)
+
+    lock = _SERVICE_LOCKS.setdefault(canonical, asyncio.Lock())
+    if lock.locked():
+        raise HTTPException(409, f"{canonical} already has an active management action")
+
+    job_id = secrets.token_hex(10)
+    async with _JOB_LOCK:
+        _JOBS[job_id] = {
+            "id": job_id,
+            "type": action,
+            "name": canonical,
+            "status": "queued",
+            "stage": "queued",
+            "message": f"{action.title()} queued",
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+
+    asyncio.create_task(
+        _run_lifecycle(job_id, canonical, action),
+        name=f"mediastack-{action}-{canonical}-{job_id[:6]}",
+    )
+    return {"ok": True, "job_id": job_id, "status": "queued", "name": canonical, "action": action}
 
 
 @app.post("/api/actions/{name}/update")

@@ -295,6 +295,7 @@ def cached_snapshot() -> dict[str, Any]:
     updated = float(_CACHE.get("updated_monotonic") or 0)
     out["age_seconds"] = max(0.0, time.monotonic() - updated) if updated else None
     out["write_enabled"] = bool((out.get("capabilities") or {}).get("write_enabled"))
+    out["write_allowlist"] = list((out.get("capabilities") or {}).get("write_allowlist") or [])
     return out
 
 
@@ -349,9 +350,8 @@ async def update_plan(name: str) -> dict[str, Any]:
 
 
 async def lifecycle(name: str, action: str) -> dict[str, Any]:
-    result = await _post(f"/api/lifecycle/{name}/{action}", timeout=75.0)
-    log_event("info", "mediastack", "lifecycle", f"{action.title()} requested for {name}", result)
-    await refresh_status()
+    result = await _post(f"/api/lifecycle/{name}/{action}", timeout=15.0)
+    log_event("info", "mediastack", "lifecycle_queued", f"{action.title()} queued for {name}", result)
     return result
 
 
