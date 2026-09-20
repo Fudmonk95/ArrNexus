@@ -295,6 +295,7 @@ def cached_snapshot() -> dict[str, Any]:
     updated = float(_CACHE.get("updated_monotonic") or 0)
     out["age_seconds"] = max(0.0, time.monotonic() - updated) if updated else None
     out["write_enabled"] = bool((out.get("capabilities") or {}).get("write_enabled"))
+    out["write_allowlist"] = list((out.get("capabilities") or {}).get("write_allowlist") or [])
     return out
 
 
