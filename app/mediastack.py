@@ -349,9 +349,8 @@ async def update_plan(name: str) -> dict[str, Any]:
 
 
 async def lifecycle(name: str, action: str) -> dict[str, Any]:
-    result = await _post(f"/api/lifecycle/{name}/{action}", timeout=75.0)
-    log_event("info", "mediastack", "lifecycle", f"{action.title()} requested for {name}", result)
-    await refresh_status()
+    result = await _post(f"/api/lifecycle/{name}/{action}", timeout=15.0)
+    log_event("info", "mediastack", "lifecycle_queued", f"{action.title()} queued for {name}", result)
     return result
 
 
